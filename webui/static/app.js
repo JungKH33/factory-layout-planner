@@ -29,6 +29,10 @@ const settings = {
     showGrid: false,
 };
 
+// Candidate 정렬 상태
+let candidateSortColumn = 'q';  // 'index', 'pos', 'q', 'p', 'n'
+let candidateSortDesc = true;   // true: 내림차순, false: 오름차순
+
 // Colors (theme-aware)
 function getColors() {
     if (isDarkMode) {
@@ -149,11 +153,183 @@ function setupEventListeners() {
             });
         }
     });
+    
+    // Candidate 컬럼 헤더 클릭 정렬
+    const sortColumns = ['col-index', 'col-pos', 'col-q', 'col-p', 'col-n'];
+    const columnMap = { 'col-index': 'index', 'col-pos': 'pos', 'col-q': 'q', 'col-p': 'p', 'col-n': 'n' };
+    
+    sortColumns.forEach(colClass => {
+        const headerEl = document.querySelector(`.candidate-header .${colClass}`);
+        if (headerEl) {
+            headerEl.addEventListener('click', () => {
+                const col = columnMap[colClass];
+                if (candidateSortColumn === col) {
+                    candidateSortDesc = !candidateSortDesc;  // 같은 컬럼 클릭 시 방향 토글
+                } else {
+                    candidateSortColumn = col;
+                    candidateSortDesc = true;  // 새 컬럼은 내림차순으로 시작
+                }
+                updateCandidateList();
+            });
+        }
+    });
 
     // Canvas interactions
     canvas.addEventListener('mousemove', onCanvasMouseMove);
     canvas.addEventListener('click', onCanvasClick);
     canvas.addEventListener('mouseleave', onCanvasMouseLeave);
+    
+    // Settings panel buttons
+    document.querySelectorAll('.btn-settings').forEach(btn => {
+        btn.addEventListener('click', () => openSettingsPanel(btn.dataset.panel));
+    });
+    document.getElementById('settings-close').addEventListener('click', closeSettingsPanel);
+    
+    // Mode change listeners - 동적 파라미터 로딩
+    document.getElementById('wrapper-mode').addEventListener('change', () => loadParams('wrapper'));
+    document.getElementById('agent-mode').addEventListener('change', () => loadParams('agent'));
+    document.getElementById('search-mode').addEventListener('change', () => loadParams('search'));
+    
+    // 초기 파라미터 로딩
+    loadParams('wrapper');
+    loadParams('agent');
+    loadParams('search');
+}
+
+// 파라미터 캐시 (API 호출 최소화)
+const paramsCache = {};
+
+async function loadParams(type) {
+    const selectId = type === 'wrapper' ? 'wrapper-mode' : 
+                     type === 'agent' ? 'agent-mode' : 'search-mode';
+    const name = document.getElementById(selectId).value;
+    const cacheKey = `${type}-${name}`;
+    
+    // 캐시 확인
+    if (!paramsCache[cacheKey]) {
+        try {
+            const res = await fetch(`/api/params/${type}/${name}`);
+            const data = await res.json();
+            paramsCache[cacheKey] = data.params;
+        } catch (e) {
+            console.error(`Failed to load params for ${type}/${name}:`, e);
+            paramsCache[cacheKey] = {};
+        }
+    }
+    
+    renderParams(type, name, paramsCache[cacheKey]);
+}
+
+function renderParams(type, name, params) {
+    const container = document.getElementById(`${type}-params-container`);
+    const titleEl = document.getElementById(`${type}-title`);
+    
+    // 제목 업데이트
+    const titles = {
+        wrapper: { greedy: 'Greedy V1', greedyv2: 'Greedy V2', greedyv3: 'Greedy V3', alphachip: 'AlphaChip', maskplace: 'MaskPlace' },
+        agent: { greedy: 'Greedy Agent', alphachip: 'AlphaChip Agent', maskplace: 'MaskPlace Agent' },
+        search: { none: 'No Search', mcts: 'MCTS', beam: 'Beam Search' }
+    };
+    titleEl.textContent = (titles[type] && titles[type][name]) || name;
+    
+    // 컨테이너 초기화
+    container.innerHTML = '';
+    
+    if (!params || Object.keys(params).length === 0) {
+        container.innerHTML = '<p class="text-muted">No configurable parameters.</p>';
+        return;
+    }
+    
+    // 파라미터별 input 생성
+    for (const [paramName, info] of Object.entries(params)) {
+        const div = document.createElement('div');
+        div.className = 'form-group';
+        
+        const label = document.createElement('label');
+        label.textContent = formatParamName(paramName) + (info.required ? ' *' : '') + ':';
+        label.setAttribute('for', `param-${type}-${paramName}`);
+        if (info.required) {
+            label.classList.add('required-label');
+        }
+        
+        const input = createParamInput(type, paramName, info);
+        
+        div.appendChild(label);
+        div.appendChild(input);
+        container.appendChild(div);
+    }
+}
+
+function formatParamName(name) {
+    // snake_case -> Title Case
+    return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+function createParamInput(type, name, info) {
+    const input = document.createElement('input');
+    input.id = `param-${type}-${name}`;
+    input.dataset.paramType = type;
+    input.dataset.paramName = name;
+    
+    const paramType = info.type || 'str';
+    const defaultVal = info.default;
+    const isRequired = info.required === true;
+    
+    if (isRequired) {
+        input.required = true;
+        input.classList.add('required-input');
+    }
+    
+    if (paramType === 'int') {
+        input.type = 'number';
+        input.step = '1';
+        if (isRequired && defaultVal === null) {
+            input.value = '';
+            input.placeholder = '(required)';
+        } else {
+            input.value = defaultVal !== null ? defaultVal : 0;
+        }
+    } else if (paramType === 'float') {
+        input.type = 'number';
+        input.step = defaultVal !== null && defaultVal < 1 ? '0.01' : '0.1';
+        if (isRequired && defaultVal === null) {
+            input.value = '';
+            input.placeholder = '(required)';
+        } else {
+            input.value = defaultVal !== null ? defaultVal : 0;
+        }
+    } else if (paramType === 'bool') {
+        input.type = 'checkbox';
+        input.checked = defaultVal === true;
+    } else {
+        input.type = 'text';
+        input.value = defaultVal !== null ? defaultVal : '';
+    }
+    
+    return input;
+}
+
+function openSettingsPanel(panelType) {
+    const panel = document.getElementById('settings-panel');
+    const titleEl = document.getElementById('settings-title');
+    
+    // 모든 패널 컨텐츠 숨기기
+    document.querySelectorAll('.panel-content').forEach(el => el.style.display = 'none');
+    
+    // 선택된 패널 컨텐츠 표시
+    document.getElementById(`panel-${panelType}`).style.display = 'block';
+    
+    // 제목 설정
+    const titles = { wrapper: 'Wrapper Settings', agent: 'Agent Settings', search: 'Search Settings' };
+    titleEl.textContent = titles[panelType] || 'Settings';
+    
+    // 패널 열기
+    panel.classList.add('open');
+}
+
+function closeSettingsPanel() {
+    const panel = document.getElementById('settings-panel');
+    panel.classList.remove('open');
 }
 
 async function loadConfigs() {
@@ -199,13 +375,72 @@ function resizeCanvas() {
 // Session Management
 // ============================================================
 
+function collectParams() {
+    // 동적으로 생성된 파라미터 input에서 값 수집
+    const params = {};
+    document.querySelectorAll('input[data-param-type]').forEach(input => {
+        const type = input.dataset.paramType;
+        const name = input.dataset.paramName;
+        const key = `${type}_${name}`;
+        
+        if (input.type === 'checkbox') {
+            params[key] = input.checked;
+        } else if (input.type === 'number') {
+            const val = input.value;
+            if (val === '' || val === null) {
+                // 빈 값은 포함하지 않음 (백엔드 기본값 사용)
+                return;
+            }
+            params[key] = val.includes('.') ? parseFloat(val) : parseInt(val);
+        } else {
+            params[key] = input.value || null;
+        }
+    });
+    return params;
+}
+
+function validateRequiredParams() {
+    // 필수 파라미터 검증
+    const requiredInputs = document.querySelectorAll('input.required-input');
+    for (const input of requiredInputs) {
+        if (input.value === '' || input.value === null) {
+            const paramName = input.dataset.paramName;
+            showSessionMessage(`"${paramName}" is required.`, 'error');
+            input.focus();
+            return false;
+        }
+    }
+    return true;
+}
+
+function showSessionMessage(message, type = 'success') {
+    const el = document.getElementById('session-message');
+    el.textContent = message;
+    el.className = 'session-message ' + type;
+}
+
+function clearSessionMessage() {
+    const el = document.getElementById('session-message');
+    el.textContent = '';
+    el.className = 'session-message';
+}
+
 async function createSession() {
+    clearSessionMessage();
+    
+    // 필수 파라미터 검증
+    if (!validateRequiredParams()) {
+        return;
+    }
+    
+    const params = collectParams();
+    
     const req = {
         env_json: document.getElementById('env-config').value,
         wrapper_mode: document.getElementById('wrapper-mode').value,
         agent_mode: document.getElementById('agent-mode').value,
         search_mode: document.getElementById('search-mode').value,
-        topk_k: parseInt(document.getElementById('topk-k').value),
+        params: params,  // 동적 파라미터
     };
 
     try {
@@ -222,10 +457,13 @@ async function createSession() {
             updateState(data.state);
             connectWebSocket();
             enableControls(true);
+            showSessionMessage('Session created successfully!', 'success');
+        } else if (data.detail) {
+            showSessionMessage('Error: ' + data.detail, 'error');
         }
     } catch (e) {
         console.error('Failed to create session:', e);
-        alert('Failed to create session: ' + e.message);
+        showSessionMessage('Failed to create session: ' + e.message, 'error');
     }
 }
 
@@ -284,12 +522,18 @@ async function stepAction(action) {
 async function runSearch() {
     if (!sessionId) return;
     
-    const sims = parseInt(document.getElementById('search-sims').value);
+    // 동적으로 생성된 search params에서 simulations 가져오기
+    const simsInput = document.getElementById('param-search-num_simulations');
+    const sims = simsInput ? parseInt(simsInput.value) || 50 : 50;
     const interval = parseInt(document.getElementById('search-interval').value);
     
     document.getElementById('btn-search').disabled = true;
     const progressBar = document.getElementById('search-progress');
     progressBar.style.display = 'block';
+    
+    // Progress bar 초기화 (이전 search 값이 남아있는 문제 해결)
+    progressBar.querySelector('.progress-fill').style.width = '0%';
+    progressBar.querySelector('.progress-text').textContent = '0% (0/' + sims + ')';
     
     try {
         const res = await fetch(`/api/session/${sessionId}/search`, {
@@ -393,6 +637,31 @@ function updateInfoPanel() {
     document.getElementById('info-current').textContent = currentState.current_gid || '-';
 }
 
+function updateSortIndicators() {
+    const columns = {
+        'index': '#',
+        'pos': 'Pos',
+        'q': 'Q',
+        'p': 'P',
+        'n': 'N'
+    };
+    const classMap = {
+        'index': 'col-index',
+        'pos': 'col-pos',
+        'q': 'col-q',
+        'p': 'col-p',
+        'n': 'col-n'
+    };
+    
+    Object.keys(columns).forEach(col => {
+        const el = document.querySelector(`.candidate-header .${classMap[col]}`);
+        if (el) {
+            const arrow = col === candidateSortColumn ? (candidateSortDesc ? ' ▼' : ' ▲') : '';
+            el.textContent = columns[col] + arrow;
+        }
+    });
+}
+
 function updateCandidateList() {
     if (!currentState) return;
     
@@ -402,23 +671,63 @@ function updateCandidateList() {
     const validCount = currentState.candidates.filter(c => c.valid).length;
     countSpan.textContent = `(${validCount}/${currentState.candidates.length})`;
     
+    // 헤더 정렬 표시 업데이트
+    updateSortIndicators();
+    
     list.innerHTML = '';
     
-    // Sort by score descending
-    const sorted = [...currentState.candidates].sort((a, b) => b.score - a.score);
+    // 컬럼 기준 정렬 (0/N/A는 정렬 방향과 무관하게 항상 맨 뒤로)
+    const sorted = [...currentState.candidates].sort((a, b) => {
+        let cmp = 0;
+        switch (candidateSortColumn) {
+            case 'index':
+                cmp = a.index - b.index;
+                break;
+            case 'pos':
+                cmp = (a.x + a.y * 10000) - (b.x + b.y * 10000);  // y 우선, x 보조
+                break;
+            case 'q':
+                // N/A (q_value === 0)는 정렬 방향과 무관하게 항상 맨 뒤로
+                if (a.q_value === 0 && b.q_value === 0) return 0;
+                if (a.q_value === 0) return 1;
+                if (b.q_value === 0) return -1;
+                cmp = a.q_value - b.q_value;
+                break;
+            case 'p':
+                // score === 0은 정렬 방향과 무관하게 항상 맨 뒤로
+                if (a.score === 0 && b.score === 0) return 0;
+                if (a.score === 0) return 1;
+                if (b.score === 0) return -1;
+                cmp = a.score - b.score;
+                break;
+            case 'n':
+                // visits === 0은 정렬 방향과 무관하게 항상 맨 뒤로
+                if (a.visits === 0 && b.visits === 0) return 0;
+                if (a.visits === 0) return 1;
+                if (b.visits === 0) return -1;
+                cmp = a.visits - b.visits;
+                break;
+            default:
+                cmp = a.index - b.index;
+        }
+        return candidateSortDesc ? -cmp : cmp;
+    });
     
     sorted.forEach(cand => {
         const item = document.createElement('div');
         item.className = 'candidate-item' + (cand.valid ? '' : ' invalid');
         if (selectedCandidate === cand.index) item.classList.add('selected');
         
-        const scoreClass = cand.score > 0.5 ? 'score-high' : cand.score > 0.2 ? 'score-mid' : 'score-low';
+        const qVal = cand.q_value !== 0 ? cand.q_value.toFixed(3) : 'N/A';
+        const pVal = cand.score.toFixed(3);
+        const nVal = cand.visits;
         
         item.innerHTML = `
-            <span class="candidate-index">#${cand.index}</span>
-            <span class="candidate-pos">(${cand.x.toFixed(0)}, ${cand.y.toFixed(0)})</span>
-            <span class="candidate-score ${scoreClass}">${cand.score.toFixed(3)}</span>
-            ${settings.showVisits ? `<span class="candidate-visits">${cand.visits}</span>` : ''}
+            <span class="col-index">#${cand.index}</span>
+            <span class="col-pos">(${cand.x.toFixed(0)}, ${cand.y.toFixed(0)})</span>
+            <span class="col-q">${qVal}</span>
+            <span class="col-p">${pVal}</span>
+            <span class="col-n">${nVal}</span>
         `;
         
         item.addEventListener('click', () => {
@@ -429,17 +738,37 @@ function updateCandidateList() {
         
         item.addEventListener('mouseenter', () => {
             hoveredCandidate = cand.index;
+            // updateCandidateInfoPanel(cand);  // 컬럼 헤더로 대체
             render();
         });
         
         item.addEventListener('mouseleave', () => {
             hoveredCandidate = null;
+            // updateCandidateInfoPanel(null);  // 컬럼 헤더로 대체
             render();
         });
         
         list.appendChild(item);
     });
 }
+
+// 컬럼 헤더로 대체되어 주석 처리
+// function updateCandidateInfoPanel(cand) {
+//     const posEl = document.getElementById('cand-pos');
+//     const qvalEl = document.getElementById('cand-qvalue');
+//     const visitsEl = document.getElementById('cand-visits');
+//     
+//     if (!cand) {
+//         posEl.textContent = '-';
+//         qvalEl.textContent = '-';
+//         visitsEl.textContent = '-';
+//         return;
+//     }
+//     
+//     posEl.textContent = `(${cand.x.toFixed(1)}, ${cand.y.toFixed(1)})`;
+//     qvalEl.textContent = cand.q_value !== 0 ? cand.q_value.toFixed(4) : '-';
+//     visitsEl.textContent = cand.visits > 0 ? cand.visits : '-';
+// }
 
 // ============================================================
 // Canvas Rendering
@@ -623,15 +952,26 @@ function drawCandidates(scaleX, scaleY) {
     const candidates = currentState.candidates;
     if (!candidates || candidates.length === 0) return;
     
-    // Find score range for color mapping
-    const scores = candidates.map(c => c.score);
-    const minScore = Math.min(...scores);
-    const maxScore = Math.max(...scores);
-    const scoreRange = maxScore - minScore || 1;
+    // Check if search has been performed (any Q value exists)
+    const hasAnyQ = candidates.some(c => c.q_value !== 0);
     
-    candidates.forEach(cand => {
-        if (!cand.valid && !settings.showVisits) return;
-        
+    // Filter: search 후에는 Q값 있는 것만, search 전에는 valid만
+    const visibleCandidates = hasAnyQ 
+        ? candidates.filter(c => c.q_value !== 0)
+        : candidates.filter(c => c.valid);
+    
+    if (visibleCandidates.length === 0) return;
+    
+    // Value for color mapping: Q if searched, P otherwise
+    const getDisplayValue = (cand) => hasAnyQ ? cand.q_value : cand.score;
+    
+    // Find value range for color mapping
+    const values = visibleCandidates.map(c => getDisplayValue(c));
+    const minValue = Math.min(...values);
+    const maxValue = Math.max(...values);
+    const valueRange = maxValue - minValue || 1;
+    
+    visibleCandidates.forEach(cand => {
         const cx = cand.x * scaleX;
         const cy = canvas.height - cand.y * scaleY;
         
@@ -644,8 +984,9 @@ function drawCandidates(scaleX, scaleY) {
         } else if (!cand.valid) {
             color = COLORS.candidate.invalid;
         } else {
-            // Color by score (green = high, red = low)
-            const t = (cand.score - minScore) / scoreRange;
+            // Color by value (green = high, red = low)
+            const displayVal = getDisplayValue(cand);
+            const t = (displayVal - minValue) / valueRange;
             color = scoreToColor(t);
         }
         
@@ -742,9 +1083,9 @@ function showHoverInfo(x, y, cand) {
     info.innerHTML = `
         <div><strong>#${cand.index}</strong> ${cand.valid ? '✓' : '✗'}</div>
         <div>Pos: (${cand.x.toFixed(1)}, ${cand.y.toFixed(1)})</div>
-        <div>Score: ${cand.score.toFixed(4)}</div>
+        <div>Prior: ${cand.score.toFixed(4)}</div>
         ${cand.visits > 0 ? `<div>Visits: ${cand.visits}</div>` : ''}
-        ${cand.q_value !== 0 ? `<div>Q: ${cand.q_value.toFixed(4)}</div>` : ''}
+        ${cand.q_value !== 0 ? `<div>Q-value: ${cand.q_value.toFixed(4)}</div>` : ''}
     `;
 }
 

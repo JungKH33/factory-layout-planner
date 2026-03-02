@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, get_type_hints
 
 import numpy as np
 import torch
@@ -13,7 +15,110 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+# Thread pool for running sync search in background
+_search_executor = ThreadPoolExecutor(max_workers=2)
+
 from envs.wrappers.candidate_set import CandidateSet
+from envs.wrappers.greedy import GreedyWrapperEnv
+from envs.wrappers.greedyv2 import GreedyWrapperV2Env
+from envs.wrappers.greedyv3 import GreedyWrapperV3Env
+from envs.wrappers.alphachip import AlphaChipWrapperEnv
+from envs.wrappers.maskplace import MaskPlaceWrapperEnv
+from search.mcts import MCTSConfig
+from search.beam import BeamConfig
+from agents.greedy import GreedyAgent
+
+
+def _extract_params(cls, exclude: set = None) -> Dict[str, Dict[str, Any]]:
+    """Extract parameter info from class __init__ signature or dataclass fields."""
+    import dataclasses
+    exclude = exclude or set()
+    params = {}
+    
+    # Check if it's a dataclass
+    if dataclasses.is_dataclass(cls):
+        for field in dataclasses.fields(cls):
+            name = field.name
+            if name in exclude or name.startswith('_'):
+                continue
+            
+            info = {"name": name}
+            
+            # Get default value and required status
+            if field.default is not dataclasses.MISSING:
+                info["default"] = field.default
+                info["required"] = False
+            elif field.default_factory is not dataclasses.MISSING:
+                info["default"] = None
+                info["required"] = False
+            else:
+                info["default"] = None
+                info["required"] = True
+            
+            # Get type
+            if field.type is not None:
+                type_name = field.type.__name__ if hasattr(field.type, '__name__') else str(field.type)
+                info["type"] = type_name
+            elif info["default"] is not None:
+                info["type"] = type(info["default"]).__name__
+            else:
+                info["type"] = "str"
+            
+            params[name] = info
+        return params
+    
+    # Regular class - use __init__ signature
+    sig = inspect.signature(cls.__init__)
+    
+    for name, param in sig.parameters.items():
+        if name in ('self', 'engine', 'device', 'checkpoint_path') or name in exclude:
+            continue
+        if name.startswith('_'):
+            continue
+            
+        info = {"name": name}
+        
+        # Get default value and required status
+        if param.default is not inspect.Parameter.empty:
+            info["default"] = param.default
+            info["required"] = False
+        else:
+            info["default"] = None
+            info["required"] = True
+            
+        # Infer type from default or annotation
+        if param.annotation is not inspect.Parameter.empty:
+            ann = param.annotation
+            if hasattr(ann, '__origin__'):  # Optional, List, etc.
+                ann = ann.__args__[0] if ann.__args__ else str
+            info["type"] = ann.__name__ if hasattr(ann, '__name__') else str(ann)
+        elif info["default"] is not None:
+            info["type"] = type(info["default"]).__name__
+        else:
+            info["type"] = "str"
+            
+        params[name] = info
+    
+    return params
+
+
+# Registry of components and their classes
+WRAPPER_CLASSES = {
+    "greedy": GreedyWrapperEnv,
+    "greedyv2": GreedyWrapperV2Env,
+    "greedyv3": GreedyWrapperV3Env,
+    "alphachip": AlphaChipWrapperEnv,
+    "maskplace": MaskPlaceWrapperEnv,
+}
+
+SEARCH_CLASSES = {
+    "mcts": MCTSConfig,
+    "beam": BeamConfig,
+}
+
+AGENT_CLASSES = {
+    "greedy": GreedyAgent,
+}
 
 from webui.schemas import (
     SessionCreateRequest,
@@ -60,14 +165,51 @@ async def list_configs():
     return {"configs": configs}
 
 
+@app.get("/api/params/wrapper/{name}")
+async def get_wrapper_params(name: str):
+    """Get parameter info for a wrapper class."""
+    if name not in WRAPPER_CLASSES:
+        raise HTTPException(status_code=404, detail=f"Unknown wrapper: {name}")
+    cls = WRAPPER_CLASSES[name]
+    params = _extract_params(cls)
+    return {"name": name, "params": params}
+
+
+@app.get("/api/params/search/{name}")
+async def get_search_params(name: str):
+    """Get parameter info for a search config class."""
+    if name == "none":
+        return {"name": name, "params": {}}
+    if name not in SEARCH_CLASSES:
+        raise HTTPException(status_code=404, detail=f"Unknown search: {name}")
+    cls = SEARCH_CLASSES[name]
+    params = _extract_params(cls)
+    return {"name": name, "params": params}
+
+
+@app.get("/api/params/agent/{name}")
+async def get_agent_params(name: str):
+    """Get parameter info for an agent class."""
+    if name not in AGENT_CLASSES:
+        # Return empty for agents without configurable params
+        return {"name": name, "params": {}}
+    cls = AGENT_CLASSES[name]
+    params = _extract_params(cls)
+    return {"name": name, "params": params}
+
+
 @app.post("/api/session/create")
 async def create_session(req: SessionCreateRequest):
     """Create a new session."""
     try:
+        print(f"[DEBUG] create_session request: {req}")
         session = await manager.create_session(req)
         state = session.get_state()
         return {"session_id": session.sid, "state": state.model_dump()}
     except Exception as e:
+        import traceback
+        print(f"[ERROR] create_session failed: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -248,22 +390,6 @@ async def _run_search_with_updates(
     # Store latest progress for final response
     latest_progress: Dict[str, Any] = {}
     
-    # Create async-compatible callback
-    def sync_callback(progress: SearchProgress) -> None:
-        """Synchronous callback that schedules async broadcast."""
-        nonlocal latest_progress
-        latest_progress = {
-            "iteration": progress.iteration,
-            "total": progress.total,
-            "visits": progress.visits.tolist(),
-            "values": progress.values.tolist(),
-            "best_action": progress.best_action,
-            "best_value": progress.best_value,
-            "extra": progress.extra,
-        }
-        # Schedule async broadcast (fire and forget)
-        asyncio.create_task(_broadcast_progress(session, progress, callback))
-    
     # Configure search with progress callback
     # For MCTS, we need to adjust num_simulations
     if isinstance(search, MCTSSearch):
@@ -286,16 +412,39 @@ async def _run_search_with_updates(
         )
     
     # Set progress callback
-    search.set_progress_callback(sync_callback, interval=broadcast_interval)
+    loop = asyncio.get_event_loop()
     
-    try:
-        # Run search
-        best_action = search.select(
+    def threadsafe_callback(progress: SearchProgress) -> None:
+        """Thread-safe callback that schedules async broadcast."""
+        nonlocal latest_progress
+        latest_progress = {
+            "iteration": progress.iteration,
+            "total": progress.total,
+            "visits": progress.visits.tolist(),
+            "values": progress.values.tolist(),
+            "best_action": progress.best_action,
+            "best_value": progress.best_value,
+            "extra": progress.extra,
+        }
+        # Thread-safe way to schedule async task from sync context
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(_broadcast_progress(session, progress, callback))
+        )
+    
+    search.set_progress_callback(threadsafe_callback, interval=broadcast_interval)
+    
+    def run_search_sync():
+        """Run search synchronously (for executor)."""
+        return search.select(
             env=env,
             obs=session.obs,
             agent=session.agent,
             root_candidates=candidates,
         )
+    
+    try:
+        # Run search in executor to avoid blocking the event loop
+        best_action = await loop.run_in_executor(_search_executor, run_search_sync)
     finally:
         # Clear callback after search
         search.set_progress_callback(None)

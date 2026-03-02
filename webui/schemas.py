@@ -11,22 +11,8 @@ class SessionCreateRequest(BaseModel):
     agent_mode: str = "greedy"  # greedy | alphachip | maskplace
     search_mode: str = "none"  # none | mcts | beam
     
-    # Wrapper params
-    topk_k: int = 50
-    topk_scan_step: float = 5.0
-    topk_quant_step: float = 10.0
-    alphachip_grid: int = 128
-    maskplace_grid: int = 224
-    
-    # Agent checkpoint paths (optional)
-    alphachip_checkpoint: Optional[str] = None
-    maskplace_checkpoint: Optional[str] = None
-    
-    # Search params
-    mcts_sims: int = 100
-    mcts_rollout_depth: int = 5
-    beam_width: int = 8
-    beam_depth: int = 5
+    # 동적 파라미터 (wrapper_*, agent_*, search_* 형식)
+    params: Dict[str, Any] = {}
 
 
 class StepRequest(BaseModel):

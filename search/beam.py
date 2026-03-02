@@ -195,8 +195,7 @@ class BeamSearch(BaseSearch):
         """Track terminal state if tracking is enabled."""
         if self.top_tracker is None or not is_terminal:
             return
-        # cal_total_cost(): objective + 미배치 페널티 포함
-        cost = env.engine.cal_total_cost()
+        cost = env.engine.total_cost()
         positions = {str(gid): pos for gid, pos in env.engine.positions.items()}
         self.top_tracker.add(SearchResult(
             cost=cost,

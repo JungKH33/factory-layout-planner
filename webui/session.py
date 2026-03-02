@@ -86,7 +86,7 @@ class Session:
             candidates=self.candidates,
             scores=self.scores.copy() if self.scores is not None else None,
             value=self.value,
-            cost=float(self.env.engine.cal_obj()),
+            cost=float(self.env.engine.cost()),
         )
         # Truncate future history if we're not at the end
         if self.history_index < len(self.history) - 1:
@@ -251,7 +251,7 @@ class Session:
             current_gid=str(current_gid) if current_gid else None,
             candidates=candidates,
             value=float(self.value),
-            cost=float(engine.cal_obj()),
+            cost=float(engine.cost()),
             step=len(engine.placed),
             history_length=len(self.history),
             terminated=self.terminated or len(engine.remaining) == 0,
@@ -274,6 +274,11 @@ class SessionManager:
         self._counter = 0
         self._lock = asyncio.Lock()
     
+    def _get_param(self, params: dict, prefix: str, name: str, default=None):
+        """Get parameter from dynamic params dict."""
+        key = f"{prefix}_{name}"
+        return params.get(key, default)
+    
     async def create_session(self, req: SessionCreateRequest) -> Session:
         """Create a new session."""
         async with self._lock:
@@ -281,99 +286,127 @@ class SessionManager:
             sid = f"session_{self._counter}"
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
+        params = req.params or {}
         
         # Load environment
         loaded = load_env(req.env_json, device=device)
         engine = loaded.env
         engine.log = False  # Disable logging for web
         
-        # Create wrapper
+        # Create wrapper with dynamic params
+        wrapper_params = {k.replace('wrapper_', ''): v 
+                        for k, v in params.items() if k.startswith('wrapper_')}
+        
         if req.wrapper_mode == "greedy":
             env = GreedyWrapperEnv(
                 engine=engine,
-                k=req.topk_k,
-                scan_step=req.topk_scan_step,
-                quant_step=req.topk_quant_step,
+                k=wrapper_params.get('k', 50),
+                scan_step=wrapper_params.get('scan_step', 2000.0),
+                quant_step=wrapper_params.get('quant_step', 10.0),
+                p_high=wrapper_params.get('p_high', 0.1),
+                p_near=wrapper_params.get('p_near', 0.8),
+                p_coarse=wrapper_params.get('p_coarse', 0.0),
+                oversample_factor=wrapper_params.get('oversample_factor', 2),
                 random_seed=42,
             )
         elif req.wrapper_mode == "greedyv2":
             env = GreedyWrapperV2Env(
                 engine=engine,
-                k=req.topk_k,
-                scan_step=req.topk_scan_step,
-                quant_step=req.topk_quant_step,
+                k=wrapper_params.get('k', 50),
+                scan_step=wrapper_params.get('scan_step', 2000.0),
+                quant_step=wrapper_params.get('quant_step', 10.0),
+                p_high=wrapper_params.get('p_high', 0.1),
+                p_near=wrapper_params.get('p_near', 0.1),
+                p_coarse=wrapper_params.get('p_coarse', 0.0),
+                oversample_factor=wrapper_params.get('oversample_factor', 2),
                 random_seed=42,
             )
         elif req.wrapper_mode == "greedyv3":
             env = GreedyWrapperV3Env(
                 engine=engine,
-                quant_step=req.topk_quant_step,
-                k=req.topk_k,
-                oversample_factor=2,
-                edge_ratio=0.8,
+                k=wrapper_params.get('k', 50),
+                quant_step=wrapper_params.get('quant_step', 10.0),
+                oversample_factor=wrapper_params.get('oversample_factor', 2),
+                edge_ratio=wrapper_params.get('edge_ratio', 0.8),
                 random_seed=42,
             )
         elif req.wrapper_mode == "alphachip":
             env = AlphaChipWrapperEnv(
                 engine=engine,
-                coarse_grid=req.alphachip_grid,
+                coarse_grid=wrapper_params.get('coarse_grid', 128),
                 rot=0,
             )
         elif req.wrapper_mode == "maskplace":
             env = MaskPlaceWrapperEnv(
                 engine=engine,
-                grid=req.maskplace_grid,
+                grid=wrapper_params.get('grid', 224),
                 rot=0,
-                soft_coefficient=1.0,
+                soft_coefficient=wrapper_params.get('soft_coefficient', 1.0),
             )
         else:
             raise ValueError(f"Unknown wrapper_mode: {req.wrapper_mode}")
         
-        # Create agent (with wrapper compatibility check)
+        # Create agent with dynamic params
+        agent_params = {k.replace('agent_', ''): v 
+                       for k, v in params.items() if k.startswith('agent_')}
+        
         if req.agent_mode == "greedy":
-            agent = GreedyAgent(prior_temperature=1.0)
+            agent = GreedyAgent(
+                prior_temperature=agent_params.get('prior_temperature', 1.0)
+            )
         elif req.agent_mode == "alphachip":
-            # AlphaChip agent requires AlphaChip wrapper
             if req.wrapper_mode != "alphachip":
                 raise ValueError(
                     f"AlphaChipAgent requires wrapper_mode='alphachip', got '{req.wrapper_mode}'"
                 )
             agent = AlphaChipAgent(
-                coarse_grid=req.alphachip_grid,
-                checkpoint_path=req.alphachip_checkpoint,
+                coarse_grid=wrapper_params.get('coarse_grid', 128),
+                checkpoint_path=agent_params.get('checkpoint_path'),
                 device=device,
             )
         elif req.agent_mode == "maskplace":
-            # MaskPlace agent requires MaskPlace wrapper
             if req.wrapper_mode != "maskplace":
                 raise ValueError(
                     f"MaskPlaceAgent requires wrapper_mode='maskplace', got '{req.wrapper_mode}'"
                 )
             agent = MaskPlaceAgent(
                 device=device,
-                grid=req.maskplace_grid,
-                soft_coefficient=1.0,
-                checkpoint_path=req.maskplace_checkpoint,
+                grid=wrapper_params.get('grid', 224),
+                soft_coefficient=wrapper_params.get('soft_coefficient', 1.0),
+                checkpoint_path=agent_params.get('checkpoint_path'),
             )
         else:
             raise ValueError(f"Unknown agent_mode: {req.agent_mode}")
         
-        # Create search
+        # Create search with dynamic params
+        search_params = {k.replace('search_', ''): v 
+                        for k, v in params.items() if k.startswith('search_')}
+        
         if req.search_mode == "none":
             search = None
         elif req.search_mode == "mcts":
             search = MCTSSearch(
                 config=MCTSConfig(
-                    num_simulations=req.mcts_sims,
-                    rollout_enabled=True,
-                    rollout_depth=req.mcts_rollout_depth,
+                    num_simulations=search_params.get('num_simulations', 50),
+                    c_puct=search_params.get('c_puct', 2.0),
+                    rollout_enabled=search_params.get('rollout_enabled', True),
+                    rollout_depth=search_params.get('rollout_depth', 5),
+                    dirichlet_epsilon=search_params.get('dirichlet_epsilon', 0.2),
+                    dirichlet_concentration=search_params.get('dirichlet_concentration', 0.5),
+                    temperature=search_params.get('temperature', 0.0),
+                    pw_enabled=search_params.get('pw_enabled', False),
+                    pw_c=search_params.get('pw_c', 1.5),
+                    pw_alpha=search_params.get('pw_alpha', 0.5),
+                    pw_min_children=search_params.get('pw_min_children', 1),
                 )
             )
         elif req.search_mode == "beam":
             search = BeamSearch(
                 config=BeamConfig(
-                    beam_width=req.beam_width,
-                    depth=req.beam_depth,
+                    beam_width=search_params.get('beam_width', 8),
+                    depth=search_params.get('depth', 5),
+                    expansion_topk=search_params.get('expansion_topk', 16),
                 )
             )
         else:

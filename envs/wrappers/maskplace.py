@@ -126,7 +126,7 @@ class MaskPlaceWrapperEnv(BaseWrapper):
         return ok.reshape(-1)
 
     def _score_map_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
-        """Return score map [G,G] for a specific gid using batch estimate_delta_obj (lower is better)."""
+        """Return score map [G,G] for a specific gid using batch delta_cost (lower is better)."""
         g = int(self.grid)
         g2 = g * g
         if gid is None:
@@ -150,8 +150,7 @@ class MaskPlaceWrapperEnv(BaseWrapper):
         y_flat = y_bl.reshape(-1)
         r_flat = torch.full((g2,), int(rot), dtype=torch.long, device=self.device)
 
-        # estimate_delta_cost: raw Δcost (unscaled)
-        scores = self.engine.estimate_delta_cost(gid=gid, x=x_flat, y=y_flat, rot=r_flat).to(dtype=torch.float32)
+        scores = self.engine.delta_cost(gid=gid, x=x_flat, y=y_flat, rot=r_flat).to(dtype=torch.float32)
         return scores.view(g, g)
 
     def _valid_top_left_body(self, *, gid: GroupId, rot: int) -> torch.Tensor:

@@ -284,7 +284,7 @@ class MaskPlaceAgent:
         state = obs.get("state", None)
         if not isinstance(state, torch.Tensor):
             # state 없으면 heuristic: 현재 상태의 예상 최종 reward
-            return env.estimate_terminal_reward()
+            return env.terminal_reward()
         st = state.to(device=self.device, dtype=torch.float32)
         if st.dim() == 1:
             st = st.view(1, -1)

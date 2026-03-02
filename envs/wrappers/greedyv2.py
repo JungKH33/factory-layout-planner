@@ -388,7 +388,7 @@ class GreedyWrapperV2Env(BaseWrapper):
         if not pool:
             return []
         xy = torch.tensor([[c[1], c[2], c[3]] for c in pool], dtype=torch.long, device=env.device)  # [M,3]
-        scores_t = env.estimate_delta_obj(gid=gid, x=xy[:, 0], y=xy[:, 1], rot=xy[:, 2])
+        scores_t = env.delta_cost(gid=gid, x=xy[:, 0], y=xy[:, 1], rot=xy[:, 2])
         scores = scores_t.detach().to(device="cpu", dtype=torch.float32).tolist()
         order = sorted(range(len(pool)), key=lambda i: scores[i])
         return [pool[i] for i in order]
@@ -645,8 +645,8 @@ class GreedyWrapperV2Env(BaseWrapper):
         rot_orig = torch.tensor([c[3] for c in candidates], device=env.device)
         rot_alt = (rot_orig + 180) % 360
 
-        scores_orig = env.estimate_delta_obj(gid=gid, x=x, y=y, rot=rot_orig)
-        scores_alt = env.estimate_delta_obj(gid=gid, x=x, y=y, rot=rot_alt)
+        scores_orig = env.delta_cost(gid=gid, x=x, y=y, rot=rot_orig)
+        scores_alt = env.delta_cost(gid=gid, x=x, y=y, rot=rot_alt)
 
         use_alt = scores_alt < scores_orig
         final_rot = torch.where(use_alt, rot_alt, rot_orig)

@@ -141,6 +141,38 @@ def adjust_clearance_by_path(
     return (UL, UR, UB, UA)
 
 
+def calculate_cluster_clearance(
+    n_cols: int,
+    n_rows: int,
+    UL: float, UR: float, UB: float, UA: float,
+    fac_width: float,
+    fac_height: float,
+) -> Tuple[float, float, float, float]:
+    """Calculate cluster clearance with buffer logic (노트북 로직).
+    
+    Based on notebook logic (lines 743-759):
+    - buffer = min(1.0, (facility_count - 1) * 0.2)
+    - 배열 방향에 따라 clearance 감소 적용
+    
+    Returns: (cluster_UL, cluster_UR, cluster_UB, cluster_UA)
+    """
+    facility_count = n_cols * n_rows
+    buffer = min(1.0, (facility_count - 1) * 0.2)
+    
+    if fac_width < fac_height:  # 세로로 긴 경우 (vertical stacking)
+        cluster_UL = round(buffer * UL)
+        cluster_UR = round(buffer * UR)
+        cluster_UB = UB
+        cluster_UA = UA
+    else:  # 가로로 긴 경우 (horizontal stacking)
+        cluster_UL = UL
+        cluster_UR = UR
+        cluster_UB = round(buffer * UB)
+        cluster_UA = round(buffer * UA)
+    
+    return (cluster_UL, cluster_UR, cluster_UB, cluster_UA)
+
+
 def calculate_cluster_size_2d(
     fac_width: float,
     fac_height: float,
@@ -280,12 +312,13 @@ def build_groups(
         fac_width = main_fac["width"]
         fac_height = main_fac["height"]
         
-        # Check if this is a dock facility
+        # Check if this is a dock or storage facility (no clearance)
         is_dock = (main_fac.get("processGroup") == "dock" or 
                    main_fac.get("type") in ("dockIn", "dockOut"))
+        is_storage = main_fac.get("type") == "storage"
         
-        # Extract clearance from VARIABLE_AREA (dock has 0 clearance)
-        if is_dock:
+        # Extract clearance from VARIABLE_AREA (dock/storage has 0 clearance)
+        if is_dock or is_storage:
             UL, UR, UB, UA = 0, 0, 0, 0
         else:
             UL, UR, UB, UA = extract_clearance_from_variable_area(main_fac)
@@ -329,8 +362,11 @@ def build_groups(
             fac_height,
         )
         
-        # Clearance in grid units (adjusted for cluster edges)
-        # When multiple rows/cols, inner gaps are handled, outer clearance remains
+        # Clearance with buffer logic (노트북 방식)
+        cluster_UL, cluster_UR, cluster_UB, cluster_UA = calculate_cluster_clearance(
+            n_cols, n_rows, UL, UR, UB, UA, fac_width, fac_height
+        )
+        
         group_data = {
             "width": width,
             "height": height,
@@ -339,15 +375,16 @@ def build_groups(
             "ent_rel_y": ent_rel_y / scale,
             "exi_rel_x": exi_rel_x / scale,
             "exi_rel_y": exi_rel_y / scale,
-            # Clearance (scaled)
-            "facility_clearance_left": int(round(UL / scale)),
-            "facility_clearance_right": int(round(UR / scale)),
-            "facility_clearance_bottom": int(round(UB / scale)),
-            "facility_clearance_top": int(round(UA / scale)),
+            # Clearance (scaled, with buffer applied)
+            "facility_clearance_left": int(round(cluster_UL / scale)),
+            "facility_clearance_right": int(round(cluster_UR / scale)),
+            "facility_clearance_bottom": int(round(cluster_UB / scale)),
+            "facility_clearance_top": int(round(cluster_UA / scale)),
         }
         
         # Facility constraints
-        if "facilityHeightDouble" in main_fac:
+        # storage는 height 제약 없음 (배치 가능 영역 어디든 가능)
+        if "facilityHeightDouble" in main_fac and not is_storage:
             group_data["facility_height"] = main_fac["facilityHeightDouble"]
         if "facilityWeightDouble" in main_fac:
             group_data["facility_weight"] = main_fac["facilityWeightDouble"]
@@ -470,8 +507,8 @@ def build_zones(
         "placement_areas": placement_areas,
     }
     
-    if forbidden_list:
-        zones["forbidden_areas"] = forbidden_list
+    #if forbidden_list:
+        #zones["forbidden_areas"] = forbidden_list
     if height_areas:
         zones["height_areas"] = height_areas
     if weight_areas:
@@ -513,6 +550,138 @@ def build_initial_positions(
             print(f"[INFO] Group {group_id} already has initial position, skipping {fac_id}")
     
     return initial_positions
+
+
+def recalculate_group_size(
+    group: Dict[str, Any],
+    n_cols: int,
+    n_rows: int,
+    scale: float = 1.0,
+) -> None:
+    """rows/cols 변경 시 그룹 크기와 clearance 재계산 (in-place).
+    
+    calculate_cluster_clearance 재사용.
+    """
+    fac_w = group["_individual_width"] * scale  # mm 단위로 복원
+    fac_h = group["_individual_height"] * scale
+    raw_cl = group["_raw_clearance"]
+    UL, UR = raw_cl["UL"] * scale, raw_cl["UR"] * scale
+    UB, UA = raw_cl["UB"] * scale, raw_cl["UA"] * scale
+    
+    gap_x = max(UL, UR)
+    gap_y = max(UB, UA)
+    
+    # 크기 재계산
+    new_width = fac_w * n_cols + gap_x * max(0, n_cols - 1)
+    new_height = fac_h * n_rows + gap_y * max(0, n_rows - 1)
+    
+    # clearance 재계산 (buffer 적용)
+    cluster_UL, cluster_UR, cluster_UB, cluster_UA = calculate_cluster_clearance(
+        n_cols, n_rows, UL, UR, UB, UA, fac_w, fac_h
+    )
+    
+    old_size = f"{group['width']:.1f}x{group['height']:.1f}"
+    new_size = f"{new_width / scale:.1f}x{new_height / scale:.1f}"
+    
+    # 업데이트
+    group["width"] = new_width / scale
+    group["height"] = new_height / scale
+    group["_n_cols"] = n_cols
+    group["_n_rows"] = n_rows
+    group["facility_clearance_left"] = int(round(cluster_UL / scale))
+    group["facility_clearance_right"] = int(round(cluster_UR / scale))
+    group["facility_clearance_bottom"] = int(round(cluster_UB / scale))
+    group["facility_clearance_top"] = int(round(cluster_UA / scale))
+    
+    return old_size, new_size
+
+
+def validate_and_adjust_groups(
+    env_data: Dict[str, Any],
+    initial_positions: Dict[str, List],
+    scale: float = 1.0,
+    max_iterations: int = 5,
+) -> Dict[str, Any]:
+    """env로 로드 후 placeable 검사, 필요시 rows/cols 조정.
+    
+    Args:
+        env_data: 생성된 env 데이터
+        initial_positions: 이미 배치된 그룹들 (검사 제외)
+        scale: mm per grid unit
+        max_iterations: 최대 조정 반복 횟수
+    
+    Returns:
+        조정된 env_data
+    """
+    import sys
+    import tempfile
+    from pathlib import Path
+    # 프로젝트 루트를 Python path에 추가
+    project_root = Path(__file__).parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    
+    from envs.json_loader import load_env
+    
+    for iteration in range(max_iterations):
+        # 임시 JSON 파일로 저장 후 env 로드
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump(env_data, f, ensure_ascii=False)
+            temp_path = f.name
+        
+        try:
+            loaded = load_env(temp_path)
+            env = loaded.env
+            env.reset(options={"initial_positions": initial_positions})
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+        
+        # placeable 검사 (remaining = 아직 배치 안 된 그룹)
+        problematic_groups = []
+        for gid in env.remaining:
+            g = env.groups[gid]
+            if g.rotatable:
+                count = env.count_placeable(gid, rot=0) + env.count_placeable(gid, rot=90)
+            else:
+                count = env.count_placeable(gid, rot=0)
+            
+            if count == 0:
+                problematic_groups.append(gid)
+        
+        if not problematic_groups:
+            if iteration > 0:
+                print(f"[INFO] All groups have placeable positions (after {iteration} adjustments)")
+            break
+        
+        print(f"[WARN] Iteration {iteration}: {len(problematic_groups)} groups have no placeable position")
+        
+        # rows/cols 조정
+        for gid in problematic_groups:
+            group = env_data["groups"][gid]
+            n_cols = group["_n_cols"]
+            n_rows = group["_n_rows"]
+            facility_count = group["_facility_count"]
+            
+            # 더 긴 방향의 rows/cols 증가 (기존 calculate_cluster_size_2d 로직)
+            if group["width"] > group["height"]:
+                n_rows += 1
+                n_cols = math.ceil(facility_count / n_rows)
+            else:
+                n_cols += 1
+                n_rows = math.ceil(facility_count / n_cols)
+            
+            # 안전 체크
+            if n_rows > 50 or n_cols > 50:
+                print(f"[WARN] {gid} arrangement exceeded 50: {n_cols}x{n_rows}, skipping")
+                continue
+            
+            # 재계산 (함수 재사용)
+            old_size, new_size = recalculate_group_size(group, n_cols, n_rows, scale)
+            print(f"[INFO] Adjusted {gid}: "
+                  f"{group['_n_cols']}x{group['_n_rows']} cols/rows, "
+                  f"size: {old_size} -> {new_size}")
+    
+    return env_data
 
 
 def convert_sma_to_env(
@@ -612,6 +781,10 @@ def convert_sma_to_env(
     
     if initial_positions:
         env_data["reset"]["initial_positions"] = initial_positions
+    
+    # Validate and adjust groups if needed
+    print(f"\n[INFO] Validating placeable positions...")
+    env_data = validate_and_adjust_groups(env_data, initial_positions, scale)
     
     # Save
     save_json(env_data, output_path)

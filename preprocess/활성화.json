@@ -1,0 +1,663 @@
+{
+  "grid": {
+    "width": 2824,
+    "height": 1342,
+    "grid_size": 1.0
+  },
+  "env": {
+    "max_candidates": 70,
+    "default_weight": 3,
+    "default_height": 5,
+    "default_dry": 35
+  },
+  "groups": {
+    "FAC001175912878064192": {
+      "width": 107.77,
+      "height": 23.0,
+      "rotatable": true,
+      "ent_rel_x": -19.475,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 19.475,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 30,
+      "facility_clearance_right": 30,
+      "facility_clearance_bottom": 2,
+      "facility_clearance_top": 2,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 2,
+      "_n_cols": 2,
+      "_n_rows": 1,
+      "_individual_width": 38.95,
+      "_individual_height": 23.0,
+      "_main_facility_id": "FAC001175912878064192_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 29.87,
+        "UR": 29.87,
+        "UB": 10.1,
+        "UA": 10.1
+      }
+    },
+    "FAC0011759128948526143": {
+      "width": 172.24,
+      "height": 1079.49,
+      "rotatable": false,
+      "ent_rel_x": 0.0,
+      "ent_rel_y": -264.8,
+      "exi_rel_x": 0.0,
+      "exi_rel_y": 264.8,
+      "facility_clearance_left": 24,
+      "facility_clearance_right": 18,
+      "facility_clearance_bottom": 20,
+      "facility_clearance_top": 20,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "shipping"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 2,
+      "_n_rows": 2,
+      "_individual_width": 66.1,
+      "_individual_height": 529.6,
+      "_main_facility_id": "FAC0011759128948526143_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 40.04,
+        "UR": 29.87,
+        "UB": 20.29,
+        "UA": 20.29
+      }
+    },
+    "FAC0011759129057494144": {
+      "width": 2239.77,
+      "height": 90.2,
+      "rotatable": false,
+      "ent_rel_x": 20.95,
+      "ent_rel_y": -268.77,
+      "exi_rel_x": -20.5,
+      "exi_rel_y": -268.77,
+      "facility_clearance_left": 7,
+      "facility_clearance_right": 18,
+      "facility_clearance_bottom": 14,
+      "facility_clearance_top": 17,
+      "facility_height": 10,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 4,
+      "_n_cols": 1,
+      "_n_rows": 4,
+      "_individual_width": 90.2,
+      "_individual_height": 537.54,
+      "_main_facility_id": "FAC0011759129057494144_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 11.73,
+        "UR": 29.87,
+        "UB": 14.37,
+        "UA": 17.35
+      }
+    },
+    "FAC001175912906524597": {
+      "width": 245.41,
+      "height": 23.0,
+      "rotatable": true,
+      "ent_rel_x": -19.475,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 19.475,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 30,
+      "facility_clearance_right": 30,
+      "facility_clearance_bottom": 6,
+      "facility_clearance_top": 6,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 4,
+      "_n_cols": 4,
+      "_n_rows": 1,
+      "_individual_width": 38.95,
+      "_individual_height": 23.0,
+      "_main_facility_id": "FAC001175912906524597_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 29.87,
+        "UR": 29.87,
+        "UB": 10.1,
+        "UA": 10.1
+      }
+    },
+    "FAC0011759129075056141": {
+      "width": 2058.53,
+      "height": 85.19,
+      "rotatable": false,
+      "ent_rel_x": 10.595,
+      "ent_rel_y": 231.095,
+      "exi_rel_x": -33.595,
+      "exi_rel_y": 231.095,
+      "facility_clearance_left": 18,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 14,
+      "facility_clearance_top": 23,
+      "facility_height": 10,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 4,
+      "_n_cols": 1,
+      "_n_rows": 4,
+      "_individual_width": 85.19,
+      "_individual_height": 492.23,
+      "_main_facility_id": "FAC0011759129075056141_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 29.87,
+        "UR": 0.0,
+        "UB": 13.86,
+        "UA": 22.87
+      }
+    },
+    "FAC001175912907655695": {
+      "width": 1032.46,
+      "height": 79.65,
+      "rotatable": true,
+      "ent_rel_x": 162.12,
+      "ent_rel_y": -7.035,
+      "exi_rel_x": -162.12,
+      "exi_rel_y": -8.325,
+      "facility_clearance_left": 30,
+      "facility_clearance_right": 30,
+      "facility_clearance_bottom": 4,
+      "facility_clearance_top": 4,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 3,
+      "_n_rows": 1,
+      "_individual_width": 324.24,
+      "_individual_height": 79.65,
+      "_main_facility_id": "FAC001175912907655695_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 29.87,
+        "UR": 29.87,
+        "UB": 10.02,
+        "UA": 10.15
+      }
+    },
+    "FAC001175913084675798": {
+      "width": 589.09,
+      "height": 50.0,
+      "rotatable": true,
+      "ent_rel_x": 62.435,
+      "ent_rel_y": 11.62,
+      "exi_rel_x": -62.435,
+      "exi_rel_y": 11.74,
+      "facility_clearance_left": 30,
+      "facility_clearance_right": 30,
+      "facility_clearance_bottom": 12,
+      "facility_clearance_top": 6,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 4,
+      "_n_cols": 4,
+      "_n_rows": 1,
+      "_individual_width": 124.87,
+      "_individual_height": 50.0,
+      "_main_facility_id": "FAC001175913084675798_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 29.87,
+        "UR": 29.87,
+        "UB": 20.0,
+        "UA": 10.0
+      }
+    },
+    "FAC0011759298373923142": {
+      "width": 1691.05,
+      "height": 105.77,
+      "rotatable": false,
+      "ent_rel_x": -0.005,
+      "ent_rel_y": -271.885,
+      "exi_rel_x": -0.005,
+      "exi_rel_y": 271.885,
+      "facility_clearance_left": 12,
+      "facility_clearance_right": 12,
+      "facility_clearance_bottom": 8,
+      "facility_clearance_top": 8,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 1,
+      "_n_rows": 3,
+      "_individual_width": 105.77,
+      "_individual_height": 543.77,
+      "_main_facility_id": "FAC0011759298373923142_0",
+      "_type": "production",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 29.87,
+        "UR": 29.87,
+        "UB": 8.08,
+        "UA": 8.07
+      }
+    },
+    "FAC002217591286581931": {
+      "width": 57.6,
+      "height": 1168.2,
+      "rotatable": true,
+      "ent_rel_x": 0.0,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.0,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_weight": 0,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 11,
+      "_n_cols": 1,
+      "_n_rows": 11,
+      "_individual_width": 57.6,
+      "_individual_height": 106.2,
+      "_main_facility_id": "FAC002217591286581931_0",
+      "_type": "storage",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC002217591286593891": {
+      "width": 49.65,
+      "height": 273.6,
+      "rotatable": true,
+      "ent_rel_x": 0.005,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.005,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_weight": 0,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "shipping"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 1,
+      "_n_rows": 3,
+      "_individual_width": 49.65,
+      "_individual_height": 91.2,
+      "_main_facility_id": "FAC002217591286593891_0",
+      "_type": "storage",
+      "_processGroup": "PRC004",
+      "_pathWidth": 24.71,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC002217591286615091": {
+      "width": 57.6,
+      "height": 531.0,
+      "rotatable": true,
+      "ent_rel_x": 0.0,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.0,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_weight": 0,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "activation"
+      ],
+      "_facility_count": 5,
+      "_n_cols": 1,
+      "_n_rows": 5,
+      "_individual_width": 57.6,
+      "_individual_height": 106.2,
+      "_main_facility_id": "FAC002217591286615091_0",
+      "_type": "storage",
+      "_processGroup": "PRC004",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC00317591286532431": {
+      "width": 1.0,
+      "height": 1.0,
+      "rotatable": true,
+      "ent_rel_x": -0.5,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.5,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_height": 1,
+      "_facility_count": 1,
+      "_n_cols": 1,
+      "_n_rows": 1,
+      "_individual_width": 1.0,
+      "_individual_height": 1.0,
+      "_main_facility_id": "FAC00317591286532431_0",
+      "_type": "dockIn",
+      "_processGroup": "dock",
+      "_pathWidth": 29.87,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC00317591286544112": {
+      "width": 1.0,
+      "height": 1.0,
+      "rotatable": true,
+      "ent_rel_x": -0.5,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.5,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_height": 1,
+      "_facility_count": 1,
+      "_n_cols": 1,
+      "_n_rows": 1,
+      "_individual_width": 1.0,
+      "_individual_height": 1.0,
+      "_main_facility_id": "FAC00317591286544112_0",
+      "_type": "dockOut",
+      "_processGroup": "dock",
+      "_pathWidth": 24.71,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    }
+  },
+  "flow": [
+    [
+      "FAC001175912878064192",
+      "FAC002217591286615091",
+      1.0
+    ],
+    [
+      "FAC0011759128948526143",
+      "FAC002217591286593891",
+      1.0
+    ],
+    [
+      "FAC0011759129057494144",
+      "FAC002217591286581931",
+      1.0
+    ],
+    [
+      "FAC0011759129057494144",
+      "FAC002217591286615091",
+      1.0
+    ],
+    [
+      "FAC001175912906524597",
+      "FAC001175913084675798",
+      1.0
+    ],
+    [
+      "FAC001175912906524597",
+      "FAC002217591286581931",
+      1.0
+    ],
+    [
+      "FAC0011759129075056141",
+      "FAC002217591286581931",
+      1.0
+    ],
+    [
+      "FAC001175912907655695",
+      "FAC002217591286581931",
+      1.0
+    ],
+    [
+      "FAC001175913084675798",
+      "FAC002217591286581931",
+      1.0
+    ],
+    [
+      "FAC0011759298373923142",
+      "FAC0011759129075056141",
+      1.0
+    ],
+    [
+      "FAC002217591286581931",
+      "FAC0011759128948526143",
+      1.0
+    ],
+    [
+      "FAC002217591286581931",
+      "FAC0011759129057494144",
+      1.0
+    ],
+    [
+      "FAC002217591286581931",
+      "FAC001175912906524597",
+      1.0
+    ],
+    [
+      "FAC002217591286581931",
+      "FAC001175912907655695",
+      1.0
+    ],
+    [
+      "FAC002217591286581931",
+      "FAC0011759298373923142",
+      1.0
+    ],
+    [
+      "FAC002217591286593891",
+      "FAC00317591286544112",
+      1.0
+    ],
+    [
+      "FAC002217591286615091",
+      "FAC002217591286581931",
+      1.0
+    ],
+    [
+      "FAC00317591286532431",
+      "FAC001175912878064192",
+      1.0
+    ]
+  ],
+  "zones": {
+    "placement_areas": [
+      {
+        "id": "activation",
+        "rect": [
+          649,
+          0,
+          2653,
+          1350
+        ]
+      },
+      {
+        "id": "shipping",
+        "rect": [
+          0,
+          0,
+          649,
+          1350
+        ]
+      }
+    ],
+    "height_areas": [
+      {
+        "rect": [
+          2294,
+          0,
+          2653,
+          581
+        ],
+        "value": 11
+      },
+      {
+        "rect": [
+          652,
+          0,
+          1922,
+          581
+        ],
+        "value": 11
+      },
+      {
+        "rect": [
+          1922,
+          252,
+          2166,
+          581
+        ],
+        "value": 11
+      },
+      {
+        "rect": [
+          2166,
+          0,
+          2294,
+          581
+        ],
+        "value": 7
+      },
+      {
+        "rect": [
+          1922,
+          0,
+          2166,
+          252
+        ],
+        "value": 7
+      },
+      {
+        "rect": [
+          325,
+          694,
+          538,
+          1171
+        ],
+        "value": 11
+      },
+      {
+        "rect": [
+          651,
+          694,
+          2653,
+          1221
+        ],
+        "value": 11
+      }
+    ],
+    "weight_areas": [
+      {
+        "rect": [
+          0,
+          0,
+          649,
+          1224
+        ],
+        "value": 3.6
+      }
+    ]
+  },
+  "reset": {
+    "initial_positions": {
+      "FAC0011759129057494144": [
+        1083,
+        670,
+        0
+      ],
+      "FAC0011759129075056141": [
+        2186,
+        694,
+        0
+      ],
+      "FAC0011759298373923142": [
+        1814,
+        677,
+        0
+      ],
+      "FAC00317591286532431": [
+        2650,
+        630,
+        0
+      ],
+      "FAC00317591286544112": [
+        0,
+        800,
+        0
+      ]
+    }
+  }
+}

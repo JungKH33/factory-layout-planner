@@ -217,11 +217,11 @@ class AlphaChipWrapperEnv(BaseWrapper):
         return x
 
     def _build_netlist_metadata(self) -> torch.Tensor:
-        """Build AlphaChip netlist_metadata: float32 [12]. Includes cost via env.cal_obj()."""
+        """Build AlphaChip netlist_metadata: float32 [12]. Includes cost via env.cost()."""
         meta = torch.zeros((12,), dtype=torch.float32, device=self.device)
         placed_ratio = float(len(self.engine.placed)) / float(max(1, len(self.engine.node_ids)))
         remaining_ratio = float(len(self.engine.remaining)) / float(max(1, len(self.engine.node_ids)))
-        cost = float(self.engine.cal_obj())
+        cost = float(self.engine.cost())
         meta[0] = float(placed_ratio)
         meta[1] = float(remaining_ratio)
         # meta[2] = float(cost)

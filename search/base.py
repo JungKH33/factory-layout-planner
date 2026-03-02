@@ -85,7 +85,7 @@ class BaseSearch(ABC):
 @dataclass
 class SearchResult:
     """하나의 완료된 배치 결과"""
-    cost: float                                   # cal_obj() 값 (낮을수록 좋음)
+    cost: float                                   # cost() 값 (낮을수록 좋음)
     cum_reward: float                             # 누적 reward
     positions: Dict[str, Tuple[int, int, int]]    # {gid: (x, y, rot)}
     snapshot: Dict[str, Any]                      # env 복원용

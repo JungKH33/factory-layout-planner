@@ -29,37 +29,44 @@
                             <option value="converters/test.json">converters/test.json</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group with-settings">
                         <label>Wrapper:</label>
-                        <select id="wrapper-mode">
-                            <option value="greedyv3">Greedy V3</option>
-                            <option value="greedyv2">Greedy V2</option>
-                            <option value="greedy">Greedy V1</option>
-                            <option value="alphachip">AlphaChip</option>
-                            <option value="maskplace">MaskPlace</option>
-                        </select>
+                        <div class="select-with-btn">
+                            <select id="wrapper-mode">
+                                <option value="greedyv3">Greedy V3</option>
+                                <option value="greedyv2">Greedy V2</option>
+                                <option value="greedy">Greedy V1</option>
+                                <option value="alphachip">AlphaChip</option>
+                                <option value="maskplace">MaskPlace</option>
+                            </select>
+                            <button type="button" class="btn-settings" data-panel="wrapper">⚙️</button>
+                        </div>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group with-settings">
                         <label>Agent:</label>
-                        <select id="agent-mode">
-                            <option value="greedy">Greedy</option>
-                            <option value="alphachip">AlphaChip</option>
-                            <option value="maskplace">MaskPlace</option>
-                        </select>
+                        <div class="select-with-btn">
+                            <select id="agent-mode">
+                                <option value="greedy">Greedy</option>
+                                <option value="alphachip">AlphaChip</option>
+                                <option value="maskplace">MaskPlace</option>
+                            </select>
+                            <button type="button" class="btn-settings" data-panel="agent">⚙️</button>
+                        </div>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group with-settings">
                         <label>Search:</label>
-                        <select id="search-mode">
-                            <option value="none">None</option>
-                            <option value="mcts">MCTS</option>
-                            <option value="beam">Beam Search</option>
-                        </select>
+                        <div class="select-with-btn">
+                            <select id="search-mode">
+                                <option value="none">None</option>
+                                <option value="mcts">MCTS</option>
+                                <option value="beam">Beam Search</option>
+                            </select>
+                            <button type="button" class="btn-settings" data-panel="search">⚙️</button>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Top-K:</label>
-                        <input type="number" id="topk-k" value="50" min="1" max="200">
-                    </div>
+                    
                     <button id="btn-create" class="btn btn-primary">Create Session</button>
+                    <div id="session-message" class="session-message"></div>
                 </section>
 
                 <section class="panel-section">
@@ -73,10 +80,6 @@
 
                 <section class="panel-section">
                     <h3>Search</h3>
-                    <div class="form-group">
-                        <label>Simulations:</label>
-                        <input type="number" id="search-sims" value="100" min="1" max="10000">
-                    </div>
                     <div class="form-group">
                         <label>Update Interval:</label>
                         <input type="number" id="search-interval" value="10" min="1" max="100">
@@ -163,9 +166,43 @@
 
                 <section class="panel-section">
                     <h3>Candidates <span id="candidate-count">(0)</span></h3>
+                    <div class="candidate-header">
+                        <span class="col-index">#</span>
+                        <span class="col-pos">Pos</span>
+                        <span class="col-q">Q</span>
+                        <span class="col-p">P</span>
+                        <span class="col-n">N</span>
+                    </div>
                     <div id="candidate-list" class="candidate-list"></div>
                 </section>
             </aside>
+        </div>
+    </div>
+
+    <!-- Settings Side Panel -->
+    <div id="settings-panel" class="settings-panel">
+        <div class="settings-header">
+            <h3 id="settings-title">Settings</h3>
+            <button id="settings-close" class="btn-close">✕</button>
+        </div>
+        <div id="settings-content" class="settings-content">
+            <!-- Wrapper Settings (동적 생성) -->
+            <div id="panel-wrapper" class="panel-content" style="display: none;">
+                <h4 id="wrapper-title">Wrapper Settings</h4>
+                <div id="wrapper-params-container"></div>
+            </div>
+            
+            <!-- Agent Settings (동적 생성) -->
+            <div id="panel-agent" class="panel-content" style="display: none;">
+                <h4 id="agent-title">Agent Settings</h4>
+                <div id="agent-params-container"></div>
+            </div>
+            
+            <!-- Search Settings (동적 생성) -->
+            <div id="panel-search" class="panel-content" style="display: none;">
+                <h4 id="search-title">Search Settings</h4>
+                <div id="search-params-container"></div>
+            </div>
         </div>
     </div>
 

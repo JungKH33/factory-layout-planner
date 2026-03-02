@@ -1,51 +1,22 @@
 from __future__ import annotations
 
-import math
 import warnings
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gymnasium as gym
 import torch
-import torch.nn.functional as F
+
+from .core.base import PlacementBase
+from .core.maps import GridMaps
+from .core.reward import AreaReward, CandidateBatch, FlowReward, RewardComposer, RewardContext
+from .core.static import StaticSpec
 
 
 GroupId = Union[int, str]
-RectI = Tuple[int, int, int, int]  # (x0,y0,x1,y1) half-open (json-style)
 
-
-@dataclass
-class FacilityGroup:
-    id: GroupId
-    width: float   # footprint width
-    height: float  # footprint height
-    movable: bool = True
-    rotatable: bool = True
-    # Constraint attributes (do NOT conflict with footprint width/height):
-    # - facility_height: vertical height for ceiling constraint (invalid where map < value)
-    # - facility_weight: weight for weight-zone constraint (invalid where map < value)
-    # - facility_dry: dry/air-condition requirement level (invalid where map > value)
-    # Default values chosen so no constraint is applied when unspecified:
-    # - height/weight: -inf → (map < -inf) is always False
-    # - dry: inf → (map > inf) is always False
-    facility_height: float = float('-inf')
-    facility_weight: float = float('-inf')
-    facility_dry: float = float('inf')
-    # IO relative offsets (CENTER-based local coordinates).
-    # These are rotated with the facility (multiples of 90 degrees) and added to the world center.
-    ent_rel_x: float = 0.0
-    ent_rel_y: float = 0.0
-    exi_rel_x: float = 0.0
-    exi_rel_y: float = 0.0
-    # Clearance (asymmetric): L/R/B/T paddings for placement constraints.
-    # NOTE: Clearance is in grid-cell units and MUST be integer-valued.
-    facility_clearance_left: int = 0
-    facility_clearance_right: int = 0
-    facility_clearance_bottom: int = 0
-    facility_clearance_top: int = 0
-    # Placement area constraint: list of placement_area IDs this group is allowed to be placed in.
-    # None means no restriction (can be placed anywhere subject to other constraints).
-    allowed_areas: Optional[List[str]] = None
+# PlacementBase is defined in envs/base.py and imported above.
+# Re-exported here so external code can do: from envs.env import PlacementBase, GridMaps
+__all__ = ["PlacementBase", "GridMaps", "FactoryLayoutEnv"]
 
 
 class FactoryLayoutEnv(gym.Env):
@@ -64,7 +35,7 @@ class FactoryLayoutEnv(gym.Env):
         *,
         grid_width: int,
         grid_height: int,
-        groups: Dict[GroupId, FacilityGroup],
+        group_specs: Dict[GroupId, StaticSpec],
         group_flow: Optional[Dict[GroupId, Dict[GroupId, float]]] = None,
         # Forbidden areas: [{"rect": [x0, y0, x1, y1]}, ...]
         forbidden_areas: Optional[List[Dict[str, Any]]] = None,
@@ -91,7 +62,8 @@ class FactoryLayoutEnv(gym.Env):
         super().__init__()
         self.grid_width = int(grid_width)
         self.grid_height = int(grid_height)
-        self.groups = dict(groups)
+        self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+        self.group_specs = self._normalize_group_specs(group_specs)
         self.group_flow = group_flow or {}
         self.forbidden_areas = list(forbidden_areas or [])
         self.default_weight = float(default_weight)
@@ -101,7 +73,6 @@ class FactoryLayoutEnv(gym.Env):
         self.height_areas = list(height_areas or [])
         self.dry_areas = list(dry_areas or [])
         self.placement_areas = list(placement_areas or [])
-        self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
         self.max_steps = max_steps
         self.cost_scale = float(cost_scale)
         self.penalty_weight = float(penalty_weight)
@@ -111,642 +82,482 @@ class FactoryLayoutEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(1)
         self.observation_space = gym.spaces.Dict({})
 
-        # --- static id/index mapping (useful across wrappers) ---
-        self.node_ids: List[GroupId] = sorted(self.groups.keys(), key=lambda x: str(x))
+        # --- group id/index mapping (useful across wrappers) ---
+        self.node_ids: List[GroupId] = sorted(self.group_specs.keys(), key=lambda x: str(x))
         self.gid_to_idx: Dict[GroupId, int] = {gid: i for i, gid in enumerate(self.node_ids)}
 
-        # NOTE: positions store (x_bl, y_bl, rot) where (x_bl,y_bl) is the bottom-left
-        # of the rotated AABB footprint, in integer grid-cell coordinates.
-        self.positions: Dict[GroupId, Tuple[int, int, int]] = {}
+        # Placement objects are the single source of truth for placed state.
+        self.placements: Dict[GroupId, PlacementBase] = {}
         self.placed: set[GroupId] = set()
         self.remaining: List[GroupId] = []
         self._step_count = 0
+        # Per flow-edge argmin port pair cache: (src_gid, dst_gid) -> ((exit_x, exit_y), (entry_x, entry_y))
+        # Populated after each placement by _rebuild_flow_port_pairs().
+        self._flow_port_pairs: Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]] = {}
 
-        # Cached tensor maps (performance).
-        self._static_invalid = self._build_static_invalid()
-        self._occ_invalid = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-        # Clearance invalid layer accumulated from already-placed facilities (body padded by their own clearance).
-        self._clear_invalid = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-        # next-gid dependent invalid layer (zones / constraints)
-        self._zone_invalid = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-        self._invalid = self._static_invalid.clone()
-
-        # Pre-rasterized per-cell value maps (float32) for fast updates.
-        self._weight_map = self._build_value_map(self.default_weight, self.weight_areas)
-        self._height_map = self._build_value_map(self.default_height, self.height_areas)
-        self._dry_map = self._build_value_map(self.default_dry, self.dry_areas)
-
-        # Placement area masks: id → bool[H,W] where True = inside this area.
-        self._placement_area_masks: Dict[str, torch.Tensor] = self._build_placement_area_masks()
-
-        # Ensure invalid is consistent even before first reset.
-        self._recompute_invalid()
-
-    # ---- rect/zone helpers ----
-    def _build_value_map(self, default_value: float, areas: List[Dict[str, Any]]) -> torch.Tensor:
-        """Return float32[H,W] value map. Unspecified cells use `default_value`.
-
-        Expected area format: {"rect": (x0,y0,x1,y1), "value": float}
-        """
-        m = torch.full(
-            (self.grid_height, self.grid_width),
-            float(default_value),
-            dtype=torch.float32,
+        # Grid map tensors (performance cache).
+        self._maps = GridMaps(
+            grid_height=self.grid_height,
+            grid_width=self.grid_width,
             device=self.device,
+            forbidden_areas=self.forbidden_areas,
+            default_weight=self.default_weight,
+            weight_areas=self.weight_areas,
+            default_height=self.default_height,
+            height_areas=self.height_areas,
+            default_dry=self.default_dry,
+            dry_areas=self.dry_areas,
+            placement_areas=self.placement_areas,
         )
-        for a in areas:
-            if not isinstance(a, dict):
-                continue
-            rect = a.get("rect", None)
-            v = a.get("value", None)
-            if rect is None or v is None:
-                continue
-            x0, y0, x1, y1 = rect
-            x0 = max(0, min(self.grid_width, int(x0)))
-            x1 = max(0, min(self.grid_width, int(x1)))
-            y0 = max(0, min(self.grid_height, int(y0)))
-            y1 = max(0, min(self.grid_height, int(y1)))
-            if x1 > x0 and y1 > y0:
-                m[y0:y1, x0:x1] = float(v)
-        return m
 
-    def _build_placement_area_masks(self) -> Dict[str, torch.Tensor]:
-        """Build bool[H,W] masks for each placement_area. True = inside the area."""
-        masks: Dict[str, torch.Tensor] = {}
-        for area in self.placement_areas:
-            if not isinstance(area, dict):
-                continue
-            aid = str(area.get("id", ""))
-            if not aid:
-                continue
-            rect = area.get("rect", None)
-            if rect is None:
-                continue
-            x0, y0, x1, y1 = rect
-            x0 = max(0, min(self.grid_width, int(x0)))
-            x1 = max(0, min(self.grid_width, int(x1)))
-            y0 = max(0, min(self.grid_height, int(y0)))
-            y1 = max(0, min(self.grid_height, int(y1)))
-            m = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-            if x1 > x0 and y1 > y0:
-                m[y0:y1, x0:x1] = True
-            masks[aid] = m
-        return masks
+        # Single RewardComposer used for both score() (cost) and delta() (delta_cost).
+        self._reward = RewardComposer(
+            components={
+                "flow": FlowReward(),
+                "area": AreaReward(),
+            },
+            weights={
+                "flow": 1.0,
+                "area": 1.0,
+            },
+        )
 
-    def _clearance_lrtb(self, g: FacilityGroup, rot: int) -> Tuple[float, float, float, float]:
-        """Return (cL,cR,cB,cT) clearance for a group, accounting for rotation.
+    def _normalize_group_specs(self, group_specs: Dict[GroupId, StaticSpec]) -> Dict[GroupId, StaticSpec]:
+        """Normalize group specs onto env device and validate id/key consistency."""
+        out: Dict[GroupId, StaticSpec] = {}
+        for gid, s in dict(group_specs).items():
+            if not isinstance(s, StaticSpec):
+                raise TypeError(f"group_specs[{gid!r}] must be StaticSpec, got {type(s).__name__}")
+            sid = getattr(s, "id", gid)
+            if sid != gid:
+                raise ValueError(f"group_specs key/id mismatch: key={gid!r}, spec.id={sid!r}")
+            out[gid] = StaticSpec(
+                device=self.device,
+                id=gid,
+                width=int(s.width),
+                height=int(s.height),
+                entries_rel=[(float(p[0]), float(p[1])) for p in list(s.entries_rel)],
+                exits_rel=[(float(p[0]), float(p[1])) for p in list(s.exits_rel)],
+                clearance_left_rel=int(s.clearance_left_rel),
+                clearance_right_rel=int(s.clearance_right_rel),
+                clearance_bottom_rel=int(s.clearance_bottom_rel),
+                clearance_top_rel=int(s.clearance_top_rel),
+                rotatable=bool(s.rotatable),
+                allowed_areas=list(s.allowed_areas) if s.allowed_areas is not None else None,
+                facility_height=float(s.facility_height),
+                facility_weight=float(s.facility_weight),
+                facility_dry=float(s.facility_dry),
+            )
+        return out
 
-        Clearance is integer-valued in grid-cell units. Rotation is restricted to multiples of 90
-        degrees; 180/270 are supported for correctness even if callers primarily use 0/90.
+    def _group_spec(self, gid: GroupId) -> StaticSpec:
+        geom = self.group_specs.get(gid, None)
+        if geom is None:
+            raise KeyError(f"unknown gid={gid!r}")
+        return geom
+
+    def _as_long_tensor(self, v: object, *, name: str) -> torch.Tensor:
+        """Coerce scalar/tensor values to integer tensor [N] with integer-value validation."""
+        if torch.is_tensor(v):
+            t = v.to(device=self.device).view(-1)
+            if t.dtype == torch.bool:
+                raise ValueError(f"{name} must be int-like tensor, got bool")
+            if t.is_floating_point():
+                r = torch.round(t)
+                if not bool(torch.all(t == r).item()):
+                    raise ValueError(f"{name} must contain integer-valued floats")
+                t = r
+            return t.to(dtype=torch.long).view(-1)
+        return torch.tensor([int(v)], dtype=torch.long, device=self.device)
+
+    def _ensure_placement(self, gid: GroupId) -> object:
+        p = self.placements.get(gid, None)
+        if p is not None:
+            return p
+        raise KeyError(f"placement missing for gid={gid!r}")
+
+    def _placed_io_tensors(
+        self,
+    ) -> Tuple[List[GroupId], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        placed_nodes = list(self.placed)
+        p = len(placed_nodes)
+        if p == 0:
+            empty_xy = torch.empty((0, 1, 2), dtype=torch.float32, device=self.device)
+            empty_mask = torch.zeros((0, 1), dtype=torch.bool, device=self.device)
+            return placed_nodes, empty_xy, empty_xy, empty_mask, empty_mask
+
+        # Collect all ports per facility (fallback to center if none)
+        all_entries: List[List[Tuple[float, float]]] = []
+        all_exits: List[List[Tuple[float, float]]] = []
+        for pgid in placed_nodes:
+            placement = self._ensure_placement(pgid)
+            cx = float(getattr(placement, "cx", 0.0))
+            cy = float(getattr(placement, "cy", 0.0))
+
+            def _to_pairs(src: Any, fallback: Tuple[float, float]) -> List[Tuple[float, float]]:
+                if torch.is_tensor(src):
+                    t = src.to(dtype=torch.float32).view(-1, 2)
+                    return [(float(t[k, 0]), float(t[k, 1])) for k in range(int(t.shape[0]))] or [fallback]
+                if isinstance(src, (list, tuple)) and len(src) > 0:
+                    return [(float(pt[0]), float(pt[1])) for pt in src]
+                return [fallback]
+
+            all_entries.append(_to_pairs(getattr(placement, "entries", []), (cx, cy)))
+            all_exits.append(_to_pairs(getattr(placement, "exits", []), (cx, cy)))
+
+        max_e = max(len(e) for e in all_entries)
+        max_x = max(len(x) for x in all_exits)
+
+        entries_t = torch.zeros((p, max_e, 2), dtype=torch.float32, device=self.device)
+        exits_t = torch.zeros((p, max_x, 2), dtype=torch.float32, device=self.device)
+        entries_mask = torch.zeros((p, max_e), dtype=torch.bool, device=self.device)
+        exits_mask = torch.zeros((p, max_x), dtype=torch.bool, device=self.device)
+
+        for i, ports in enumerate(all_entries):
+            for j, (x, y) in enumerate(ports):
+                entries_t[i, j, 0] = x
+                entries_t[i, j, 1] = y
+                entries_mask[i, j] = True
+
+        for i, ports in enumerate(all_exits):
+            for j, (x, y) in enumerate(ports):
+                exits_t[i, j, 0] = x
+                exits_t[i, j, 1] = y
+                exits_mask[i, j] = True
+
+        return placed_nodes, entries_t, exits_t, entries_mask, exits_mask
+
+    def _placed_bbox(self, placed_nodes: List[GroupId]) -> Tuple[float, float, float, float]:
+        """Return (min_x, max_x, min_y, max_y) over all placed facilities (body bbox, no clearance)."""
+        if not placed_nodes:
+            return 0.0, 0.0, 0.0, 0.0
+        min_x, max_x = float("inf"), float("-inf")
+        min_y, max_y = float("inf"), float("-inf")
+        for pgid in placed_nodes:
+            pl = self._ensure_placement(pgid)
+            min_x = min(min_x, float(getattr(pl, "min_x")))
+            max_x = max(max_x, float(getattr(pl, "max_x")))
+            min_y = min(min_y, float(getattr(pl, "min_y")))
+            max_y = max(max_y, float(getattr(pl, "max_y")))
+        return min_x, max_x, min_y, max_y
+
+    def _build_flow_w(self, placed_nodes: List[GroupId]) -> torch.Tensor:
+        """Build [P, P] flow weight matrix from group_flow for the given placed_nodes order."""
+        p = len(placed_nodes)
+        flow_w = torch.zeros((p, p), dtype=torch.float32, device=self.device)
+        for i, src in enumerate(placed_nodes):
+            out_edges = self.group_flow.get(src, {})
+            for j, dst in enumerate(placed_nodes):
+                flow_w[i, j] = float(out_edges.get(dst, 0.0))
+        return flow_w
+
+    def _rebuild_flow_port_pairs(self) -> None:
+        """FlowReward.score(return_argmin=True)로 flow edge별 최적 port pair 캐시 재구성.
+
+        self._flow_port_pairs[(src_gid, dst_gid)] = ((exit_x, exit_y), (entry_x, entry_y))
+        flow weight가 0인 엣지는 포함하지 않음.
         """
-        cL = self._as_int(g.facility_clearance_left, name="facility_clearance_left")
-        cR = self._as_int(g.facility_clearance_right, name="facility_clearance_right")
-        cB = self._as_int(g.facility_clearance_bottom, name="facility_clearance_bottom")
-        cT = self._as_int(g.facility_clearance_top, name="facility_clearance_top")
-        r = self._norm_rot(rot)
-        if r == 90:
-            # left'  <- bottom, right' <- top, bottom' <- right, top' <- left
-            return (cB, cT, cR, cL)
-        if r == 180:
-            return (cR, cL, cT, cB)
-        if r == 270:
-            return (cT, cB, cL, cR)
-        return (cL, cR, cB, cT)
-
-    def _update_zone_invalid_for_next(self) -> None:
-        """Update `_zone_invalid` based on the *next* group (self.remaining[0])."""
-        self._zone_invalid.zero_()
-        if not self.remaining:
-            self._recompute_invalid()
+        flow_comp = self._reward.components.get("flow")
+        if flow_comp is None:
             return
-
-        gid = self.remaining[0]
-        g = self.groups.get(gid, None)
-        if g is None:
-            self._recompute_invalid()
+        placed_nodes, placed_entries, placed_exits, placed_entries_mask, placed_exits_mask = (
+            self._placed_io_tensors()
+        )
+        p = len(placed_nodes)
+        if p == 0:
+            self._flow_port_pairs = {}
             return
+        flow_w = self._build_flow_w(placed_nodes)
+        _, c_idx, p_idx = flow_comp.score(
+            placed_entries=placed_entries,
+            placed_exits=placed_exits,
+            placed_entries_mask=placed_entries_mask,
+            placed_exits_mask=placed_exits_mask,
+            flow_w=flow_w,
+            return_argmin=True,
+        )
+        if c_idx is None or p_idx is None:
+            self._flow_port_pairs = {}
+            return
+        pairs: Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+        for m, src_gid in enumerate(placed_nodes):
+            for t, dst_gid in enumerate(placed_nodes):
+                if float(flow_w[m, t].item()) <= 0.0:
+                    continue
+                ci = int(c_idx[m, t].item())
+                pi = int(p_idx[m, t].item())
+                exit_xy = (float(placed_exits[m, ci, 0].item()), float(placed_exits[m, ci, 1].item()))
+                entry_xy = (float(placed_entries[t, pi, 0].item()), float(placed_entries[t, pi, 1].item()))
+                pairs[(src_gid, dst_gid)] = (exit_xy, entry_xy)
+        self._flow_port_pairs = pairs
 
-        # Unified map-based invalidation:
-        # - Weight/Height: invalid where map < facility_value
-        # - Dry (reverse): invalid where map > facility_value
-        self._zone_invalid |= (self._weight_map < float(g.facility_weight))
-        self._zone_invalid |= (self._height_map < float(g.facility_height))
-        self._zone_invalid |= (self._dry_map > float(g.facility_dry))
+    def get_placeable_mask(self, gid: GroupId, rot: int = 0) -> torch.Tensor:
+        """전체 그리드의 배치 가능 마스크 계산."""
+        if gid not in self.group_specs:
+            return torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
+        geom = self._group_spec(gid)
+        return geom.is_placeable_mask(
+            rot=int(rot),
+            invalid=self._maps.invalid,
+            clear_invalid=self._maps.clear_invalid,
+        )
 
-        # Placement area constraint: if group has allowed_areas, invalidate outside those areas.
-        allowed = getattr(g, "allowed_areas", None)
-        if allowed is not None and len(allowed) > 0:
-            # Union of allowed placement area masks
-            allowed_mask = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-            for aid in allowed:
-                if aid in self._placement_area_masks:
-                    allowed_mask |= self._placement_area_masks[aid]
-            # Invalidate everywhere outside the allowed areas
-            self._zone_invalid |= (~allowed_mask)
-
-        self._recompute_invalid()
-
-    def _zone_invalid_for_gid(self, gid: GroupId) -> torch.Tensor:
-        """Return zone-invalid map (bool[H,W]) as if `gid` were the next group.
-
-        Used for reset-time ordering heuristics (does not mutate env state).
+    def count_placeable(self, gid: GroupId, rot: int = 0) -> int:
+        """배치 가능한 위치 개수 반환.
+        
+        Args:
+            gid: 그룹 ID
+            rot: rotation (0, 90, 180, 270)
+        
+        Returns:
+            int: 배치 가능한 위치 개수
         """
-        z = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-        g = self.groups.get(gid, None)
-        if g is None:
-            return z
+        mask = self.get_placeable_mask(gid, rot)
+        return int(mask.sum().item())
 
-        z |= (self._weight_map < float(g.facility_weight))
-        z |= (self._height_map < float(g.facility_height))
-        z |= (self._dry_map > float(g.facility_dry))
+    def is_placeable_batch(
+        self, *, gid: GroupId, x: object, y: object, rot: object
+    ) -> torch.Tensor:
+        """주어진 좌표들의 배치 가능 여부 batch 검사."""
+        if gid not in self.group_specs:
+            scalar_input = not (torch.is_tensor(x) or torch.is_tensor(y) or torch.is_tensor(rot))
+            if scalar_input:
+                n = 1
+            elif torch.is_tensor(x):
+                n = int(x.to(device=self.device).view(-1).numel())
+            elif torch.is_tensor(y):
+                n = int(y.to(device=self.device).view(-1).numel())
+            elif torch.is_tensor(rot):
+                n = int(rot.to(device=self.device).view(-1).numel())
+            else:
+                n = 1
+            return torch.zeros((n,), dtype=torch.bool, device=self.device)
+        geom = self._group_spec(gid)
+        return geom.is_placeable_batch(
+            x=x,
+            y=y,
+            rot=rot,
+            invalid=self._maps.invalid,
+            clear_invalid=self._maps.clear_invalid,
+        )
 
-        # Placement area constraint
-        allowed = getattr(g, "allowed_areas", None)
-        if allowed is not None and len(allowed) > 0:
-            allowed_mask = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-            for aid in allowed:
-                if aid in self._placement_area_masks:
-                    allowed_mask |= self._placement_area_masks[aid]
-            z |= (~allowed_mask)
-
-        return z
-
-    def _placeable_top_left_count(self, *, invalid: torch.Tensor, kw: int, kh: int) -> Tuple[int, int]:
-        """Return (placeable_count, total_top_left) for a footprint kw*kh on invalid map."""
-        kw = max(1, int(kw))
-        kh = max(1, int(kh))
-        H, W = int(invalid.shape[0]), int(invalid.shape[1])
-        H2 = H - kh + 1
-        W2 = W - kw + 1
-        if H2 <= 0 or W2 <= 0:
-            return 0, 0
-
-        inv_f = invalid.to(dtype=torch.float32).view(1, 1, H, W)
-        kernel = torch.ones((1, 1, kh, kw), device=self.device, dtype=inv_f.dtype)
-        overlap = F.conv2d(inv_f, kernel, padding=0)
-        valid_top_left = (overlap == 0).squeeze(0).squeeze(0)
-        placeable = int(valid_top_left.to(torch.int64).sum().item())
-        total = int(H2 * W2)
-
-        # Reference-only (NOT used): naive free-cell count ignores footprint connectivity.
-        # naive_free_cells = int((~invalid).to(torch.int64).sum().item())
-        return placeable, total
-
-    @staticmethod
-    def _as_int(v: object, *, name: str) -> int:
-        """Coerce integer-valued inputs (int or float with .0) to int, else raise.
-
-        This avoids silent rounding bugs when we commit to integer grid coordinates.
-        """
-        if isinstance(v, bool):
-            raise ValueError(f"{name} must be int-like, got bool")
-        if isinstance(v, int):
-            return int(v)
-        if isinstance(v, float) and v.is_integer():
-            return int(v)
-        raise ValueError(f"{name} must be int-like (e.g., 3 or 3.0), got {v!r}")
-
-    @staticmethod
-    def _norm_rot(rot: int) -> int:
-        r = int(rot) % 360
-        if r % 90 != 0:
-            raise ValueError(f"rot must be a multiple of 90 degrees, got {rot!r}")
-        return r
-
-    @classmethod
-    def rotated_size(cls, group: FacilityGroup, rot: int) -> Tuple[float, float]:
-        """Rotated AABB footprint size (w_r, h_r) in grid units.
-
-        Supports 0/90/180/270; 180 behaves like 0, 270 like 90.
-        """
-        r = cls._norm_rot(rot)
-        if r in (90, 270):
-            return (float(group.height), float(group.width))
-        return (float(group.width), float(group.height))
-
-    @staticmethod
-    def rotate_point(dx: float, dy: float, rot: int) -> Tuple[float, float]:
-        """Rotate a local point (dx,dy) by multiples of 90 degrees (counter-clockwise)."""
-        r = int(rot) % 360
-        if r % 90 != 0:
-            raise ValueError(f"rot must be a multiple of 90 degrees, got {rot!r}")
-        if r == 0:
-            return (float(dx), float(dy))
-        if r == 90:
-            return (float(dy), -float(dx))
-        if r == 180:
-            return (-float(dx), -float(dy))
-        if r == 270:
-            return (-float(dy), float(dx))
-        # unreachable due to mod 360
-        return (float(dx), float(dy))
-
-    def _recti_hits_invalid(self, rect: RectI, invalid: torch.Tensor) -> bool:
-        """Return True if rect intersects any invalid cell in `invalid` (bool[H,W], True=invalid)."""
-        x0, y0, x1, y1 = rect
-        if x0 < 0 or y0 < 0 or x1 > self.grid_width or y1 > self.grid_height:
-            return True
-        if x0 >= x1 or y0 >= y1:
-            return False
-        return bool(torch.any(invalid[y0:y1, x0:x1]).item())
-
-    def _body_rect_from_bl(self, *, gid: GroupId, x_bl: int, y_bl: int, rot: int) -> RectI:
-        g = self.groups[gid]
-        w, h = self.rotated_size(g, rot)
-        kw = self._as_int(w, name="width")
-        kh = self._as_int(h, name="height")
-        x0 = self._as_int(x_bl, name="x")
-        y0 = self._as_int(y_bl, name="y")
-        return (x0, y0, x0 + kw, y0 + kh)
-
-    # ---- public rect helpers (BL, integer, half-open) ----
-    def body_rect_bl(self, *, gid: GroupId, x_bl: int, y_bl: int, rot: int) -> RectI:
-        """Return body rect (x0,y0,x1,y1) for a pose in bottom-left integer coordinates."""
-        rot_n = self._norm_rot(int(rot))
-        return self._body_rect_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=rot_n)
-
-    def placed_body_rect_bl(self, gid: GroupId) -> RectI:
-        """Return placed body's rect (x0,y0,x1,y1) from stored BL pose in `self.positions`."""
-        x_bl, y_bl, rot = self.positions[gid]
-        return self.body_rect_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
-
-    @staticmethod
-    def _pad_rect_i(rect: RectI, *, cL: int, cR: int, cB: int, cT: int) -> RectI:
-        x0, y0, x1, y1 = rect
-        return (x0 - int(cL), y0 - int(cB), x1 + int(cR), y1 + int(cT))
-
-    def center_from_bl(self, *, gid: GroupId, x_bl: int, y_bl: int, rot: int) -> Tuple[float, float]:
-        """Return (cx,cy) center from bottom-left pose (x_bl,y_bl,rot) of rotated AABB.
-
-        NOTE: Engine stores positions as bottom-left integer coordinates. Center is derived
-        only for objective/features/visualization. Keeping this in one place avoids drift.
-        """
-        g = self.groups[gid]
-        w, h = self.rotated_size(g, rot)
-        return (float(x_bl) + float(w) / 2.0, float(y_bl) + float(h) / 2.0)
-
-    def pose_center(self, gid: GroupId) -> Tuple[float, float]:
-        """Return (cx,cy) center for an already-placed group from `self.positions`."""
-        x_bl, y_bl, rot = self.positions[gid]
-        return self.center_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
-
-    def compute_enex(self, gid: GroupId) -> Tuple[float, float, float, float]:
-        """Compute entry/exit coordinates for a placed group (center-based IO offsets)."""
-        if gid not in self.positions:
-            raise KeyError(f"compute_enex: gid not placed: {gid!r}")
-        x_bl, y_bl, rot = self.positions[gid]
-        r = self._norm_rot(int(rot))
-        cx, cy = self.center_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(r))
-        g = self.groups[gid]
-        ent_dx, ent_dy = self.rotate_point(float(g.ent_rel_x), float(g.ent_rel_y), int(r))
-        exi_dx, exi_dy = self.rotate_point(float(g.exi_rel_x), float(g.exi_rel_y), int(r))
-        return (float(cx) + float(ent_dx), float(cy) + float(ent_dy), float(cx) + float(exi_dx), float(cy) + float(exi_dy))
-
-    def estimate_delta_obj(self, *, gid: GroupId, x: object, y: object, rot: object):
+    def delta_cost(self, *, gid: GroupId, x: object, y: object, rot: object):
         """배치 시 예상 Δcost (unscaled, raw).
 
-        - scalar (int/float) 또는 batched torch.Tensor[M] 입력 지원.
+        - scalar (int/float) 또는 batched torch.Tensor[M] 입력 지원 (정수 격자 좌표).
         - is_placeable 체크 없이 빠른 계산.
+        - reward backend(Flow + Area)로 Δcost를 계산.
 
-        Delta = Δflow + Δcompactness:
-        - Flow: EXIT(src) -> ENTRY(dst) directed L1
-        - Compactness: bbox HPWL = 0.5*(dx+dy)
-        
         반환: raw cost 변화량 (낮을수록 좋은 배치)
-        
-        Note: 기존에는 scaled를 반환했으나, 이제 unscaled 반환.
-        scaled가 필요하면 estimate_reward() 사용.
         """
         scalar_input = not (torch.is_tensor(x) or torch.is_tensor(y) or torch.is_tensor(rot))
-        if gid not in self.groups:
-            raise KeyError(f"estimate_delta_obj(batch): unknown gid={gid!r}")
-        if scalar_input:
-            x = torch.tensor([float(x)], dtype=torch.float32, device=self.device)
-            y = torch.tensor([float(y)], dtype=torch.float32, device=self.device)
-            rot = torch.tensor([int(rot)], dtype=torch.long, device=self.device)
-        if not (torch.is_tensor(x) and torch.is_tensor(y) and torch.is_tensor(rot)):
-            raise TypeError("estimate_delta_obj(batch): x,y,rot must all be torch.Tensor (or all scalars)")
+        if gid not in self.group_specs:
+            raise KeyError(f"delta_cost(batch): unknown gid={gid!r}")
 
-        x_bl = x.to(device=self.device).view(-1)
-        y_bl = y.to(device=self.device).view(-1)
-        r = rot.to(device=self.device).view(-1).to(dtype=torch.long)
+        x_bl = self._as_long_tensor(x, name="x")
+        y_bl = self._as_long_tensor(y, name="y")
+        r = self._as_long_tensor(rot, name="rot")
         M = int(x_bl.numel())
         if int(y_bl.numel()) != M or int(r.numel()) != M:
-            raise ValueError("estimate_delta_obj(batch): x,y,rot must have same length")
+            raise ValueError("delta_cost(batch): x,y,rot must have same length")
 
         # Normalize rotations to {0,90,180,270}
         r = torch.remainder(r, 360)
         if torch.any((r % 90) != 0):
-            raise ValueError("estimate_delta_obj(batch): rot must be multiples of 90")
+            raise ValueError("delta_cost(batch): rot must be multiples of 90")
 
-        g = self.groups[gid]
-        w0 = float(g.width)
-        h0 = float(g.height)
-        is_swap = (r == 90) | (r == 270)
-        w = torch.where(is_swap, torch.full((M,), h0, device=self.device), torch.full((M,), w0, device=self.device))
-        h = torch.where(is_swap, torch.full((M,), w0, device=self.device), torch.full((M,), h0, device=self.device))
+        geom = self._group_spec(gid)
+        needed = set(self._reward.required())
+        feature_map = geom.build_candidate_features(
+            x_bl=x_bl,
+            y_bl=y_bl,
+            rot=r,
+            needed=needed,
+        )
+        if "entries" in feature_map:
+            feature_map["entries_mask"] = torch.ones(
+                feature_map["entries"].shape[:2],
+                dtype=torch.bool,
+                device=self.device,
+            )
+        if "exits" in feature_map:
+            feature_map["exits_mask"] = torch.ones(
+                feature_map["exits"].shape[:2],
+                dtype=torch.bool,
+                device=self.device,
+            )
+        batch = CandidateBatch.from_feature_map(
+            feature_map,
+            required=needed,
+            device=self.device,
+        )
 
-        cx = x_bl.to(dtype=torch.float32) + w.to(dtype=torch.float32) * 0.5
-        cy = y_bl.to(dtype=torch.float32) + h.to(dtype=torch.float32) * 0.5
-
-        # Rotate IO offsets (vectorized)
-        ent_dx0 = float(g.ent_rel_x)
-        ent_dy0 = float(g.ent_rel_y)
-        exi_dx0 = float(g.exi_rel_x)
-        exi_dy0 = float(g.exi_rel_y)
-
-        r0 = (r == 0)
-        r90 = (r == 90)
-        r180 = (r == 180)
-        r270 = (r == 270)
-
-        ent_dx = torch.where(
-            r0,
-            torch.full((M,), ent_dx0, device=self.device),
-            torch.where(
-                r90,
-                torch.full((M,), ent_dy0, device=self.device),
-                torch.where(
-                    r180,
-                    torch.full((M,), -ent_dx0, device=self.device),
-                    torch.full((M,), -ent_dy0, device=self.device),
-                ),
-            ),
-        ).to(dtype=torch.float32)
-        ent_dy = torch.where(
-            r0,
-            torch.full((M,), ent_dy0, device=self.device),
-            torch.where(
-                r90,
-                torch.full((M,), -ent_dx0, device=self.device),
-                torch.where(
-                    r180,
-                    torch.full((M,), -ent_dy0, device=self.device),
-                    torch.full((M,), ent_dx0, device=self.device),
-                ),
-            ),
-        ).to(dtype=torch.float32)
-
-        exi_dx = torch.where(
-            r0,
-            torch.full((M,), exi_dx0, device=self.device),
-            torch.where(
-                r90,
-                torch.full((M,), exi_dy0, device=self.device),
-                torch.where(
-                    r180,
-                    torch.full((M,), -exi_dx0, device=self.device),
-                    torch.full((M,), -exi_dy0, device=self.device),
-                ),
-            ),
-        ).to(dtype=torch.float32)
-        exi_dy = torch.where(
-            r0,
-            torch.full((M,), exi_dy0, device=self.device),
-            torch.where(
-                r90,
-                torch.full((M,), -exi_dx0, device=self.device),
-                torch.where(
-                    r180,
-                    torch.full((M,), -exi_dy0, device=self.device),
-                    torch.full((M,), exi_dx0, device=self.device),
-                ),
-            ),
-        ).to(dtype=torch.float32)
-
-        cand_en_x = cx + ent_dx
-        cand_en_y = cy + ent_dy
-        cand_ex_x = cx + exi_dx
-        cand_ex_y = cy + exi_dy
-
-        # ---- Δflow: include outgoing (gid->p) and incoming (p->gid) edges for placed nodes ----
-        placed_nodes = list(self.placed)
-        if not placed_nodes:
-            delta_flow = torch.zeros((M,), dtype=torch.float32, device=self.device)
-        else:
-            en_p: List[Tuple[float, float]] = []
-            ex_p: List[Tuple[float, float]] = []
-            w_out: List[float] = []
-            w_in: List[float] = []
-            for p in placed_nodes:
-                enx, eny, exx, exy = self.compute_enex(p)
-                en_p.append((float(enx), float(eny)))
-                ex_p.append((float(exx), float(exy)))
-                w_out.append(float(self.group_flow.get(gid, {}).get(p, 0.0)))
-                w_in.append(float(self.group_flow.get(p, {}).get(gid, 0.0)))
-
-            en_p_xy = torch.tensor(en_p, dtype=torch.float32, device=self.device)  # [P,2]
-            ex_p_xy = torch.tensor(ex_p, dtype=torch.float32, device=self.device)  # [P,2]
-            w_out_t = torch.tensor(w_out, dtype=torch.float32, device=self.device).view(1, -1)  # [1,P]
-            w_in_t = torch.tensor(w_in, dtype=torch.float32, device=self.device).view(1, -1)  # [1,P]
-
-            # out: EXIT(gid) -> ENTRY(p)
-            dist_out = (cand_ex_x.view(-1, 1) - en_p_xy[:, 0].view(1, -1)).abs() + (
-                cand_ex_y.view(-1, 1) - en_p_xy[:, 1].view(1, -1)
-            ).abs()
-            # in: EXIT(p) -> ENTRY(gid)
-            dist_in = (ex_p_xy[:, 0].view(1, -1) - cand_en_x.view(-1, 1)).abs() + (
-                ex_p_xy[:, 1].view(1, -1) - cand_en_y.view(-1, 1)
-            ).abs()
-
-            delta_flow = (dist_out * w_out_t).sum(dim=1) + (dist_in * w_in_t).sum(dim=1)
-
-        # ---- Δcompactness: bbox HPWL change ----
-        if not self.placed:
-            cur_hpwl = torch.zeros((M,), dtype=torch.float32, device=self.device)
-            # hpwl for a single rectangle does not depend on position: 0.5*(w+h)
-            new_hpwl = 0.5 * (w.to(dtype=torch.float32) + h.to(dtype=torch.float32))
-            delta_comp = new_hpwl - cur_hpwl
-        else:
-            cur_min_x = float("inf")
-            cur_max_x = float("-inf")
-            cur_min_y = float("inf")
-            cur_max_y = float("-inf")
-            for pgid in self.placed:
-                px_bl, py_bl, prot = self.positions[pgid]
-                pw, ph = self.rotated_size(self.groups[pgid], prot)
-                cur_min_x = min(cur_min_x, float(px_bl))
-                cur_max_x = max(cur_max_x, float(px_bl) + float(pw))
-                cur_min_y = min(cur_min_y, float(py_bl))
-                cur_max_y = max(cur_max_y, float(py_bl) + float(ph))
-            cur_hpwl_scalar = 0.5 * ((cur_max_x - cur_min_x) + (cur_max_y - cur_min_y))
-
-            cur_min_x_t = torch.full((M,), float(cur_min_x), dtype=torch.float32, device=self.device)
-            cur_max_x_t = torch.full((M,), float(cur_max_x), dtype=torch.float32, device=self.device)
-            cur_min_y_t = torch.full((M,), float(cur_min_y), dtype=torch.float32, device=self.device)
-            cur_max_y_t = torch.full((M,), float(cur_max_y), dtype=torch.float32, device=self.device)
-
-            cand_min_x = x_bl.to(dtype=torch.float32)
-            cand_max_x = x_bl.to(dtype=torch.float32) + w.to(dtype=torch.float32)
-            cand_min_y = y_bl.to(dtype=torch.float32)
-            cand_max_y = y_bl.to(dtype=torch.float32) + h.to(dtype=torch.float32)
-
-            new_min_x = torch.minimum(cur_min_x_t, cand_min_x)
-            new_max_x = torch.maximum(cur_max_x_t, cand_max_x)
-            new_min_y = torch.minimum(cur_min_y_t, cand_min_y)
-            new_max_y = torch.maximum(cur_max_y_t, cand_max_y)
-            new_hpwl = 0.5 * ((new_max_x - new_min_x) + (new_max_y - new_min_y))
-            delta_comp = new_hpwl - float(cur_hpwl_scalar)
-
-        delta = (delta_flow + delta_comp).to(dtype=torch.float32)
+        placed_nodes, placed_entries, placed_exits, placed_entries_mask, placed_exits_mask = self._placed_io_tensors()
+        p = len(placed_nodes)
+        w_out = torch.zeros((p,), dtype=torch.float32, device=self.device)
+        w_in = torch.zeros((p,), dtype=torch.float32, device=self.device)
+        out_edges = self.group_flow.get(gid, {})
+        for i, pgid in enumerate(placed_nodes):
+            w_out[i] = float(out_edges.get(pgid, 0.0))
+            w_in[i] = float(self.group_flow.get(pgid, {}).get(gid, 0.0))
+        cur_min_x, cur_max_x, cur_min_y, cur_max_y = self._placed_bbox(placed_nodes)
+        ctx = RewardContext(
+            placed_count=len(placed_nodes),
+            cur_min_x=cur_min_x,
+            cur_max_x=cur_max_x,
+            cur_min_y=cur_min_y,
+            cur_max_y=cur_max_y,
+            placed_entries=placed_entries,
+            placed_exits=placed_exits,
+            placed_entries_mask=placed_entries_mask,
+            placed_exits_mask=placed_exits_mask,
+            w_out=w_out,
+            w_in=w_in,
+        )
+        delta = self._reward.delta(ctx, batch).to(dtype=torch.float32)
         if scalar_input:
             return float(delta[0].item())
         return delta
 
-    def estimate_delta_cost(self, *, gid: GroupId, x: object, y: object, rot: object):
-        """배치 시 예상 Δcost (unscaled, raw).
-        
-        score map, action 비교 등에 사용.
-        반환: raw cost 변화량 (낮을수록 좋은 배치)
-        """
-        return self.estimate_delta_obj(gid=gid, x=x, y=y, rot=rot)
+    def placement_reward(self, *, gid: GroupId, x: object, y: object, rot: object):
+        """배치 시 예상 reward (scaled).
 
-    def estimate_reward(self, *, gid: GroupId, x: object, y: object, rot: object):
-        """배치 시 예상 reward.
-        
-        policy 학습, action selection 등에 사용.
         반환: -Δcost / cost_scale (높을수록 좋은 배치)
         """
-        delta_cost = self.estimate_delta_obj(gid=gid, x=x, y=y, rot=rot)
-        if torch.is_tensor(delta_cost):
-            return -delta_cost / float(self.cost_scale)
-        return -float(delta_cost) / float(self.cost_scale)
+        dc = self.delta_cost(gid=gid, x=x, y=y, rot=rot)
+        if torch.is_tensor(dc):
+            return -dc / float(self.cost_scale)
+        return -float(dc) / float(self.cost_scale)
 
-    def estimate_terminal_reward(self) -> float:
+    def terminal_reward(self) -> float:
         """현재 상태의 예상 최종 reward (MCTS leaf 평가용).
-        
-        반환: -cal_total_cost() / cost_scale
-        누적 reward와 동일한 스케일.
+
+        반환: -total_cost() / cost_scale
         """
-        return -float(self.cal_total_cost()) / float(self.cost_scale)
+        return -float(self.total_cost()) / float(self.cost_scale)
+
+    @property
+    def positions(self) -> Dict[GroupId, Tuple[int, int, int]]:
+        """(x_bl, y_bl, rot) per placed gid — backward compat with old env.py.
+
+        호출처: search/mcts.py, search/beam.py, webui/session.py,
+                postprocess/dynamic_env.py, postprocess/dynamic_group.py,
+                wrappers/alphachip.py
+        """
+        return {gid: (int(p.x_bl), int(p.y_bl), int(p.rot)) for gid, p in self.placements.items()}
 
     def try_place(self, gid: GroupId, x: float, y: float, rot: int) -> bool:
         """Place a group if feasible; returns True on success.
 
-        This mirrors `env.py` semantics (positions/placed/remaining only).
+        This mirrors `env.py` semantics (placements/placed/remaining only).
         NOTE: Engine-internal cached maps are NOT updated here.
         Use `_apply_place(..., update_caches=True)` when you need cached-map consistency.
         """
-        x_bl = self._as_int(x, name="x")
-        y_bl = self._as_int(y, name="y")
-        r = self._norm_rot(int(rot))
-        if not self.is_placeable(gid, float(x_bl), float(y_bl), int(r)):
+        if gid not in self.group_specs:
             return False
-        self.positions[gid] = (int(x_bl), int(y_bl), int(r))
-        self.placed.add(gid)
-        if gid in self.remaining:
-            self.remaining.remove(gid)
+        x_bl = int(x)
+        y_bl = int(y)
+        r = int(rot)
+        geom = self._group_spec(gid)
+        try:
+            placeable = bool(
+                geom.is_placeable(
+                    x_bl=int(x_bl),
+                    y_bl=int(y_bl),
+                    rot=int(r),
+                    invalid=self._maps.invalid,
+                    clear_invalid=self._maps.clear_invalid,
+                )
+            )
+        except Exception:
+            placeable = False
+        if not placeable:
+            return False
+        try:
+            p = self._group_spec(gid).build_placement(
+                x_bl=int(x_bl),
+                y_bl=int(y_bl),
+                rot=int(r),
+            )
+        except Exception:
+            return False
+        self._apply_resolved_placement(gid, p, update_caches=False)
         return True
 
     def _apply_place(self, gid: GroupId, x: float, y: float, rot: int, *, update_caches: bool) -> None:
         """Internal: apply a placement and optionally update engine caches."""
-        x_bl = self._as_int(x, name="x")
-        y_bl = self._as_int(y, name="y")
-        r = self._norm_rot(int(rot))
-        self.positions[gid] = (int(x_bl), int(y_bl), int(r))
+        x_bl = int(x)
+        y_bl = int(y)
+        r = int(rot)
+        p = self._group_spec(gid).build_placement(
+            x_bl=int(x_bl),
+            y_bl=int(y_bl),
+            rot=int(r),
+        )
+        self._apply_resolved_placement(gid, p, update_caches=update_caches)
+
+    def _apply_resolved_placement(
+        self,
+        gid: GroupId,
+        placement: PlacementBase,
+        *,
+        update_caches: bool,
+    ) -> None:
+        self.placements[gid] = placement
         self.placed.add(gid)
         if gid in self.remaining:
             self.remaining.remove(gid)
         if update_caches:
-            self._paint_occupancy(gid, int(x_bl), int(y_bl), int(r))
+            self._maps.paint(placement)
             # Keep zone invalid consistent for the *next* group after any real placement.
-            # This prevents stale `_zone_invalid` when callers use step_masked() (wrappers).
-            self._update_zone_invalid_for_next()
+            # This prevents stale zone_invalid when callers use step_masked() (wrappers).
+            next_geom = self.group_specs.get(self.remaining[0]) if self.remaining else None
+            self._maps.update_zone(next_geom)
+            self._rebuild_flow_port_pairs()
 
-    # ---- feasibility / objective ----
-    def is_placeable(self, gid: GroupId, x: float, y: float, rot: int) -> bool:
-        if gid not in self.groups:
-            return False
-        g = self.groups[gid]
-        if not g.movable:
-            return False
-        if (not g.rotatable) and int(rot) != 0:
-            rot = 0
-        rot = self._norm_rot(int(rot))
+    def apply_dynamic_placement(self, gid: GroupId, placement: object, *, update_caches: bool = True) -> None:
+        """Apply a pre-resolved dynamic placement object (DynamicPlacement-compatible)."""
+        if gid not in self.group_specs:
+            raise KeyError(f"unknown gid={gid!r}")
+        self._apply_resolved_placement(gid, placement, update_caches=bool(update_caches))
 
-        # IMPORTANT: (x,y) is bottom-left of rotated AABB in integer grid coordinates.
-        x_bl = self._as_int(x, name="x")
-        y_bl = self._as_int(y, name="y")
+    # ---- objective ----
 
-        rect = self._body_rect_from_bl(gid=gid, x_bl=x_bl, y_bl=y_bl, rot=rot)  # (x0,y0,x1,y1)
-
-        # clearance rotation (int)
-        cL, cR, cB, cT = self._clearance_lrtb(g, rot)
-        rect_pad = self._pad_rect_i(rect, cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT))
-
-        # boundary: BOTH body and pad must stay inside.
-        # rect = (x0, y0, x1, y1)
-        if rect[0] < 0 or rect[1] < 0 or rect[2] > self.grid_width or rect[3] > self.grid_height:
-            return False
-        if rect_pad[0] < 0 or rect_pad[1] < 0 or rect_pad[2] > self.grid_width or rect_pad[3] > self.grid_height:
-            return False
-
-        # body hits core invalid (static/occ/zone)
-        if self._recti_hits_invalid(rect, self._invalid):
-            return False
-        # body hits others' clearance
-        if self._recti_hits_invalid(rect, self._clear_invalid):
-            return False
-        # my clearance/pad hits static/occ/zone
-        if self._recti_hits_invalid(rect_pad, self._invalid):
-            return False
-
-        return True
-
-    def cal_obj(self) -> float:
-        """Simple objective: weighted L1 flow distance + compactness.
-
-        NOTE: This is a minimal version; you can replace with your notebook-accurate objective later.
-        """
+    def cost(self) -> float:
+        """현재 배치 목적함수 절댓값: weighted L1 flow + HPWL compactness."""
         if not self.placed:
             return 0.0
 
-        total_distance = 0.0
-        # Flow distance: EXIT(g1) -> ENTRY(g2) Manhattan distance (legacy behavior).
-        enex_cache: Dict[GroupId, Tuple[float, float, float, float]] = {}
-        for gid in self.placed:
-            enex_cache[gid] = self.compute_enex(gid)
-        for g1 in self.placed:
-            _en1_x, _en1_y, ex1_x, ex1_y = enex_cache[g1]
-            for g2, w in self.group_flow.get(g1, {}).items():
-                if g2 not in self.placed:
-                    continue
-                en2_x, en2_y, _ex2_x, _ex2_y = enex_cache[g2]
-                total_distance += float(w) * (abs(ex1_x - en2_x) + abs(ex1_y - en2_y))
+        placed_nodes, placed_entries, placed_exits, placed_entries_mask, placed_exits_mask = self._placed_io_tensors()
+        min_x, max_x, min_y, max_y = self._placed_bbox(placed_nodes)
+        score_ctx = RewardContext(
+            placed_count=len(placed_nodes),
+            cur_min_x=min_x,
+            cur_max_x=max_x,
+            cur_min_y=min_y,
+            cur_max_y=max_y,
+            placed_entries=placed_entries,
+            placed_exits=placed_exits,
+            placed_entries_mask=placed_entries_mask,
+            placed_exits_mask=placed_exits_mask,
+            flow_w=self._build_flow_w(placed_nodes),
+        )
+        return float(self._reward.score(score_ctx).item())
 
-        min_x = float("inf")
-        max_x = float("-inf")
-        min_y = float("inf")
-        max_y = float("-inf")
-        for gid in self.placed:
-            x_bl, y_bl, rot = self.positions[gid]
-            w, h = self.rotated_size(self.groups[gid], rot)
-            min_x = min(min_x, float(x_bl))
-            max_x = max(max_x, float(x_bl) + float(w))
-            min_y = min(min_y, float(y_bl))
-            max_y = max(max_y, float(y_bl) + float(h))
-        compactness = 0.5 * ((max_x - min_x) + (max_y - min_y))
-        return float(total_distance + compactness)
+    def total_cost(self) -> float:
+        """cost() + 미배치 페널티 (TopK 정렬·비교용).
 
-    def cal_total_cost(self) -> float:
-        """통합 cost: objective + 미배치 페널티.
-        
-        - 완료된 레이아웃: cal_obj()와 동일 (페널티 0)
-        - 미완료 레이아웃: cal_obj() + penalty_weight * remaining_ratio
-        
-        TopK 정렬 및 레이아웃 비교에 사용.
-        최종 reward = -cal_total_cost / cost_scale 관계 성립.
+        완료된 레이아웃: cost()와 동일.
+        미완료: cost() + penalty_weight * remaining_ratio.
         """
-        base = self.cal_obj()
-        penalty = float(self.penalty_weight) * self._remaining_area_ratio()
-        return base + penalty
+        return self.cost() + float(self.penalty_weight) * self._remaining_area_ratio()
 
     def _remaining_area_ratio(self) -> float:
         """Remaining area / total area ratio in [0,1]. Mirrors env.py."""
         total_area = 0.0
         remaining_area = 0.0
-        for gid, g in self.groups.items():
-            a = float(g.width) * float(g.height)
+        for gid, spec in self.group_specs.items():
+            a = float(spec.width) * float(spec.height)
             total_area += a
             if gid in self.remaining:
                 remaining_area += a
@@ -763,10 +574,80 @@ class FactoryLayoutEnv(gym.Env):
         """Penalty reward for failed placement or no valid actions (negative).
         
         스케일 통일: -(penalty_weight * remaining) / cost_scale
-        이로써 최종 reward = -cal_total_cost / cost_scale 관계 성립.
+        이로써 최종 reward = -total_cost() / cost_scale 관계 성립.
         """
         raw_penalty = float(self.penalty_weight) * self._remaining_area_ratio()
         return -raw_penalty / float(self.cost_scale)
+    
+    # ---- Export API ----
+    
+    def export_placement(self) -> Dict[str, Any]:
+        """현재 배치 상태를 JSON-serializable dict로 export.
+        
+        Returns:
+            환경 설정 + 배치 정보 + 그룹 정보 + flow 정보
+        """
+        # 배치 정보
+        placements = []
+        for gid in sorted(self.placed, key=lambda x: str(x)):
+            p = self.placements.get(gid, None)
+            if p is not None:
+                placements.append({
+                    "gid": gid,
+                    "x": int(getattr(p, "x_bl")),
+                    "y": int(getattr(p, "y_bl")),
+                    "rot": int(getattr(p, "rot")),
+                })
+        
+        # 그룹 정보
+        groups_data = {}
+        for gid, s in self.group_specs.items():
+            ent0 = s.entries_rel[0] if len(s.entries_rel) > 0 else (0.0, 0.0)
+            ex0 = s.exits_rel[0] if len(s.exits_rel) > 0 else (0.0, 0.0)
+            groups_data[gid] = {
+                "id": s.id,
+                "width": float(s.width),
+                "height": float(s.height),
+                "rotatable": bool(s.rotatable),
+                "allowed_areas": None if s.allowed_areas is None else list(s.allowed_areas),
+                "clearance_left": float(s.clearance_left_rel),
+                "clearance_right": float(s.clearance_right_rel),
+                "clearance_bottom": float(s.clearance_bottom_rel),
+                "clearance_top": float(s.clearance_top_rel),
+                "ent_rel_x": float(ent0[0]),
+                "ent_rel_y": float(ent0[1]),
+                "exi_rel_x": float(ex0[0]),
+                "exi_rel_y": float(ex0[1]),
+                "facility_height": float(s.facility_height),
+                "facility_weight": float(s.facility_weight),
+                "facility_dry": float(s.facility_dry),
+            }
+        
+        # Flow 정보
+        flow_edges = []
+        for src, dsts in self.group_flow.items():
+            for dst, weight in dsts.items():
+                flow_edges.append([src, dst, float(weight)])
+        
+        return {
+            "grid_width": int(self.grid_width),
+            "grid_height": int(self.grid_height),
+            "placements": placements,
+            "groups": groups_data,
+            "flow_edges": flow_edges,
+            "forbidden_areas": list(self.forbidden_areas),
+        }
+    
+    def save_placement(self, path: str) -> None:
+        """배치 상태를 JSON 파일로 저장.
+        
+        Args:
+            path: 저장할 파일 경로
+        """
+        import json
+        data = self.export_placement()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
     def _fail(
         self, reason: str, **extra: Any
@@ -777,7 +658,7 @@ class FactoryLayoutEnv(gym.Env):
         info.update(extra)
 
         if self.log:
-            base_cost = float(self.cal_obj())
+            base_cost = float(self.cost())
             penalty = float(self.penalty_weight) * self._remaining_area_ratio()
             total_cost = base_cost + penalty
             print(
@@ -787,58 +668,14 @@ class FactoryLayoutEnv(gym.Env):
 
         return self._build_obs(), float(reward), False, True, info
 
-    # ---- cached maps ----
-    def _build_static_invalid(self) -> torch.Tensor:
-        inv = torch.zeros((self.grid_height, self.grid_width), dtype=torch.bool, device=self.device)
-        # Build forbidden mask from forbidden_areas list
-        for area in self.forbidden_areas:
-            if not isinstance(area, dict) or "rect" not in area:
-                continue
-            rect = area["rect"]
-            x0 = max(0, min(self.grid_width, int(rect[0])))
-            x1 = max(0, min(self.grid_width, int(rect[2])))
-            y0 = max(0, min(self.grid_height, int(rect[1])))
-            y1 = max(0, min(self.grid_height, int(rect[3])))
-            if x1 > x0 and y1 > y0:
-                inv[y0:y1, x0:x1] = True
-        return inv
-
-    def _recompute_invalid(self) -> None:
-        # invalid = static | occ | zone (NO new allocation)
-        # Keep `self._invalid` as a persistent buffer and update it in-place to reduce
-        # large temporary tensors / memory traffic.
-        self._invalid.copy_(self._static_invalid)
-        self._invalid.logical_or_(self._occ_invalid)
-        self._invalid.logical_or_(self._zone_invalid)
-
-    def _paint_occupancy(self, gid: GroupId, x_bl: int, y_bl: int, rot: int) -> None:
-        """Paint occupancy and clearance maps for an already-validated placement.
-
-        Inputs are bottom-left integer coordinates of the rotated AABB footprint.
-        """
-        rot = self._norm_rot(int(rot))
-        rect = self._body_rect_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=rot)
-        x0, y0, x1, y1 = rect
-        if x0 < x1 and y0 < y1:
-            self._occ_invalid[y0:y1, x0:x1] = True
-
-        g = self.groups[gid]
-        cL, cR, cB, cT = self._clearance_lrtb(g, rot)
-        rect_pad = self._pad_rect_i(rect, cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT))
-        px0, py0, px1, py1 = rect_pad
-        if px0 < px1 and py0 < py1:
-            self._clear_invalid[py0:py1, px0:px1] = True
-
-        self._recompute_invalid()
-
     def _build_obs(self) -> Dict[str, torch.Tensor]:
         """Return *core* observation (model-agnostic).
 
         Policy-specific wrappers should attach their own extra observation fields
         on top of this core dict.
         """
-        gid = self.remaining[0] if self.remaining else (self.node_ids[0] if self.node_ids else list(self.groups.keys())[0])
-        g = self.groups[gid]
+        gid = self.remaining[0] if self.remaining else self.node_ids[0]
+        spec = self._group_spec(gid)
 
         N = int(len(self.node_ids))
         placed_mask = torch.zeros((N,), dtype=torch.bool, device=self.device)
@@ -848,19 +685,21 @@ class FactoryLayoutEnv(gym.Env):
             if idx is None:
                 continue
             placed_mask[int(idx)] = True
-            x_bl, y_bl, rot = self.positions[gid2]
-            pos[int(idx), 0] = int(x_bl)
-            pos[int(idx), 1] = int(y_bl)
-            pos[int(idx), 2] = int(rot)
+            p = self.placements.get(gid2, None)
+            if p is None:
+                continue
+            pos[int(idx), 0] = int(getattr(p, "x_bl"))
+            pos[int(idx), 1] = int(getattr(p, "y_bl"))
+            pos[int(idx), 2] = int(getattr(p, "rot"))
 
-        # current gid index (static node list)
+        # current gid index (group node list)
         cur_idx = int(self.gid_to_idx.get(gid, 0))
 
         obs: Dict[str, torch.Tensor] = {
             "current_gid_idx": torch.tensor([cur_idx], dtype=torch.long, device=self.device),
             # NOTE: normalized to canvas (grid) size for scale-stable learning.
             "next_group_wh": torch.tensor(
-                [float(g.width) / float(self.grid_width), float(g.height) / float(self.grid_height)],
+                [float(spec.width) / float(self.grid_width), float(spec.height) / float(self.grid_height)],
                 dtype=torch.float32,
                 device=self.device,
             ),
@@ -914,19 +753,30 @@ class FactoryLayoutEnv(gym.Env):
 
         # 3. 배치 시도
         gid = self.remaining[0]
-        x_bl = self._as_int(x, name="x")
-        y_bl = self._as_int(y, name="y")
-        r = self._norm_rot(int(rot))
-
-        if not self.is_placeable(gid, float(x_bl), float(y_bl), int(r)):
+        x_bl = int(x)
+        y_bl = int(y)
+        r = int(rot)
+        geom = self._group_spec(gid)
+        try:
+            placeable = bool(
+                geom.is_placeable(
+                    x_bl=int(x_bl),
+                    y_bl=int(y_bl),
+                    rot=int(r),
+                    invalid=self._maps.invalid,
+                    clear_invalid=self._maps.clear_invalid,
+                )
+            )
+        except Exception:
+            placeable = False
+        if not placeable:
             return self._fail("not_placeable", gid=gid, x=int(x_bl), y=int(y_bl), rot=int(r))
 
-        # 4. 성공 배치
-        cost_prev = float(self.cal_obj())
+        # 4. 성공 배치 (delta_cost: placed 상태 변경 전 Δcost 계산 → apply)
+        delta = float(self.delta_cost(gid=gid, x=x_bl, y=y_bl, rot=r))
         self._apply_place(gid, float(x_bl), float(y_bl), int(r), update_caches=True)
-        cost_new = float(self.cal_obj())
 
-        reward = -(cost_new - cost_prev) / float(self.cost_scale)
+        reward = -delta / float(self.cost_scale)
         terminated = len(self.remaining) == 0
         truncated = self.max_steps is not None and self._step_count >= self.max_steps
 
@@ -941,7 +791,7 @@ class FactoryLayoutEnv(gym.Env):
 
         # 5. 로깅
         if self.log and (terminated or truncated):
-            total_cost = self.cal_total_cost()
+            total_cost = self.total_cost()
             print(
                 f"[env] end: terminated={terminated} truncated={truncated} "
                 f"remaining={len(self.remaining)} placed={len(self.placed)} step={self._step_count} "
@@ -986,8 +836,9 @@ class FactoryLayoutEnv(gym.Env):
         initial_positions = options.get("initial_positions", None)
         remaining_order = options.get("remaining_order", None)
 
-        self.positions = {}
+        self.placements = {}
         self.placed = set()
+        self._flow_port_pairs = {}
 
         # Base order: "harder-first" heuristic.
         #
@@ -999,10 +850,10 @@ class FactoryLayoutEnv(gym.Env):
         #
         # TODO(ord1): Restore placeable(K/T) ordering using conv2d-based top-left feasibility.
         ordering: List[Tuple[float, float, GroupId, int]] = []
-        static_only = self._static_invalid  # no occupancy at reset-time
-        for gid in self.groups.keys():
-            gg = self.groups[gid]
-            inv = static_only | self._zone_invalid_for_gid(gid)
+        static_only = self._maps.static_invalid  # no occupancy at reset-time
+        for gid in self.group_specs.keys():
+            gg = self.group_specs[gid]
+            inv = static_only | self._maps.zone_for_geom(self.group_specs[gid])
             facility_area = float(gg.width) * float(gg.height)
             # invalid_area (requested): true invalid area on grid (cell units; 1 cell == 1 area unit here)
             invalid_area = int(inv.to(torch.int64).sum().item())
@@ -1037,7 +888,7 @@ class FactoryLayoutEnv(gym.Env):
             # Validate remaining_order elements and uniqueness.
             seen = set()
             for gid in remaining_order:
-                if gid not in self.groups:
+                if gid not in self.group_specs:
                     raise ValueError(f"reset(options): remaining_order contains unknown group id: {gid!r}")
                 if gid in seen:
                     raise ValueError(f"reset(options): remaining_order contains duplicate group id: {gid!r}")
@@ -1049,37 +900,45 @@ class FactoryLayoutEnv(gym.Env):
             self.remaining = list(base_remaining)
 
         self._step_count = 0
-        self._occ_invalid.zero_()
-        self._clear_invalid.zero_()
-        self._zone_invalid.zero_()
-        self._recompute_invalid()
+        self._maps.reset()
 
         # Apply validated initial placements (and sync caches).
         if initial_positions is not None:
             if not isinstance(initial_positions, dict):
                 raise ValueError("reset(options): initial_positions must be a dict {gid: (x,y,rot)}")
             for gid, pose in initial_positions.items():
-                if gid not in self.groups:
+                if gid not in self.group_specs:
                     raise ValueError(f"reset(options): initial_positions has unknown group id: {gid!r}")
                 if (not isinstance(pose, (tuple, list))) or len(pose) != 3:
                     raise ValueError(f"reset(options): initial_positions[{gid!r}] must be (x,y,rot)")
-                x = self._as_int(pose[0], name="x")
-                y = self._as_int(pose[1], name="y")
-                rot = self._norm_rot(int(pose[2]))
+                x = int(pose[0])
+                y = int(pose[1])
+                rot = int(pose[2])
                 if gid in self.placed:
                     raise ValueError(f"reset(options): initial_positions contains duplicate gid: {gid!r}")
-                if not self.is_placeable(gid, float(x), float(y), int(rot)):
+                geom = self._group_spec(gid)
+                try:
+                    placeable = bool(
+                        geom.is_placeable(
+                            x_bl=int(x),
+                            y_bl=int(y),
+                            rot=int(rot),
+                            invalid=self._maps.invalid,
+                            clear_invalid=self._maps.clear_invalid,
+                        )
+                    )
+                except Exception:
+                    placeable = False
+                if not placeable:
                     warnings.warn(
                         f"reset(options): invalid initial placement gid={gid!r} pose=({x},{y},{rot}) - placing anyway",
                         stacklevel=2,
                     )
                 self._apply_place(gid, float(x), float(y), int(rot), update_caches=True)
 
-            # Ensure invalid map is consistent (paint already recomputed, but keep invariant explicit).
-            self._update_zone_invalid_for_next()
-
-        # Apply next-gid dependent zones on fresh reset too.
-        self._update_zone_invalid_for_next()
+        # Recompute zone for the next group (runs regardless of initial_positions).
+        next_geom = self.group_specs.get(self.remaining[0]) if self.remaining else None
+        self._maps.update_zone(next_geom)
         return self._build_obs(), {}
 
     # ---- snapshot api (for search/MCTS) ----
@@ -1091,35 +950,33 @@ class FactoryLayoutEnv(gym.Env):
         - Tensors are cloned to ensure isolation across rollouts.
         """
         return {
-            "positions": dict(self.positions),
+            "placements": dict(self.placements),
             "placed": set(self.placed),
             "remaining": list(self.remaining),
             "_step_count": int(self._step_count),
-            "_occ_invalid": self._occ_invalid.clone(),
-            "_clear_invalid": self._clear_invalid.clone(),
-            "_invalid": self._invalid.clone(),
-            "_zone_invalid": self._zone_invalid.clone(),
+            "_occ_invalid": self._maps.occ_invalid.clone(),
+            "_clear_invalid": self._maps.clear_invalid.clone(),
+            "_invalid": self._maps.invalid.clone(),
+            "_zone_invalid": self._maps.zone_invalid.clone(),
         }
 
     def set_snapshot(self, snapshot: Dict[str, object]) -> None:
         """Restore a snapshot produced by `get_snapshot`."""
-        self.positions = dict(snapshot.get("positions", {}))  # type: ignore[arg-type]
+        self.placements = dict(snapshot.get("placements", {}))  # type: ignore[arg-type]
         self.placed = set(snapshot.get("placed", set()))  # type: ignore[arg-type]
         self.remaining = list(snapshot.get("remaining", []))  # type: ignore[arg-type]
         self._step_count = int(snapshot.get("_step_count", 0))
 
         occ = snapshot.get("_occ_invalid", None)
         clr = snapshot.get("_clear_invalid", None)
-        inv = snapshot.get("_invalid", None)
         zinv = snapshot.get("_zone_invalid", None)
         if isinstance(occ, torch.Tensor):
-            self._occ_invalid = occ.to(device=self.device, dtype=torch.bool).clone()
+            self._maps.occ_invalid.copy_(occ.to(device=self.device, dtype=torch.bool))
         if isinstance(clr, torch.Tensor):
-            self._clear_invalid = clr.to(device=self.device, dtype=torch.bool).clone()
+            self._maps.clear_invalid.copy_(clr.to(device=self.device, dtype=torch.bool))
         if isinstance(zinv, torch.Tensor):
-            self._zone_invalid = zinv.to(device=self.device, dtype=torch.bool).clone()
-        # Recompute invalid from layers to keep invariant.
-        self._recompute_invalid()
+            self._maps.zone_invalid.copy_(zinv.to(device=self.device, dtype=torch.bool))
+        self._maps.recompute()
 
     def step(self, action: int):
         x, y, rot, i, j = self.decode_action(action)
@@ -1129,78 +986,91 @@ class FactoryLayoutEnv(gym.Env):
 
 
 if __name__ == "__main__":
-    # Timing-focused smoke demo:
-    # - env init time
-    # - reset time
-    # - one step time (any action; validity not required)
     import time
+    from envs.visualizer import plot_flow_graph, plot_layout
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     dev = torch.device("cpu")
 
-    # --- groups: footprint + constraint attributes ---
-    groups = {
-        "A": FacilityGroup(id="A", width=20, height=10, rotatable=True, facility_weight=3.0, facility_height=2.0, facility_dry=0.0),
-        "B": FacilityGroup(id="B", width=15, height=15, rotatable=True, facility_weight=4.0, facility_height=2.0, facility_dry=0.0),
-        # Make C "heavy + tall + dry-sensitive" to exercise constraints.
-        "C": FacilityGroup(id="C", width=18, height=12, rotatable=True, facility_weight=12.0, facility_height=10.0, facility_dry=2.0),
+    # ---------------------------------------------------------------
+    # Group specs — BL-relative entries/exits, 여러 포트 사용 예시
+    #
+    # A (20×10): 왼쪽 2개 entry, 오른쪽·위 각 1개 exit
+    # B (15×15): 왼쪽 2개 entry, 오른쪽·아래 각 1개 exit
+    # C (18×12): 왼쪽·위 각 2개 entry (weight=12 → x>=60 영역 필수)
+    # ---------------------------------------------------------------
+    group_specs = {
+        "A": StaticSpec(
+            device=dev, id="A", width=20, height=10,
+            entries_rel=[(0.0, 3.0), (0.0, 7.0)],      # 왼쪽 끝 상·하
+            exits_rel=[(20.0, 5.0), (10.0, 10.0)],     # 오른쪽 끝 중간, 위쪽 끝 중간
+            clearance_left_rel=1, clearance_right_rel=1,
+            clearance_bottom_rel=0, clearance_top_rel=0,
+            rotatable=True, facility_weight=3.0, facility_height=2.0, facility_dry=0.0,
+        ),
+        "B": StaticSpec(
+            device=dev, id="B", width=15, height=15,
+            entries_rel=[(0.0, 5.0), (0.0, 10.0)],     # 왼쪽 끝 하·상
+            exits_rel=[(15.0, 7.5), (7.5, 0.0)],       # 오른쪽 끝 중간, 아래쪽 끝 중간
+            clearance_left_rel=1, clearance_right_rel=1,
+            clearance_bottom_rel=0, clearance_top_rel=0,
+            rotatable=True, facility_weight=4.0, facility_height=2.0, facility_dry=0.0,
+        ),
+        "C": StaticSpec(
+            device=dev, id="C", width=18, height=12,
+            entries_rel=[(0.0, 4.0), (0.0, 8.0), (9.0, 12.0)],  # 왼쪽 끝 하·상, 위쪽 끝 중간
+            exits_rel=[(18.0, 4.0), (18.0, 8.0)],                # 오른쪽 끝 하·상
+            clearance_left_rel=0, clearance_right_rel=0,
+            clearance_bottom_rel=0, clearance_top_rel=0,
+            rotatable=True, facility_weight=12.0, facility_height=10.0, facility_dry=2.0,
+        ),
     }
+    # A→B, B→C 양방향 흐름
     group_flow = {"A": {"B": 1.0}, "B": {"C": 0.7}}
 
-    # Base forbidden area (now as list of rects).
+    # 왼쪽 하단 forbidden, 오른쪽 영역(x>=60)은 weight=20 허용 (C 배치 가능)
     forbidden_areas = [{"rect": [0, 0, 30, 20]}]
+    weight_areas  = [{"rect": [60, 0, 120, 80], "value": 20.0}]
+    height_areas  = [{"rect": [0, 60, 120, 80], "value": 5.0}]
+    dry_areas     = [{"rect": [0, 40, 60, 80],  "value": 2.0}]
 
-    # Constraints (optional; unified default + area override):
-    default_weight = 10.0
-    # Right-half has higher allowable weight.
-    weight_areas = [{"rect": (60, 0, 120, 80), "value": 20.0}]
-    default_height = 20.0
-    # Top strip has low ceiling height.
-    height_areas = [{"rect": (0, 60, 120, 80), "value": 5.0}]
-    default_dry = 0.0
-    # Middle-left zone has higher dry requirement (reverse inequality).
-    dry_areas = [{"rect": (0, 40, 60, 80), "value": 2.0}]
-
+    # --- env 생성 ---
     t0 = time.perf_counter()
     env = FactoryLayoutEnv(
-        grid_width=120,
-        grid_height=80,
-        groups=groups,
-        group_flow=group_flow,
+        grid_width=120, grid_height=80,
+        group_specs=group_specs, group_flow=group_flow,
         forbidden_areas=forbidden_areas,
-        device=dev,
-        max_steps=10,
-        log=True,
-        weight_areas=weight_areas,
-        height_areas=height_areas,
-        dry_areas=dry_areas,
-        default_weight=default_weight,
-        default_height=default_height,
-        default_dry=default_dry,
+        default_weight=10.0, weight_areas=weight_areas,
+        default_height=20.0, height_areas=height_areas,
+        default_dry=0.0,     dry_areas=dry_areas,
+        device=dev, max_steps=10, log=True,
     )
     init_ms = (time.perf_counter() - t0) * 1000.0
 
+    # --- reset: A·B 사전 배치, C만 step으로 배치 ---
+    # forbidden [0,0,30,20] 밖, C는 weight_areas(x>=60) 영역 필수
+    initial_positions = {
+        "A": (32, 22, 0),   # A: 20×10, clearance 1 → x∈[31,53], y∈[22,32]
+        "B": (55, 22, 0),   # B: 15×15, clearance 1 → x∈[54,71], y∈[22,37]
+    }
     t1 = time.perf_counter()
-    obs, _ = env.reset()
+    obs, _ = env.reset(options={"initial_positions": initial_positions})
     reset_ms = (time.perf_counter() - t1) * 1000.0
 
-    # Step with any arbitrary raw placement (we only care about step runtime here).
-    # NOTE: This may be invalid/not_placeable; that's fine for this timing demo.
+    print("[env_demo]")
+    print(f" device={dev}  init_ms={init_ms:.2f}  reset_ms={reset_ms:.2f}")
+    print(f" placed={sorted(env.placed)}  remaining={env.remaining}")
+    print(f" flow_port_pairs after reset: {env._flow_port_pairs}")
+
+    # --- step: C 배치 (x>=60+clearance, weight_areas 이내) ---
     t2 = time.perf_counter()
-    obs2, reward, terminated, truncated, info = env.step_place(x=0.0, y=0.0, rot=0)
+    obs2, reward, terminated, truncated, info = env.step_place(x=74.0, y=22.0, rot=0)
     step_ms = (time.perf_counter() - t2) * 1000.0
 
-    print("[env_demo]")
-    print(" device=", dev)
-    print(f" init_ms={init_ms:.2f} reset_ms={reset_ms:.2f} step_ms={step_ms:.2f}")
-    print(" placed_now=", len(env.placed), "remaining_now=", len(env.remaining))
-    print(" step_info.reason=", info.get("reason"), "reward=", reward, "terminated=", terminated, "truncated=", truncated)
-    print(" obs_keys=", list(obs.keys()))
-    print(" obs2_keys=", list(obs2.keys()))
-
-    # Optional visualization (interactive toggles).
-    from envs.visualizer import plot_flow_graph, plot_layout
+    print(f" step_ms={step_ms:.2f}  reason={info['reason']}  reward={reward:.4f}  terminated={terminated}")
+    print(f" flow_port_pairs after step:  {env._flow_port_pairs}")
+    print(f" cost={env.cost():.4f}")
+    print(f" obs_keys={list(obs.keys())}")
 
     plot_layout(env, candidate_set=None)
     plot_flow_graph(env)
-

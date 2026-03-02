@@ -9,7 +9,7 @@ import gymnasium as gym
 import torch
 import torch.nn.functional as F
 
-from envs.env import FactoryLayoutEnv, GroupId
+from envs.env import FactoryLayoutEnv, GroupId  # new env (renamed from env_new)
 
 from .base import BaseWrapper
 
@@ -29,7 +29,7 @@ class GreedyWrapperV3Env(BaseWrapper):
         self,
         *,
         engine: FactoryLayoutEnv,
-        k: int,
+        k: int = 50,
         # B-1 (edge-based): sample candidates from the *boundary* of valid top-left map.
         quant_step: Optional[float] = 10.0,
         oversample_factor: int = 2,
@@ -126,8 +126,8 @@ class GreedyWrapperV3Env(BaseWrapper):
     # ---- candidate generation (BL int coords) ----
 
     def _wh_int(self, env: FactoryLayoutEnv, gid: GroupId, rot: int) -> Tuple[int, int]:
-        g = env.groups[gid]
-        w, h = env.rotated_size(g, int(rot))
+        g = env.group_specs[gid]
+        w, h = g._rotated_size(int(rot))
         return int(round(float(w))), int(round(float(h)))
 
     def _clamp_bl(self, env: FactoryLayoutEnv, x_bl: int, y_bl: int, w: int, h: int) -> Tuple[int, int]:
@@ -180,8 +180,8 @@ class GreedyWrapperV3Env(BaseWrapper):
         if w <= 0 or h <= 0:
             return True
 
-        invalid = env._invalid  # torch.BoolTensor[H,W]
-        clear_invalid = env._clear_invalid  # torch.BoolTensor[H,W]
+        invalid = env._maps.invalid      # torch.BoolTensor[H,W]
+        clear_invalid = env._maps.clear_invalid  # torch.BoolTensor[H,W]
 
         x0 = int(x_bl)
         y0 = int(y_bl)
@@ -212,8 +212,8 @@ class GreedyWrapperV3Env(BaseWrapper):
         w = max(1, int(w))
         h = max(1, int(h))
 
-        inv = env._invalid.to(dtype=torch.float32).view(1, 1, int(env.grid_height), int(env.grid_width))
-        clr = env._clear_invalid.to(dtype=torch.float32).view(1, 1, int(env.grid_height), int(env.grid_width))
+        inv = env._maps.invalid.to(dtype=torch.float32).view(1, 1, int(env.grid_height), int(env.grid_width))
+        clr = env._maps.clear_invalid.to(dtype=torch.float32).view(1, 1, int(env.grid_height), int(env.grid_width))
 
         # body window must avoid invalid + clear_invalid
         k_body = torch.ones((1, 1, int(h), int(w)), device=env.device, dtype=inv.dtype)
@@ -222,8 +222,8 @@ class GreedyWrapperV3Env(BaseWrapper):
         body_ok = (ov_inv == 0) & (ov_clr == 0)  # bool[H2,W2]
 
         # pad window (my clearance) must avoid invalid
-        group = env.groups[gid]
-        cL, cR, cB, cT = env._clearance_lrtb(group, int(rot))
+        group = env.group_specs[gid]
+        cL, cR, cB, cT = group._clearance_lrtb(int(rot))
         cL_i, cR_i, cB_i, cT_i = int(cL), int(cR), int(cB), int(cT)
         kw = max(1, int(w) + cL_i + cR_i)
         kh = max(1, int(h) + cB_i + cT_i)
@@ -301,8 +301,8 @@ class GreedyWrapperV3Env(BaseWrapper):
         self, env: FactoryLayoutEnv, next_group_id: GroupId
     ) -> Tuple[List[Tuple[GroupId, int, int, int]], torch.Tensor]:
         device = env.device
-        group = env.groups[next_group_id]
-        rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
+        group = env.group_specs[next_group_id]
+        rotations = (0, 90) if group.rotatable else (0,)
         wh_cache = {int(r): self._wh_int(env, next_group_id, int(r)) for r in rotations}
         valid_by_rot = {int(r): self._build_valid_map(env, gid=next_group_id, rot=int(r), wh_cache=wh_cache) for r in rotations}
         edge_by_rot = {int(r): self._build_edge_map(valid_by_rot[int(r)]) for r in rotations}
@@ -338,7 +338,7 @@ class GreedyWrapperV3Env(BaseWrapper):
             (src, c)
             for src, c in unique_tagged
             if (not self._cheap_reject_body(env, gid=next_group_id, x_bl=int(c[1]), y_bl=int(c[2]), rot=int(c[3]), wh_cache=wh_cache))
-            and env.is_placeable(next_group_id, float(c[1]), float(c[2]), int(c[3]))
+            and group.is_placeable(x_bl=int(c[1]), y_bl=int(c[2]), rot=int(c[3]), invalid=env._maps.invalid, clear_invalid=env._maps.clear_invalid)
         ]
         # Keep order: edge candidates first, then fill. No scoring in v3.
         final: List[Tuple[GroupId, int, int, int]] = [c for _src, c in valid_tagged][: int(self.k)]
@@ -363,8 +363,8 @@ class GreedyWrapperV3Env(BaseWrapper):
         rot_orig = torch.tensor([c[3] for c in candidates], device=env.device)
         rot_alt = (rot_orig + 180) % 360
 
-        scores_orig = env.estimate_delta_obj(gid=gid, x=x, y=y, rot=rot_orig)
-        scores_alt = env.estimate_delta_obj(gid=gid, x=x, y=y, rot=rot_alt)
+        scores_orig = env.delta_cost(gid=gid, x=x, y=y, rot=rot_orig)
+        scores_alt = env.delta_cost(gid=gid, x=x, y=y, rot=rot_alt)
 
         use_alt = scores_alt < scores_orig
         final_rot = torch.where(use_alt, rot_alt, rot_orig)

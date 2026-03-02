@@ -1,0 +1,440 @@
+{
+  "grid": {
+    "width": 2062,
+    "height": 1360,
+    "grid_size": 1.0
+  },
+  "env": {
+    "max_candidates": 70,
+    "default_weight": 3,
+    "default_height": 5,
+    "default_dry": 35
+  },
+  "groups": {
+    "FAC0011759108431281110": {
+      "width": 890.28,
+      "height": 458.0,
+      "rotatable": false,
+      "ent_rel_x": 140.0,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": -140.0,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 25,
+      "facility_clearance_right": 25,
+      "facility_clearance_bottom": 17,
+      "facility_clearance_top": 17,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "조립"
+      ],
+      "_facility_count": 19,
+      "_n_cols": 3,
+      "_n_rows": 9,
+      "_individual_width": 280.0,
+      "_individual_height": 36.0,
+      "_main_facility_id": "FAC0011759108431281110_0",
+      "_type": "production",
+      "_processGroup": "PRC003",
+      "_pathWidth": 25.14,
+      "_raw_clearance": {
+        "UL": 25.14,
+        "UR": 25.14,
+        "UB": 16.75,
+        "UA": 16.75
+      }
+    },
+    "FAC0011759108435699135": {
+      "width": 750.0,
+      "height": 368.15,
+      "rotatable": false,
+      "ent_rel_x": -7.88,
+      "ent_rel_y": -22.5,
+      "exi_rel_x": 30.2,
+      "exi_rel_y": -22.5,
+      "facility_clearance_left": 15,
+      "facility_clearance_right": 15,
+      "facility_clearance_bottom": 20,
+      "facility_clearance_top": 15,
+      "facility_height": 4.5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "조립"
+      ],
+      "_facility_count": 54,
+      "_n_cols": 9,
+      "_n_rows": 6,
+      "_individual_width": 70.0,
+      "_individual_height": 45.0,
+      "_main_facility_id": "FAC0011759108435699135_0",
+      "_type": "production",
+      "_processGroup": "PRC003",
+      "_pathWidth": 19.63,
+      "_raw_clearance": {
+        "UL": 15.0,
+        "UR": 15.0,
+        "UB": 19.63,
+        "UA": 15.0
+      }
+    },
+    "FAC0011759108437107114": {
+      "width": 1894.83,
+      "height": 215.0,
+      "rotatable": false,
+      "ent_rel_x": -468.8,
+      "ent_rel_y": -14.97,
+      "exi_rel_x": 468.8,
+      "exi_rel_y": 19.74,
+      "facility_clearance_left": 20,
+      "facility_clearance_right": 20,
+      "facility_clearance_bottom": 9,
+      "facility_clearance_top": 9,
+      "facility_height": 4.5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "Assy"
+      ],
+      "_facility_count": 4,
+      "_n_cols": 2,
+      "_n_rows": 2,
+      "_individual_width": 937.6,
+      "_individual_height": 100.0,
+      "_main_facility_id": "FAC0011759108437107114_0",
+      "_type": "production",
+      "_processGroup": "PRC003",
+      "_pathWidth": 19.63,
+      "_raw_clearance": {
+        "UL": 19.63,
+        "UR": 19.63,
+        "UB": 15.0,
+        "UA": 15.0
+      }
+    },
+    "FAC0011759108449210138": {
+      "width": 112.45,
+      "height": 346.62,
+      "rotatable": true,
+      "ent_rel_x": -56.225,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 56.225,
+      "exi_rel_y": 12.75,
+      "facility_clearance_left": 12,
+      "facility_clearance_right": 10,
+      "facility_clearance_bottom": 4,
+      "facility_clearance_top": 3,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "원부자재"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 1,
+      "_n_rows": 3,
+      "_individual_width": 112.45,
+      "_individual_height": 113.16,
+      "_main_facility_id": "FAC0011759108449210138_0",
+      "_type": "production",
+      "_processGroup": "PRC003",
+      "_pathWidth": 24.71,
+      "_raw_clearance": {
+        "UL": 29.07,
+        "UR": 24.71,
+        "UB": 3.57,
+        "UA": 3.1
+      }
+    },
+    "FAC0011759108481211130": {
+      "width": 28.07,
+      "height": 887.42,
+      "rotatable": true,
+      "ent_rel_x": -0.005,
+      "ent_rel_y": -20.42,
+      "exi_rel_x": -0.005,
+      "exi_rel_y": 20.42,
+      "facility_clearance_left": 9,
+      "facility_clearance_right": 9,
+      "facility_clearance_bottom": 20,
+      "facility_clearance_top": 20,
+      "facility_height": 5,
+      "facility_weight": 3,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "조립"
+      ],
+      "_facility_count": 15,
+      "_n_cols": 1,
+      "_n_rows": 15,
+      "_individual_width": 28.07,
+      "_individual_height": 40.84,
+      "_main_facility_id": "FAC0011759108481211130_0",
+      "_type": "production",
+      "_processGroup": "PRC003",
+      "_pathWidth": 19.63,
+      "_raw_clearance": {
+        "UL": 9.0,
+        "UR": 9.0,
+        "UB": 19.63,
+        "UA": 19.63
+      }
+    },
+    "FAC002217591084738371": {
+      "width": 45.6,
+      "height": 273.6,
+      "rotatable": true,
+      "ent_rel_x": 0.0,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.0,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_weight": 0,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "원부자재"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 1,
+      "_n_rows": 3,
+      "_individual_width": 45.6,
+      "_individual_height": 91.2,
+      "_main_facility_id": "FAC002217591084738371_0",
+      "_type": "storage",
+      "_processGroup": "PRC003",
+      "_pathWidth": 24.71,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC002217591084755371": {
+      "width": 33.6,
+      "height": 201.6,
+      "rotatable": true,
+      "ent_rel_x": 0.0,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.0,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_weight": 0,
+      "facility_dry": 35,
+      "allowed_areas": [
+        "조립"
+      ],
+      "_facility_count": 3,
+      "_n_cols": 1,
+      "_n_rows": 3,
+      "_individual_width": 33.6,
+      "_individual_height": 67.2,
+      "_main_facility_id": "FAC002217591084755371_0",
+      "_type": "storage",
+      "_processGroup": "PRC003",
+      "_pathWidth": 19.63,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC00317591084013601": {
+      "width": 1.0,
+      "height": 1.0,
+      "rotatable": true,
+      "ent_rel_x": -0.5,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.5,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_height": 1,
+      "_facility_count": 1,
+      "_n_cols": 1,
+      "_n_rows": 1,
+      "_individual_width": 1.0,
+      "_individual_height": 1.0,
+      "_main_facility_id": "FAC00317591084013601_0",
+      "_type": "dockIn",
+      "_processGroup": "dock",
+      "_pathWidth": 4.0,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC00317591084583873": {
+      "width": 1.0,
+      "height": 1.0,
+      "rotatable": true,
+      "ent_rel_x": -0.5,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.5,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_height": 1,
+      "_facility_count": 1,
+      "_n_cols": 1,
+      "_n_rows": 1,
+      "_individual_width": 1.0,
+      "_individual_height": 1.0,
+      "_main_facility_id": "FAC00317591084583873_0",
+      "_type": "dockInOut",
+      "_processGroup": "dock",
+      "_pathWidth": 4.0,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    },
+    "FAC00317591084598242": {
+      "width": 1.0,
+      "height": 1.0,
+      "rotatable": true,
+      "ent_rel_x": -0.5,
+      "ent_rel_y": 0.0,
+      "exi_rel_x": 0.5,
+      "exi_rel_y": 0.0,
+      "facility_clearance_left": 0,
+      "facility_clearance_right": 0,
+      "facility_clearance_bottom": 0,
+      "facility_clearance_top": 0,
+      "facility_height": 1,
+      "_facility_count": 1,
+      "_n_cols": 1,
+      "_n_rows": 1,
+      "_individual_width": 1.0,
+      "_individual_height": 1.0,
+      "_main_facility_id": "FAC00317591084598242_0",
+      "_type": "dockOut",
+      "_processGroup": "dock",
+      "_pathWidth": 25.22,
+      "_raw_clearance": {
+        "UL": 0.0,
+        "UR": 0.0,
+        "UB": 0.0,
+        "UA": 0.0
+      }
+    }
+  },
+  "flow": [
+    [
+      "FAC0011759108431281110",
+      "FAC0011759108435699135",
+      1.0
+    ],
+    [
+      "FAC0011759108435699135",
+      "FAC0011759108481211130",
+      1.0
+    ],
+    [
+      "FAC0011759108437107114",
+      "FAC00317591084598242",
+      1.0
+    ],
+    [
+      "FAC0011759108449210138",
+      "FAC002217591084755371",
+      1.0
+    ],
+    [
+      "FAC0011759108481211130",
+      "FAC0011759108437107114",
+      1.0
+    ],
+    [
+      "FAC002217591084738371",
+      "FAC0011759108449210138",
+      1.0
+    ],
+    [
+      "FAC002217591084755371",
+      "FAC0011759108437107114",
+      1.0
+    ],
+    [
+      "FAC00317591084013601",
+      "FAC0011759108431281110",
+      1.0
+    ],
+    [
+      "FAC00317591084583873",
+      "FAC002217591084738371",
+      1.0
+    ]
+  ],
+  "zones": {
+    "placement_areas": [
+      {
+        "id": "조립",
+        "rect": [
+          672,
+          0,
+          2062,
+          1222
+        ]
+      },
+      {
+        "id": "Assy",
+        "rect": [
+          735,
+          236,
+          1248,
+          1231
+        ]
+      },
+      {
+        "id": "원부자재",
+        "rect": [
+          7,
+          0,
+          495,
+          544
+        ]
+      }
+    ]
+  },
+  "reset": {
+    "initial_positions": {
+      "FAC0011759108437107114": [
+        980,
+        260,
+        90
+      ],
+      "FAC00317591084013601": [
+        2062,
+        682,
+        0
+      ],
+      "FAC00317591084583873": [
+        251,
+        0,
+        0
+      ],
+      "FAC00317591084598242": [
+        672,
+        682,
+        0
+      ]
+    }
+  }
+}

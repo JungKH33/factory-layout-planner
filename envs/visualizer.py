@@ -13,7 +13,6 @@ import networkx as nx
 
 from typing import Any
 
-from envs.env import FactoryLayoutEnv
 from envs.wrappers.candidate_set import CandidateSet
 
 
@@ -319,7 +318,8 @@ def _draw_layout_layers(
             )
 
     # engine internal masks (start hidden)
-    inv = getattr(engine, "_invalid", None)
+    maps = getattr(engine, "_maps", None)
+    inv = maps.invalid if maps is not None else getattr(engine, "_invalid", None)
     if inv is not None:
         mi = _plot_mask(ax, inv, color="#8b0000", alpha=1)
         if mi is not None:
@@ -327,8 +327,8 @@ def _draw_layout_layers(
             misc_artists["invalid_mask"].append(mi)
 
     # clearance-only ring
-    clr = getattr(engine, "_clear_invalid", None)
-    occ = getattr(engine, "_occ_invalid", None)
+    clr = maps.clear_invalid if maps is not None else getattr(engine, "_clear_invalid", None)
+    occ = maps.occ_invalid if maps is not None else getattr(engine, "_occ_invalid", None)
     clr_vis = (clr & (~occ)) if (clr is not None and occ is not None) else clr
     if clr_vis is not None:
         mc2 = _plot_mask(ax, clr_vis, color="#ff6b6b", alpha=1)
@@ -338,21 +338,18 @@ def _draw_layout_layers(
 
     # placed rects/labels
     for gid in getattr(engine, "placed", []):
-        x_bl, y_bl, rot = engine.positions[gid]
-        group = engine.groups[gid]
-        w, h = engine.rotated_size(group, rot)
+        p = engine.placements[gid]
         rect = patches.Rectangle(
-            (float(x_bl), float(y_bl)),
-            float(w),
-            float(h),
+            (float(p.x_bl), float(p.y_bl)),
+            float(p.w),
+            float(p.h),
             linewidth=1.2,
             edgecolor="black",
             facecolor="orange",
             alpha=0.6,
         )
         ax.add_patch(rect)
-        cx, cy = engine.pose_center(gid)
-        ax.text(cx, cy, str(gid), ha="center", va="center", fontsize=8)
+        ax.text(p.cx, p.cy, str(gid), ha="center", va="center", fontsize=8)
 
     # candidates (optional; caller may render their own)
     if candidate_set is not None:
@@ -367,7 +364,7 @@ def _draw_layout_layers(
             if gid is None:
                 raise ValueError("CandidateSet must include `gid` (or meta['gid']) to convert BL->center for plotting.")
             for x_bl, y_bl, rot in xyrot.detach().cpu().tolist():
-                cx, cy = engine.center_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
                 xs.append(float(cx))
                 ys.append(float(cy))
             sc = ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
@@ -384,7 +381,7 @@ def _draw_layout_layers(
     misc_artists["flow"].extend(flow_art)
 
     # score overlay
-    score = engine.cal_obj()
+    score = engine.cost()
     score_text = ax.text(
         0.01,
         0.99,
@@ -548,7 +545,7 @@ def browse_steps(
         cs: list[float] = []
         for k in idxs.tolist():
             x_bl, y_bl, rot = xyrot[k].tolist()
-            cx, cy = engine.center_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
             xs.append(float(cx))
             ys.append(float(cy))
             cs.append(float(scores[k]))
@@ -559,7 +556,7 @@ def browse_steps(
             sel_xy = (0.0, 0.0)
         else:
             x_bl, y_bl, rot = xyrot[sel].tolist()
-            cx, cy = engine.center_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
             sel_xy = (float(cx), float(cy))
 
         return np.asarray(xs), np.asarray(ys), np.asarray(cs, dtype=np.float32), sel_xy
@@ -782,21 +779,18 @@ def save_layout(
                     ax.add_patch(p)
 
     for gid in engine.placed:
-        x_bl, y_bl, rot = engine.positions[gid]
-        group = engine.groups[gid]
-        w, h = engine.rotated_size(group, rot)
+        p = engine.placements[gid]
         rect = patches.Rectangle(
-            (float(x_bl), float(y_bl)),
-            float(w),
-            float(h),
+            (float(p.x_bl), float(p.y_bl)),
+            float(p.w),
+            float(p.h),
             linewidth=1.2,
             edgecolor="black",
             facecolor="orange",
             alpha=0.6,
         )
         ax.add_patch(rect)
-        cx, cy = engine.pose_center(gid)
-        ax.text(cx, cy, str(gid), ha="center", va="center", fontsize=8)
+        ax.text(p.cx, p.cy, str(gid), ha="center", va="center", fontsize=8)
 
     if candidate_set is not None:
         meta = candidate_set.meta or {}
@@ -810,7 +804,7 @@ def save_layout(
             if gid is None:
                 raise ValueError("CandidateSet must include `gid` (or meta['gid']) to convert BL->center for plotting.")
             for x_bl, y_bl, rot in xyrot.detach().cpu().tolist():
-                cx, cy = engine.center_from_bl(gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
                 xs.append(float(cx))
                 ys.append(float(cy))
             ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
@@ -819,7 +813,7 @@ def save_layout(
         _plot_flow_overlay(ax, engine)
 
     if show_score:
-        score = engine.cal_obj()
+        score = engine.cost()
         ax.text(
             0.01,
             0.99,
@@ -872,14 +866,22 @@ def _plot_flow_overlay(ax: plt.Axes, env) -> list[Any]:
     if not env.placed:
         return []
     arts: list[Any] = []
+    # Use reward-computed argmin port pairs if available (env._flow_port_pairs).
+    port_pairs = getattr(env, "_flow_port_pairs", {})
     for src, targets in env.group_flow.items():
         if src not in env.placed:
             continue
-        sx, sy = env.pose_center(src)
+        src_p = env.placements[src]
         for dst, weight in targets.items():
             if dst not in env.placed:
                 continue
-            dx, dy = env.pose_center(dst)
+            dst_p = env.placements[dst]
+            cached = port_pairs.get((src, dst))
+            if cached is not None:
+                (sx, sy), (dx, dy) = cached
+            else:
+                sx, sy = src_p.cx, src_p.cy
+                dx, dy = dst_p.cx, dst_p.cy
             ann = ax.annotate(
                 "",
                 xy=(dx, dy),
@@ -945,6 +947,14 @@ def _plot_routes_overlay(ax: plt.Axes, routes: list[Any]) -> list[Any]:
         arts.append(label)
     
     return arts
+
+
+def _center_from_bl(engine: Any, *, gid: Any, x_bl: int, y_bl: int, rot: int) -> tuple[float, float]:
+    """Compute (cx, cy) from bottom-left coord using group_specs._rotated_size."""
+    spec = engine.group_specs[gid]
+    w, h = spec._rotated_size(rot)
+    return (float(x_bl) + w / 2.0, float(y_bl) + h / 2.0)
+
 
 
 def _plot_mask(ax: plt.Axes, mask: Optional[object], *, color: str, alpha: float):

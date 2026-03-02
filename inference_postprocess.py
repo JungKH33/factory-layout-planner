@@ -1,0 +1,357 @@
+"""Inference Postprocess - Dynamic Storage Placement.
+
+기존 그룹 배치가 완료된 환경에서 동적 storage를 추가 배치합니다.
+inference.py와 유사한 파이프라인을 사용하되, DynamicStorageEnv를 사용합니다.
+
+사용법:
+    python inference_postprocess.py
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List
+
+import time
+import torch
+
+from envs.json_loader import load_env
+from envs.visualizer import plot_layout, save_layout, _draw_layout_layers
+
+from pipeline import DecisionPipeline
+from search.mcts import MCTSConfig, MCTSSearch
+
+from agents.greedy import GreedyAgent
+
+from postprocess.dynamic_env import DynamicStorageEnv, DynamicGroupConfig
+from postprocess.dynamic_wrapper import DynamicStorageWrapper
+
+
+# ============================================================
+# Config
+# ============================================================
+
+# 기존 배치 결과 (또는 배치할 환경)
+BASE_ENV_JSON: str = "env_configs/zones_01.json"
+
+# Storage 설정
+STORAGE_CONFIGS: List[Dict] = [
+    {
+        "gid": "storage_1",
+        "total_cells": 300,
+        "cell_width": 20,
+        "cell_depth": 30,
+        "clearance_w": 5,
+        "clearance_h": 5,
+        "gap_w": 0,
+        "gap_h": 5,
+        "rotatable": True,
+        "cell_z_height": 2.0,
+        "z_overhead": 1.0,
+        # "max_units_per_step": 10,  # step당 최대 4개 unit
+    },
+    # 다양한 파라미터 케이스 추가
+    {
+        "gid": "storage_2",
+        "total_cells": 260,
+        "cell_width": 18,
+        "cell_depth": 24,
+        "clearance_w": 4,
+        "clearance_h": 6,
+        "gap_w": 0,
+        "gap_h": 6,
+        "rotatable": True,
+        "cell_z_height": 1.6,
+        "z_overhead": 0.8,
+        # "max_units_per_step": 10,
+    },
+    {
+        "gid": "storage_3",
+        "total_cells": 160,
+        "cell_width": 16,
+        "cell_depth": 28,
+        "clearance_w": 3,
+        "clearance_h": 3,
+        "gap_w": 3,
+        "gap_h": 0,
+        "rotatable": False,
+        "cell_z_height": 2.4,
+        "z_overhead": 1.2,
+        # "max_units_per_step": 10,
+    },
+]
+
+# Flow 연결 (그룹 간 연결)
+# None이면 storage 그룹 간 + 기존 배치된 그룹과 양방향 연결 자동 생성
+GROUP_FLOW: Dict[str, Dict[str, float]] | None = None
+
+# Wrapper 설정
+TOPK_K: int = 50
+
+# Search 설정
+SEARCH_MODE: str = "mcts"  # "none" | "mcts"
+MCTS_SIMS: int = 100
+MCTS_ROLLOUT_ENABLED: bool = True
+ROLLOUT_DEPTH: int = 5
+
+# Visualization
+SHOW_FLOW: bool = True
+SHOW_SCORE: bool = True
+SHOW_MASKS: bool = True
+
+
+# ============================================================
+# Main
+# ============================================================
+
+@torch.no_grad()
+def main() -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")  # CPU 강제 (디버깅용)
+    
+    print("=" * 60)
+    print("Inference Postprocess - Dynamic Storage Placement")
+    print("=" * 60)
+    
+    # ===== 1. Base 환경 로드 =====
+    print(f"\n[1] Loading base environment: {BASE_ENV_JSON}")
+    loaded = load_env(BASE_ENV_JSON, device=device)
+    base_env = loaded.env
+    base_env.reset(options=loaded.reset_kwargs)
+    
+    print(f"  Grid: {base_env.grid_width} x {base_env.grid_height}")
+    print(f"  Placed groups: {len(base_env.placed)}")
+    print(f"  Remaining groups: {len(base_env.remaining)}")
+    
+    # ===== 1.5. 기존 그룹 미리 배치 (하드코딩) =====
+    # (gid, x, y, rot) 형식
+    # forbidden area: [0, 0, 150, 200] 피해서 배치
+    # A: 160x80, B: 120x120, C: 100x60
+    PRE_PLACEMENTS = [
+        ("A", 100, 200, 0),   # 160~320, 50~130
+        ("B", 150, 300, 0),  # 160~280, 150~270
+        # ("C", 50, 220, 0),   # 50~150, 220~280
+        #("D", 200, 400, 0),  # 200~360, 100~180
+        ("E", 300, 350, 0),  # 300~460, 200~280
+        #("F", 250, 350, 0),  # 250~410, 350~430
+        ("G", 180, 420, 0),  # 180~340, 420~500
+        ("H", 400, 200, 0),  # 320~480, 250~330
+        ("I", 350, 80, 0),  # 400~560, 150~230
+    ]
+    
+    if PRE_PLACEMENTS:
+        print(f"\n[1.5] Pre-placing {len(PRE_PLACEMENTS)} groups (hardcoded)")
+        for gid, x, y, rot in PRE_PLACEMENTS:
+            if gid in base_env.remaining:
+                # _apply_place: 내부 메서드로 배치 + 캐시 업데이트
+                base_env._apply_place(gid, x, y, rot, update_caches=True)
+                print(f"    Placed: {gid} at ({x}, {y}), rot={rot}")
+            else:
+                print(f"    Skip: {gid} not in remaining (or already placed)")
+        
+        print(f"  Now placed: {list(base_env.placed)}")
+    
+    # ===== 2. Storage 설정 =====
+    print(f"\n[2] Storage configuration")
+    configs = [DynamicGroupConfig(**cfg) for cfg in STORAGE_CONFIGS]
+    
+    for cfg in configs:
+        print(f"  - {cfg.gid}: {cfg.total_cells} cells, "
+              f"{cfg.cell_width}x{cfg.cell_depth}, "
+              f"rotatable={cfg.rotatable}")
+    
+    # ===== 3. Flow 설정 =====
+    print(f"\n[3] Flow configuration")
+    if GROUP_FLOW is not None:
+        group_flow = GROUP_FLOW
+    else:
+        # 자동 생성: storage 그룹 간 + 기존 배치된 그룹과 양방향 연결
+        group_flow: Dict[str, Dict[str, float]] = {}
+        storage_gids = [cfg.gid for cfg in configs]
+        
+        # storage 그룹 간 양방향 연결
+        for i, gid1 in enumerate(storage_gids):
+            group_flow[gid1] = {}
+            for j, gid2 in enumerate(storage_gids):
+                if i != j:
+                    group_flow[gid1][gid2] = 1.0
+        
+        # 기존 배치된 그룹과 양방향 연결
+        for gid in base_env.placed:
+            for cfg in configs:
+                group_flow.setdefault(gid, {})[cfg.gid] = 1.0
+                group_flow[cfg.gid][gid] = 1.0
+    
+    print(f"  Group flow: {group_flow}")
+    
+    # ===== 4. Dynamic Env 생성 =====
+    print(f"\n[4] Creating DynamicStorageEnv")
+    dynamic_env = DynamicStorageEnv(
+        base_env=base_env,
+        configs=configs,
+        group_flow=group_flow,
+    )
+    
+    # ===== 5. Wrapper 적용 =====
+    print(f"\n[5] Creating DynamicStorageWrapper (k={TOPK_K})")
+    env = DynamicStorageWrapper(
+        dynamic_env=dynamic_env,
+        k=TOPK_K,
+        random_seed=42,
+    )
+    
+    # ===== 6. Agent & Search =====
+    print(f"\n[6] Setting up Agent and Search")
+    agent = GreedyAgent(prior_temperature=1.0)
+    
+    if SEARCH_MODE == "none":
+        search = None
+        print("  Search: None (greedy)")
+    elif SEARCH_MODE == "mcts":
+        search = MCTSSearch(
+            config=MCTSConfig(
+                num_simulations=MCTS_SIMS,
+                rollout_enabled=MCTS_ROLLOUT_ENABLED,
+                rollout_depth=ROLLOUT_DEPTH,
+            )
+        )
+        print(f"  Search: MCTS (sims={MCTS_SIMS})")
+    else:
+        raise ValueError(f"Unknown SEARCH_MODE: {SEARCH_MODE}")
+    
+    pipe = DecisionPipeline(agent=agent, search=search)
+    
+    # ===== 7. 실행 =====
+    print(f"\n[7] Running inference")
+    print("=" * 60)
+    
+    obs, info = env.reset()
+    terminated = truncated = False
+    total_reward = 0.0
+    step = 0
+    
+    start = time.perf_counter()
+    
+    while not (terminated or truncated):
+        step += 1
+        current_gid = dynamic_env.gid
+        
+        # Action 선택
+        action, dbg_act, candidates = pipe.act(env=env, obs=obs)
+        
+        # Step 실행
+        obs, reward, terminated, truncated, info = env.step(int(action))
+        total_reward += float(reward)
+        
+        # 로그
+        x, y, rot, _, _ = env.decode_action(int(action))
+        print(f"[step {step}] gid={current_gid}, action={action}, "
+              f"pos=({x},{y}), rot={rot}, "
+              f"units={info.get('num_units', 0)}, cells={info.get('total_cells', 0)}, "
+              f"reward={reward:.3f}")
+        
+        if terminated:
+            print(f"\n[DONE] All storage groups placed!")
+        elif truncated:
+            print(f"\n[TRUNCATED] reason={info.get('reason', 'unknown')}")
+    
+    end = time.perf_counter()
+    
+    print("=" * 60)
+    print(f"Total time: {end - start:.3f}s")
+    print(f"Total steps: {step}")
+    print(f"Total reward: {total_reward:.3f}")
+    
+    # ===== 8. 시각화 =====
+    print(f"\n[8] Visualization")
+    
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    
+    fig, ax = plt.subplots(figsize=(14, 12))
+    ax.set_xlim(0, dynamic_env.W)
+    ax.set_ylim(0, dynamic_env.H)
+    ax.set_aspect("equal")
+    
+    # Base layout
+    _draw_layout_layers(ax=ax, engine=base_env)
+    
+    # Storage overlay
+    palette = [
+        ("lightgreen", "darkgreen"),
+        ("lightskyblue", "royalblue"),
+        ("moccasin", "peru"),
+        ("plum", "purple"),
+    ]
+    legend_patches = []
+
+    total_units_all = 0
+    total_cells_all = 0
+
+    cfg_map = {c.gid: c for c in configs}
+
+    for j, (gid, units) in enumerate(dynamic_env.placed_history.items()):
+        face, edge = palette[j % len(palette)]
+        legend_patches.append(mpatches.Patch(facecolor=face, edgecolor=edge, label=gid))
+
+        cfg = cfg_map.get(gid)
+        if cfg is None:
+            # config를 못 찾으면 스킵
+            continue
+
+        for ux, uy, rot, stack in units:
+            # gid별 config 기준으로 cell/clearance size 계산
+            if rot == 90:
+                cw, ch = int(cfg.cell_depth), int(cfg.cell_width)
+                cl_w, cl_h = int(cfg.clearance_h), int(cfg.clearance_w)
+            else:
+                cw, ch = int(cfg.cell_width), int(cfg.cell_depth)
+                cl_w, cl_h = int(cfg.clearance_w), int(cfg.clearance_h)
+            
+            # block (clearance 포함) 영역 - 연한 색으로
+            bx, by = ux - cl_w, uy - cl_h
+            bw, bh = cw + 2 * cl_w, ch + 2 * cl_h
+            block_rect = mpatches.Rectangle(
+                (bx, by), bw, bh,
+                facecolor=face, edgecolor=edge,
+                alpha=0.25, linewidth=1, linestyle='--'
+            )
+            ax.add_patch(block_rect)
+            
+            # unit 영역 - 진한 색으로
+            rect = mpatches.Rectangle(
+                (ux, uy), cw, ch,
+                facecolor=face, edgecolor=edge,
+                alpha=0.85, linewidth=2
+            )
+            ax.add_patch(rect)
+            ax.text(ux + cw/2, uy + ch/2, str(stack),
+                    ha='center', va='center', fontsize=9,
+                    fontweight='bold', color='black')
+
+            total_units_all += 1
+            total_cells_all += int(stack)
+
+    if legend_patches:
+        ax.legend(handles=legend_patches, loc="upper right", fontsize=8)
+    
+    # Title
+    ax.set_title(f"Dynamic Storage Placement (units={total_units_all}, cells={total_cells_all})")
+    
+    plt.tight_layout()
+    
+    # Save
+    out_dir = Path("results") / "inference_postprocess"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = out_dir / f"{ts}_storage.png"
+    
+    plt.savefig(out_path, dpi=150)
+    print(f"  Saved: {out_path}")
+    
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

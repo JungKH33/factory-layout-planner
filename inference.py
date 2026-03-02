@@ -28,8 +28,8 @@ from envs.wrappers.candidate_set import CandidateSet
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "env_configs/clearance_03.json"
-ENV_JSON: str = "preprocess/test.json"
+ENV_JSON: str = "env_configs/basic_01.json"
+#ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv3"  # "greedy" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
@@ -198,7 +198,7 @@ def main() -> None:
         snap = env.get_snapshot()
         scores = agent.policy(env=env.engine, obs=obs, candidates=candidates).detach().to(device="cpu").numpy()
         v = float(agent.value(env=env.engine, obs=obs, candidates=candidates))
-        cost = float(env.engine.cal_obj())
+        cost = float(env.engine.cost())
         frames.append(
             StepFrame(
                 snapshot=snap,
@@ -221,7 +221,7 @@ def main() -> None:
             reason = info.get("reason", None)
             print(
                 f"[env] end: terminated={terminated} truncated={truncated} "
-                f"step={step} placed={len(env.engine.placed)} cost={env.engine.cal_total_cost():.3f} reason={reason}"
+                f"step={step} placed={len(env.engine.placed)} cost={env.engine.total_cost():.3f} reason={reason}"
             )
 
     end = time.perf_counter()
@@ -250,11 +250,11 @@ def main() -> None:
         env.set_snapshot(final_snap)
 
     # Route planning
-    planner = RoutePlanner(env.engine, algorithm="astar")
-    routes = planner.plan_all()
+    # planner = RoutePlanner(env.engine, algorithm="astar")
+    # routes = planner.plan_all()
 
     # Preview before saving (interactive; close the window to continue).
-    plot_layout(env, candidate_set=None, routes=routes)
+    plot_layout(env, candidate_set=None, routes= None)
 
     save_layout(
         env,
@@ -266,6 +266,11 @@ def main() -> None:
         save_path=str(out_path),
     )
     print(f"saved_layout={out_path}")
+    
+    # Save placement JSON
+    placement_path = out_dir / f"{ts}_{AGENT_MODE}_{WRAPPER_MODE}_{SEARCH_MODE}.json"
+    env.engine.save_placement(str(placement_path))
+    print(f"saved_placement={placement_path}")
 
     # Save top-K results if tracking was enabled
     if search is not None and hasattr(search, "top_tracker") and search.top_tracker is not None:
