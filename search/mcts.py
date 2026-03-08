@@ -374,7 +374,6 @@ class MCTSSearch(BaseSearch):
         agent: Agent,
     ) -> None:
         node = root
-        self._set_engine_state(engine=engine, adapter=adapter, engine_state=root.engine_state)
 
         path_nodes = [root]
         path_rewards: List[float] = []
@@ -395,13 +394,14 @@ class MCTSSearch(BaseSearch):
                 break
 
             if action in node.children:
+                # PUCT selection only uses node.visits/priors — no engine state needed.
+                # Defer state restoration to the expansion point below.
                 node = node.children[action]
-                self._set_engine_state(engine=engine, adapter=adapter, engine_state=node.engine_state)
                 path_nodes.append(node)
                 path_rewards.append(node.reward)
             else:
-                # Engine is already at node.engine_state (set on loop entry
-                # or by the previous if-branch), so no _set_engine_state needed.
+                # Restore engine state only once, right before expansion.
+                self._set_engine_state(engine=engine, adapter=adapter, engine_state=node.engine_state)
                 cand = node.action_space
                 obs2, reward, terminated, truncated, _info = self._apply_action_index(
                     engine=engine,
