@@ -302,14 +302,28 @@ class FactoryLayoutEnv(gym.Env):
     def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, int, int, int]:
         if not isinstance(action, EnvAction):
             raise TypeError(f"expected EnvAction, got {type(action).__name__}")
-        gid_eff: Optional[GroupId] = action.gid
-        if gid_eff is None:
-            if not self._state.remaining:
-                raise ValueError("action.gid is None but env.get_state().remaining is empty")
-            gid_eff = self._state.remaining[0]
+        gid_eff: GroupId = action.gid
         if gid_eff not in self.group_specs:
             raise KeyError(f"unknown gid={gid_eff!r}")
         return gid_eff, int(action.x), int(action.y), int(action.rot)
+
+    def is_placeable(self, action: EnvAction) -> bool:
+        gid, x, y, rot = self._normalize_action(action)
+        geom = self._group_spec(gid)
+        return self._state.is_placeable(
+            action=EnvAction(gid=gid, x=int(x), y=int(y), rot=int(rot)),
+            spec=geom,
+        )
+
+    def is_placeable_mask(self, action_space: ActionSpace) -> torch.Tensor:
+        gid = action_space.gid
+        if gid is None:
+            raise ValueError("action_space.gid is required")
+        geom = self._group_spec(gid)
+        return self._state.is_placeable_mask(
+            action_space=action_space,
+            spec=geom,
+        )
 
     def _apply_resolved_placement(
         self,
@@ -364,7 +378,7 @@ class FactoryLayoutEnv(gym.Env):
             if gid in seen:
                 raise ValueError(f"ordered_remaining contains duplicate gid: {gid!r}")
             seen.add(gid)
-        self._state.set_remaining(list(ordered_remaining), update_current_gid=True)
+        self._state.set_remaining(list(ordered_remaining))
     
     # ---- Export API ----
     
@@ -501,23 +515,11 @@ class FactoryLayoutEnv(gym.Env):
             self._state.step(apply=False)
             return self._fail("gid_not_remaining")
 
-        # gid별 zone 제약을 action 시점에 동기화한다.
-        self._state.set_current_gid(gid_eff)
-        geom = self._group_spec(gid_eff)
         try:
-            placeable = bool(
-                geom.is_placeable(
-                    x_bl=int(x_bl),
-                    y_bl=int(y_bl),
-                    rot=int(r),
-                    invalid=self._state.invalid_map,
-                    clear_invalid=self._state.clear_invalid_map,
-                )
-            )
+            placeable = bool(self.is_placeable(EnvAction(gid=gid_eff, x=x_bl, y=y_bl, rot=r)))
         except Exception:
             placeable = False
         if not placeable:
-            self._state.set_current_gid(self._state.remaining[0] if self._state.remaining else None)
             self._state.step(apply=False)
             return self._fail("not_placeable")
 
@@ -595,15 +597,7 @@ class FactoryLayoutEnv(gym.Env):
                     raise ValueError(f"reset(options): initial_positions contains duplicate gid: {gid!r}")
                 geom = self._group_spec(gid)
                 try:
-                    placeable = bool(
-                        geom.is_placeable(
-                            x_bl=int(x),
-                            y_bl=int(y),
-                            rot=int(rot),
-                            invalid=self._state.invalid_map,
-                            clear_invalid=self._state.clear_invalid_map,
-                        )
-                    )
+                    placeable = bool(self.is_placeable(EnvAction(gid=gid, x=x, y=y, rot=rot)))
                 except Exception:
                     placeable = False
                 if not placeable:
@@ -706,7 +700,7 @@ if __name__ == "__main__":
     # --- step: C 배치 (x>=60+clearance, weight_areas 이내) ---
     t2 = time.perf_counter()
     obs2, reward, terminated, truncated, info = env.step_action(
-        EnvAction(gid=None, x=74, y=22, rot=0)
+        EnvAction(gid="C", x=74, y=22, rot=0)
     )
     step_ms = (time.perf_counter() - t2) * 1000.0
 

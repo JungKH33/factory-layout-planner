@@ -95,10 +95,8 @@ class MaskPlaceDecisionAdapter(BaseDecisionAdapter):
 
         group = self.engine.group_specs[gid]
         rot = int(self.rot if group.rotatable else 0)
-        body_ok = self._valid_top_left_body(gid=gid, rot=rot)  # bool[H2,W2]
-        pad_ok, cL, cB = self._valid_top_left_pad(gid=gid, rot=rot)  # bool[H3,W3]
-        H2, W2 = int(body_ok.shape[0]), int(body_ok.shape[1])
-        H3, W3 = int(pad_ok.shape[0]), int(pad_ok.shape[1])
+        valid_map = self._valid_top_left_body(gid=gid, rot=rot)  # bool[H,W]
+        H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
 
         g = int(self.grid)
         cell_w, cell_h = self.cell_wh()
@@ -113,21 +111,9 @@ class MaskPlaceDecisionAdapter(BaseDecisionAdapter):
         x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
         y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
 
-        inside_body = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W2) & (y_bl < H2)
-        idx_body = (y_bl * W2 + x_bl).to(torch.long)
-        flat_body = body_ok.reshape(-1)
-
-        px = (x_bl - int(cL)).to(torch.long)
-        py = (y_bl - int(cB)).to(torch.long)
-        inside_pad = (px >= 0) & (py >= 0) & (px < W3) & (py < H3)
-        idx_pad = (py * W3 + px).to(torch.long)
-        flat_pad = pad_ok.reshape(-1)
-
-        ok = torch.zeros((g, g), device=self.device, dtype=torch.bool)
-        ok[inside_body] = flat_body[idx_body[inside_body]]
-        # Pad must be inside bounds; otherwise invalid.
-        ok = ok & inside_pad
-        ok[inside_pad] = ok[inside_pad] & flat_pad[idx_pad[inside_pad]]
+        inside = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
+        ok = torch.zeros((g, g), dtype=torch.bool, device=self.device)
+        ok[inside] = valid_map[y_bl[inside], x_bl[inside]]
         return ok.reshape(-1)
 
     def _score_map_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
@@ -160,33 +146,7 @@ class MaskPlaceDecisionAdapter(BaseDecisionAdapter):
 
     def _valid_top_left_body(self, *, gid: GroupId, rot: int) -> torch.Tensor:
         group = self.engine.group_specs[gid]
-        w, h = group._rotated_size(int(rot))
-        kw = max(1, int(round(float(w))))
-        kh = max(1, int(round(float(h))))
-
-        inv = self.engine.get_maps().invalid.to(dtype=torch.float32).view(1, 1, self.grid_height, self.grid_width)
-        clr = self.engine.get_maps().clear_invalid.to(dtype=torch.float32).view(1, 1, self.grid_height, self.grid_width)
-        kernel = torch.ones((1, 1, kh, kw), device=self.device, dtype=inv.dtype)
-
-        ov_inv = F.conv2d(inv, kernel, padding=0).squeeze(0).squeeze(0)
-        ov_clr = F.conv2d(clr, kernel, padding=0).squeeze(0).squeeze(0)
-        return (ov_inv == 0) & (ov_clr == 0)
-
-    def _valid_top_left_pad(self, *, gid: GroupId, rot: int) -> Tuple[torch.Tensor, int, int]:
-        group = self.engine.group_specs[gid]
-        w, h = group._rotated_size(int(rot))
-        w_i = max(1, int(round(float(w))))
-        h_i = max(1, int(round(float(h))))
-
-        cL, cR, cB, cT = group._clearance_lrtb(int(rot))
-        cL_i, cR_i, cB_i, cT_i = int(cL), int(cR), int(cB), int(cT)
-        kw = max(1, w_i + cL_i + cR_i)
-        kh = max(1, h_i + cB_i + cT_i)
-
-        inv = self.engine.get_maps().invalid.to(dtype=torch.float32).view(1, 1, self.grid_height, self.grid_width)
-        kernel = torch.ones((1, 1, kh, kw), device=self.device, dtype=inv.dtype)
-        ov = F.conv2d(inv, kernel, padding=0).squeeze(0).squeeze(0)
-        return (ov == 0), int(cL_i), int(cB_i)
+        return self.engine.get_state().is_placeable_map(gid=gid, spec=group, rot=int(rot))
 
     def create_mask(self) -> torch.Tensor:
         gid = self._next_gid()
@@ -214,7 +174,6 @@ class MaskPlaceDecisionAdapter(BaseDecisionAdapter):
         # Use area downsampling to preserve "partial coverage" information.
         occ_or_static = (self.engine.get_maps().occ_invalid | self.engine.get_maps().static_invalid)
         canvas_full = torch.zeros((self.grid_height, self.grid_width), dtype=torch.float32, device=self.device)
-        canvas_full[self.engine.get_maps().clear_invalid] = 0.5
         canvas_full[occ_or_static] = 1.0
         canvas_src = canvas_full.view(1, 1, self.grid_height, self.grid_width)
         canvas = F.interpolate(canvas_src, size=(g, g), mode="area").squeeze(0).squeeze(0)

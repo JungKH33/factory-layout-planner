@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import torch
-import torch.nn.functional as F
 
 from envs.env import FactoryLayoutEnv, GroupId
+from envs.action_space import ActionSpace
 
 from .base import BaseDecisionAdapter
 
@@ -186,6 +186,7 @@ class GreedyV2DecisionAdapter(BaseDecisionAdapter):
         y_bl: int,
         rot: int,
         wh_cache: Dict[int, Tuple[int, int]],
+        valid_by_rot: Dict[int, torch.Tensor],
     ) -> bool:
         w, h = wh_cache[int(rot)]
         gw = int(env.grid_width)
@@ -195,71 +196,16 @@ class GreedyV2DecisionAdapter(BaseDecisionAdapter):
             return True
         if w <= 0 or h <= 0:
             return True
+        valid_map = valid_by_rot.get(int(rot), None)
+        if not isinstance(valid_map, torch.Tensor):
+            return True
+        H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
+        if x_bl < 0 or y_bl < 0 or x_bl >= W or y_bl >= H:
+            return True
+        return not bool(valid_map[int(y_bl), int(x_bl)].item())
 
-        invalid = env.get_maps().invalid  # torch.BoolTensor[H,W]
-        clear_invalid = env.get_maps().clear_invalid  # torch.BoolTensor[H,W]
-
-        x0 = int(x_bl)
-        y0 = int(y_bl)
-        x1 = x0 + int(w) - 1
-        y1 = y0 + int(h) - 1
-        xc = (x0 + x1) // 2
-        yc = (y0 + y1) // 2
-
-        pts = ((x0, y0), (x1, y0), (x0, y1), (x1, y1), (xc, yc))
-        for px, py in pts:
-            if bool(invalid[py, px].item()):
-                return True
-            if bool(clear_invalid[py, px].item()):
-                return True
-        return False
-
-    # ---- v2: valid-map based sampling (clearance-aware at generation time) ----
-    def _build_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rot: int, wh_cache: Dict[int, Tuple[int, int]]) -> torch.Tensor:
-        """Return bool[H2,W2] where True means this (x_bl,y_bl,rot) is *likely* placeable.
-
-        This is a clearance-aware prefilter:
-        - body window must not overlap env.get_maps().invalid or env.get_maps().clear_invalid
-        - my clearance pad window must not overlap env.get_maps().invalid
-
-        NOTE: This is intentionally a *prefilter*. We still run StaticSpec.is_placeable(...) as the final gate.
-        """
-        w, h = wh_cache[int(rot)]
-        w = max(1, int(w))
-        h = max(1, int(h))
-
-        inv = env.get_maps().invalid.to(dtype=torch.float32).view(1, 1, int(env.grid_height), int(env.grid_width))
-        clr = env.get_maps().clear_invalid.to(dtype=torch.float32).view(1, 1, int(env.grid_height), int(env.grid_width))
-
-        # body window must avoid invalid + clear_invalid
-        k_body = torch.ones((1, 1, int(h), int(w)), device=env.device, dtype=inv.dtype)
-        ov_inv = F.conv2d(inv, k_body, padding=0).squeeze(0).squeeze(0)
-        ov_clr = F.conv2d(clr, k_body, padding=0).squeeze(0).squeeze(0)
-        body_ok = (ov_inv == 0) & (ov_clr == 0)  # bool[H2,W2]
-
-        # pad window (my clearance) must avoid invalid
-        group = env.group_specs[gid]
-        cL, cR, cB, cT = group._clearance_lrtb(int(rot))
-        cL_i, cR_i, cB_i, cT_i = int(cL), int(cR), int(cB), int(cT)
-        kw = max(1, int(w) + cL_i + cR_i)
-        kh = max(1, int(h) + cB_i + cT_i)
-        k_pad = torch.ones((1, 1, int(kh), int(kw)), device=env.device, dtype=inv.dtype)
-        ov_pad = F.conv2d(inv, k_pad, padding=0).squeeze(0).squeeze(0)
-        pad_ok = (ov_pad == 0)  # bool[H3,W3], index is (x_bl - cL, y_bl - cB)
-
-        H2, W2 = int(body_ok.shape[0]), int(body_ok.shape[1])
-        H3, W3 = int(pad_ok.shape[0]), int(pad_ok.shape[1])
-
-        # Align pad_ok into body_ok coordinates: body position (y,x) uses pad_ok[y-cB, x-cL]
-        pad_aligned = torch.zeros((H2, W2), dtype=torch.bool, device=env.device)
-        y0 = max(0, cB_i)
-        x0 = max(0, cL_i)
-        y1 = min(H2, cB_i + H3)
-        x1 = min(W2, cL_i + W3)
-        if y1 > y0 and x1 > x0:
-            pad_aligned[y0:y1, x0:x1] = pad_ok[0 : (y1 - y0), 0 : (x1 - x0)]
-
-        return body_ok & pad_aligned
+    def _build_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rot: int) -> torch.Tensor:
+        return env.get_state().is_placeable_map(gid=gid, spec=env.group_specs[gid], rot=int(rot))
 
     def _torch_gen(self, *, env: FactoryLayoutEnv) -> torch.Generator:
         # Use python RNG as the source-of-truth; seed a torch.Generator for tensor sampling.
@@ -538,25 +484,43 @@ class GreedyV2DecisionAdapter(BaseDecisionAdapter):
         group = env.group_specs[gid]
         rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
         wh_cache = {int(r): self._wh_int(env, gid, int(r)) for r in rotations}
-        valid_by_rot = {int(r): self._build_valid_map(env, gid=gid, rot=int(r), wh_cache=wh_cache) for r in rotations}
+        valid_by_rot = {int(r): self._build_valid_map(env, gid=gid, rot=int(r)) for r in rotations}
         gen = self._torch_gen(env=env)
 
         raw_tagged.extend((0, c) for c in self._source_stratified(env, gid, n_strat_target, valid_by_rot=valid_by_rot, gen=gen))
         raw_tagged.extend((1, c) for c in self._source_random(env, gid, n_rand, valid_by_rot=valid_by_rot, gen=gen))
 
         unique_tagged = self._dedup_tagged(raw_tagged, quant_step, group)
-        valid_candidates = [
+        prefiltered = [
             c
             for _, c in unique_tagged
-            if (not self._cheap_reject_body(env, gid=gid, x_bl=int(c[1]), y_bl=int(c[2]), rot=int(c[3]), wh_cache=wh_cache))
-            and group.is_placeable(
+            if not self._cheap_reject_body(
+                env,
+                gid=gid,
                 x_bl=int(c[1]),
                 y_bl=int(c[2]),
                 rot=int(c[3]),
-                invalid=env.get_maps().invalid,
-                clear_invalid=env.get_maps().clear_invalid,
+                wh_cache=wh_cache,
+                valid_by_rot=valid_by_rot,
             )
         ]
+        valid_candidates: List[Tuple[GroupId, int, int, int]] = []
+        if prefiltered:
+            xyrot = torch.tensor(
+                [[int(c[1]), int(c[2]), int(c[3])] for c in prefiltered],
+                dtype=torch.long,
+                device=device,
+            )
+            placeable = env.is_placeable_mask(
+                ActionSpace(
+                    xyrot=xyrot,
+                    mask=torch.ones((int(xyrot.shape[0]),), dtype=torch.bool, device=device),
+                    gid=gid,
+                )
+            )
+            for i, cand in enumerate(prefiltered):
+                if bool(placeable[i].item()):
+                    valid_candidates.append(cand)
 
         final = valid_candidates[: self.k]
         if self.optimize_rotation:
@@ -581,7 +545,7 @@ class GreedyV2DecisionAdapter(BaseDecisionAdapter):
         group = env.group_specs[next_group_id]
         rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
         wh_cache = {int(r): self._wh_int(env, next_group_id, int(r)) for r in rotations}
-        valid_by_rot = {int(r): self._build_valid_map(env, gid=next_group_id, rot=int(r), wh_cache=wh_cache) for r in rotations}
+        valid_by_rot = {int(r): self._build_valid_map(env, gid=next_group_id, rot=int(r)) for r in rotations}
         gen = self._torch_gen(env=env)
         radius = max(1, int(round(q)))
 
@@ -606,18 +570,36 @@ class GreedyV2DecisionAdapter(BaseDecisionAdapter):
         raw_tagged.extend((3, c) for c in self._source_random(env, next_group_id, n_rand * self.oversample_factor, valid_by_rot=valid_by_rot, gen=gen))
 
         unique_tagged = self._dedup_tagged(raw_tagged, q, group)
-        valid_tagged = [
+        prefiltered_tagged = [
             (src, c)
             for src, c in unique_tagged
-            if (not self._cheap_reject_body(env, gid=next_group_id, x_bl=int(c[1]), y_bl=int(c[2]), rot=int(c[3]), wh_cache=wh_cache))
-            and group.is_placeable(
+            if not self._cheap_reject_body(
+                env,
+                gid=next_group_id,
                 x_bl=int(c[1]),
                 y_bl=int(c[2]),
                 rot=int(c[3]),
-                invalid=env.get_maps().invalid,
-                clear_invalid=env.get_maps().clear_invalid,
+                wh_cache=wh_cache,
+                valid_by_rot=valid_by_rot,
             )
         ]
+        valid_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
+        if prefiltered_tagged:
+            xyrot = torch.tensor(
+                [[int(c[1]), int(c[2]), int(c[3])] for _, c in prefiltered_tagged],
+                dtype=torch.long,
+                device=device,
+            )
+            placeable = env.is_placeable_mask(
+                ActionSpace(
+                    xyrot=xyrot,
+                    mask=torch.ones((int(xyrot.shape[0]),), dtype=torch.bool, device=device),
+                    gid=next_group_id,
+                )
+            )
+            for i, tagged in enumerate(prefiltered_tagged):
+                if bool(placeable[i].item()):
+                    valid_tagged.append(tagged)
 
         pools: Dict[int, List[Tuple[GroupId, int, int, int]]] = {0: [], 1: [], 2: [], 3: []}
         for src, c in valid_tagged:

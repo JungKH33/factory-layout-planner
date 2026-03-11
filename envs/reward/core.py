@@ -174,7 +174,9 @@ class RewardComposer:
         ) = state.io_tensors()
         placed_count = len(placed_nodes)
         cur_min_x, cur_max_x, cur_min_y, cur_max_y = state.placed_bbox()
-        gid_eff = gid if gid is not None else state.current_gid
+        gid_eff = gid
+        if gid_eff is None:
+            raise ValueError("RewardComposer.delta requires explicit gid")
         w_out, w_in = state.build_delta_flow_weights_for(gid_eff)
 
         m = 0

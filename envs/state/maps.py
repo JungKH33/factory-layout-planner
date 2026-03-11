@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from ..action import GroupId
-from ..placement.base import PlacementBase
 from ..placement.static import StaticSpec
+
+RectI = Tuple[int, int, int, int]
 
 
 class GridMaps:
@@ -63,7 +64,7 @@ class GridMaps:
             default_dry,
             dry_areas,
         )
-        self._placement_area_masks = self._build_placement_area_masks(
+        self._placement_map = self._build_area_map(
             self._H,
             self._W,
             self._device,
@@ -114,8 +115,79 @@ class GridMaps:
         return self._dry_map
 
     @property
-    def placement_area_masks(self) -> Dict[str, torch.Tensor]:
-        return self._placement_area_masks
+    def placement_map(self) -> Dict[str, torch.Tensor]:
+        return self._placement_map
+
+    @staticmethod
+    def _rect_hits_invalid(rect: RectI, src: torch.Tensor) -> bool:
+        x0, y0, x1, y1 = rect
+        h, w = src.shape
+        if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
+            return True
+        if x0 >= x1 or y0 >= y1:
+            return False
+        return bool(torch.any(src[y0:y1, x0:x1]).item())
+
+    def is_placeable(
+        self,
+        *,
+        gid: GroupId,
+        body_rect: RectI,
+        pad_rect: RectI,
+    ) -> bool:
+        invalid = self._static_invalid | self.occ_invalid | self._zone_for_gid(gid)
+        if self._rect_hits_invalid(body_rect, invalid):
+            return False
+        if self._rect_hits_invalid(body_rect, self.clear_invalid):
+            return False
+        if self._rect_hits_invalid(pad_rect, invalid):
+            return False
+        return True
+
+    def is_placeable_map(
+        self,
+        *,
+        gid: GroupId,
+        body_w: int,
+        body_h: int,
+        cL: int,
+        cR: int,
+        cB: int,
+        cT: int,
+    ) -> torch.Tensor:
+        w = int(body_w)
+        h = int(body_h)
+        cL = int(cL)
+        cR = int(cR)
+        cB = int(cB)
+        cT = int(cT)
+        invalid = self._static_invalid | self.occ_invalid | self._zone_for_gid(gid)
+        kw = int(w + cL + cR)
+        kh = int(h + cB + cT)
+
+        H, W = invalid.shape
+        result = torch.zeros((H, W), dtype=torch.bool, device=self._device)
+        if kh > H or kw > W or h <= 0 or w <= 0:
+            return result
+
+        inv_f = invalid.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        clear_f = self.clear_invalid.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        body_kernel = torch.ones((1, 1, h, w), device=self._device, dtype=torch.float32)
+        pad_kernel = torch.ones((1, 1, kh, kw), device=self._device, dtype=torch.float32)
+
+        body_inv = F.conv2d(inv_f, body_kernel, padding=0).squeeze()
+        body_clear = F.conv2d(clear_f, body_kernel, padding=0).squeeze()
+        pad_inv = F.conv2d(inv_f, pad_kernel, padding=0).squeeze()
+
+        valid_h = H - kh + 1
+        valid_w = W - kw + 1
+        if valid_h <= 0 or valid_w <= 0:
+            return result
+        body_inv_slice = body_inv[cB: cB + valid_h, cL: cL + valid_w]
+        body_clear_slice = body_clear[cB: cB + valid_h, cL: cL + valid_w]
+        valid_mask = (body_inv_slice == 0) & (body_clear_slice == 0) & (pad_inv == 0)
+        result[:valid_h, :valid_w] = valid_mask
+        return result
 
     def bind_group_specs(self, group_specs: Dict[GroupId, StaticSpec]) -> None:
         self._group_specs = group_specs
@@ -141,7 +213,7 @@ class GridMaps:
         out._weight_map = self._weight_map
         out._height_map = self._height_map
         out._dry_map = self._dry_map
-        out._placement_area_masks = self._placement_area_masks
+        out._placement_map = self._placement_map
         out._group_specs = self._group_specs
         out._zone_by_gid = self._zone_by_gid
         return out
@@ -181,11 +253,20 @@ class GridMaps:
         self.invalid.logical_or_(self.occ_invalid)
         self.invalid.logical_or_(self.zone_invalid)
 
-    def paint_placement(self, placement: PlacementBase) -> None:
-        min_x = float(placement.min_x)
-        min_y = float(placement.min_y)
-        max_x = float(placement.max_x)
-        max_y = float(placement.max_y)
+    def paint_rects(
+        self,
+        *,
+        bbox_min_x: float,
+        bbox_max_x: float,
+        bbox_min_y: float,
+        bbox_max_y: float,
+        body_rect: RectI,
+        clear_rect: RectI,
+    ) -> None:
+        min_x = float(bbox_min_x)
+        min_y = float(bbox_min_y)
+        max_x = float(bbox_max_x)
+        max_y = float(bbox_max_y)
         if not self.has_bbox:
             self.has_bbox = True
             self.bbox_min_x = float(min_x)
@@ -198,21 +279,21 @@ class GridMaps:
             self.bbox_min_y = min(float(self.bbox_min_y), float(min_y))
             self.bbox_max_y = max(float(self.bbox_max_y), float(max_y))
 
-        x0 = int(math.floor(min_x))
-        y0 = int(math.floor(min_y))
-        x1 = int(math.ceil(max_x))
-        y1 = int(math.ceil(max_y))
-        if x0 < x1 and y0 < y1:
-            self.occ_invalid[y0:y1, x0:x1] = True
+        x0, y0, x1, y1 = body_rect
+        bx0 = max(0, min(self._W, int(x0)))
+        bx1 = max(0, min(self._W, int(x1)))
+        by0 = max(0, min(self._H, int(y0)))
+        by1 = max(0, min(self._H, int(y1)))
+        if bx0 < bx1 and by0 < by1:
+            self.occ_invalid[by0:by1, bx0:bx1] = True
 
-        cl = int(getattr(placement, "clearance_left", 0))
-        cr = int(getattr(placement, "clearance_right", 0))
-        cb = int(getattr(placement, "clearance_bottom", 0))
-        ct = int(getattr(placement, "clearance_top", 0))
-        px0, py0 = x0 - cl, y0 - cb
-        px1, py1 = x1 + cr, y1 + ct
-        if px0 < px1 and py0 < py1:
-            self.clear_invalid[py0:py1, px0:px1] = True
+        px0, py0, px1, py1 = clear_rect
+        cx0 = max(0, min(self._W, int(px0)))
+        cx1 = max(0, min(self._W, int(px1)))
+        cy0 = max(0, min(self._H, int(py0)))
+        cy1 = max(0, min(self._H, int(py1)))
+        if cx0 < cx1 and cy0 < cy1:
+            self.clear_invalid[cy0:cy1, cx0:cx1] = True
         self.recompute_invalid()
 
     def placed_bbox(self) -> Tuple[float, float, float, float]:
@@ -234,9 +315,6 @@ class GridMaps:
         zone = self._zone_for_gid(gid)
         self.zone_invalid.copy_(zone)
         self.recompute_invalid()
-
-    def set_current_gid(self, gid: Optional[GroupId]) -> None:
-        self.apply_zone_for_gid(gid)
 
     def rebuild_zone_cache(self) -> None:
         self._zone_by_gid = {}
@@ -262,7 +340,7 @@ class GridMaps:
         if allowed:
             allowed_mask = torch.zeros((self._H, self._W), dtype=torch.bool, device=self._device)
             for aid in allowed:
-                m = self._placement_area_masks.get(aid, None)
+                m = self._placement_map.get(aid, None)
                 if isinstance(m, torch.Tensor):
                     allowed_mask |= m
             z |= (~allowed_mask)
@@ -314,7 +392,7 @@ class GridMaps:
         return m
 
     @staticmethod
-    def _build_placement_area_masks(
+    def _build_area_map(
         H: int,
         W: int,
         device: torch.device,

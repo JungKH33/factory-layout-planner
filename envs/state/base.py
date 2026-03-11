@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import ClassVar, Dict, List, Optional, Tuple
 
 import torch
 
-from ..action import GroupId
+from ..action import EnvAction, GroupId
+from ..action_space import ActionSpace
+from ..placement.static import StaticSpec
 from .flow import FlowGraph
 from .maps import GridMaps
 
@@ -24,7 +27,6 @@ class EnvState:
         "placed",
         "remaining",
         "step_count",
-        "current_gid",
         "placed_nodes_order",
         "maps",
         "flow",
@@ -34,7 +36,6 @@ class EnvState:
     placed: set[GroupId]
     remaining: List[GroupId]
     step_count: int
-    current_gid: Optional[GroupId]
     placed_nodes_order: List[GroupId]
     maps: GridMaps
     flow: FlowGraph
@@ -62,7 +63,6 @@ class EnvState:
             placed=set(),
             remaining=[],
             step_count=0,
-            current_gid=None,
             placed_nodes_order=[],
             maps=maps,
             flow=flow,
@@ -82,7 +82,6 @@ class EnvState:
             placed=set(self.placed),
             remaining=list(self.remaining),
             step_count=int(self.step_count),
-            current_gid=self.current_gid,
             placed_nodes_order=list(self.placed_nodes_order),
             maps=self.maps.copy(),
             flow=self.flow.copy(),
@@ -104,32 +103,21 @@ class EnvState:
         self.placed.update(src.placed)
         self.remaining[:] = list(src.remaining)
         self.step_count = int(src.step_count)
-        self.current_gid = src.current_gid
         self.placed_nodes_order[:] = list(src.placed_nodes_order)
         self.maps.restore(src.maps)
         self.flow.restore(src.flow)
-
-    def set_current_gid(self, gid: Optional[GroupId]) -> None:
-        if self.current_gid == gid:
-            return
-        self.current_gid = gid
-        self.maps.apply_zone_for_gid(gid)
 
     def reset_runtime(self, *, remaining: List[GroupId]) -> None:
         self.placements = {}
         self.placed = set()
         self.remaining = list(remaining)
         self.step_count = 0
-        self.current_gid = None
         self.placed_nodes_order = []
         self.maps.reset_runtime()
         self.flow.reset_runtime()
-        self.set_current_gid(self.remaining[0] if self.remaining else None)
 
-    def set_remaining(self, remaining: List[GroupId], *, update_current_gid: bool = True) -> None:
+    def set_remaining(self, remaining: List[GroupId]) -> None:
         self.remaining = list(remaining)
-        if update_current_gid:
-            self.set_current_gid(self.remaining[0] if self.remaining else None)
 
     def place(self, *, gid: GroupId, placement: object) -> None:
         is_new = gid not in self.placed
@@ -142,13 +130,36 @@ class EnvState:
             self.flow.clear_flow_port_pairs()
         if gid in self.remaining:
             self.remaining.remove(gid)
-        self.maps.paint_placement(placement)  # type: ignore[arg-type]
+
+        min_x = getattr(placement, "min_x", None)
+        max_x = getattr(placement, "max_x", None)
+        min_y = getattr(placement, "min_y", None)
+        max_y = getattr(placement, "max_y", None)
+        if min_x is None or max_x is None or min_y is None or max_y is None:
+            raise ValueError(
+                "placement must define min_x/max_x/min_y/max_y for map painting"
+            )
+        x0 = int(math.floor(float(min_x)))
+        y0 = int(math.floor(float(min_y)))
+        x1 = int(math.ceil(float(max_x)))
+        y1 = int(math.ceil(float(max_y)))
+        cL = int(getattr(placement, "clearance_left", 0) or 0)
+        cR = int(getattr(placement, "clearance_right", 0) or 0)
+        cB = int(getattr(placement, "clearance_bottom", 0) or 0)
+        cT = int(getattr(placement, "clearance_top", 0) or 0)
+        self.maps.paint_rects(
+            bbox_min_x=float(min_x),
+            bbox_max_x=float(max_x),
+            bbox_min_y=float(min_y),
+            bbox_max_y=float(max_y),
+            body_rect=(x0, y0, x1, y1),
+            clear_rect=(x0 - cL, y0 - cB, x1 + cR, y1 + cT),
+        )
         self.flow.upsert_io(
             gid=gid,
             placement=placement,
             nodes=self.placed_nodes_order,
         )
-        self.set_current_gid(self.remaining[0] if self.remaining else None)
 
     def step(
         self,
@@ -176,9 +187,6 @@ class EnvState:
     def build_flow_w(self) -> torch.Tensor:
         return self.flow.build_flow_w(self.placed_nodes_order)
 
-    def build_delta_flow_weights(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.flow.build_delta_flow_weights(self.current_gid, self.placed_nodes_order)
-
     def build_delta_flow_weights_for(self, gid: Optional[GroupId]) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.flow.build_delta_flow_weights(gid, self.placed_nodes_order)
 
@@ -192,19 +200,108 @@ class EnvState:
     def flow_port_pairs(self) -> Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]]:
         return self.flow.flow_port_pairs
 
-    @property
-    def invalid_map(self) -> torch.Tensor:
-        return self.maps.invalid
+    def is_placeable(
+        self,
+        *,
+        action: EnvAction,
+        spec: StaticSpec,
+    ) -> bool:
+        if not isinstance(action, EnvAction):
+            raise TypeError(f"action must be EnvAction, got {type(action).__name__}")
+        gid = action.gid
+        x_bl = int(action.x)
+        y_bl = int(action.y)
+        r = spec._resolve_rot(int(action.rot))
+        w, h = spec._rotated_size(r)
+        cL, cR, cB, cT = spec._clearance_lrtb(r)
 
-    @property
-    def clear_invalid_map(self) -> torch.Tensor:
-        return self.maps.clear_invalid
+        x0 = int(x_bl)
+        y0 = int(y_bl)
+        x1 = x0 + int(w)
+        y1 = y0 + int(h)
+        body_rect = (x0, y0, x1, y1)
+        pad_rect = (x0 - int(cL), y0 - int(cB), x1 + int(cR), y1 + int(cT))
+        return self.maps.is_placeable(
+            gid=gid,
+            body_rect=body_rect,
+            pad_rect=pad_rect,
+        )
 
-    def get_placement(self, gid: GroupId) -> object:
-        p = self.placements.get(gid, None)
-        if p is None:
-            raise KeyError(f"placement missing for gid={gid!r}")
-        return p
+    def is_placeable_map(
+        self,
+        *,
+        gid: GroupId,
+        spec: StaticSpec,
+        rot: int,
+    ) -> torch.Tensor:
+        r = spec._resolve_rot(int(rot))
+        w, h = spec._rotated_size(r)
+        cL, cR, cB, cT = spec._clearance_lrtb(r)
+        return self.maps.is_placeable_map(
+            gid=gid,
+            body_w=int(w),
+            body_h=int(h),
+            cL=int(cL),
+            cR=int(cR),
+            cB=int(cB),
+            cT=int(cT),
+        )
+
+    def is_placeable_mask(
+        self,
+        *,
+        action_space: ActionSpace,
+        spec: StaticSpec,
+    ) -> torch.Tensor:
+        gid = action_space.gid
+        if gid is None:
+            raise ValueError("action_space.gid is required")
+        device = self.maps.invalid.device
+        xyrot = action_space.xyrot.to(dtype=torch.long, device=device).view(-1, 3)
+        valid = action_space.mask.to(dtype=torch.bool, device=device).view(-1)
+        if int(xyrot.shape[0]) == 0:
+            return valid
+
+        w0, h0 = spec._rotated_size(0)
+        cL0, cR0, cB0, cT0 = spec._clearance_lrtb(0)
+        map_0 = self.maps.is_placeable_map(
+            gid=gid,
+            body_w=int(w0),
+            body_h=int(h0),
+            cL=int(cL0),
+            cR=int(cR0),
+            cB=int(cB0),
+            cT=int(cT0),
+        )
+        w90, h90 = spec._rotated_size(90)
+        cL90, cR90, cB90, cT90 = spec._clearance_lrtb(90)
+        map_90 = self.maps.is_placeable_map(
+            gid=gid,
+            body_w=int(w90),
+            body_h=int(h90),
+            cL=int(cL90),
+            cR=int(cR90),
+            cB=int(cB90),
+            cT=int(cT90),
+        )
+
+        H, W = self.maps.shape
+        x = xyrot[:, 0]
+        y = xyrot[:, 1]
+        rot = xyrot[:, 2]
+        in_bounds = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+        rot_norm = torch.remainder(rot, 360)
+        if torch.any((rot_norm % 90) != 0):
+            raise ValueError("rot must be multiples of 90")
+        if not bool(spec.rotatable):
+            rot_norm = torch.zeros_like(rot_norm)
+        is_rot0 = (rot_norm == 0) | (rot_norm == 180)
+        x_clamped = x.clamp(0, W - 1)
+        y_clamped = y.clamp(0, H - 1)
+        result_0 = map_0[y_clamped, x_clamped]
+        result_90 = map_90[y_clamped, x_clamped]
+        can = torch.where(is_rot0, result_0, result_90) & in_bounds
+        return can & valid
 
     def placed_bbox(self) -> Tuple[float, float, float, float]:
         return self.maps.placed_bbox()

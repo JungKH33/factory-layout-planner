@@ -295,14 +295,7 @@ if __name__ == "__main__":
         for dx in range(-200, 201, 10):
             for dy in range(-200, 201, 10):
                 x, y = cx + dx, cy + dy
-                spec = env.group_specs[gid]
-                if not spec.is_placeable(
-                    x_bl=int(x),
-                    y_bl=int(y),
-                    rot=0,
-                    invalid=env.get_maps().invalid,
-                    clear_invalid=env.get_maps().clear_invalid,
-                ):
+                if not env.is_placeable(EnvAction(gid=gid, x=int(x), y=int(y), rot=0)):
                     continue
                 _obs, _reward, _terminated, _truncated, info = env.step_action(
                     EnvAction(gid=gid, x=int(x), y=int(y), rot=0)

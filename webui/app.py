@@ -265,7 +265,10 @@ async def step(sid: str, req: StepRequest):
                 info = {"reason": "masked_action"}
             else:
                 x_bl, y_bl, rot, _i, _j = adapter.decode_action(a)
-                placement = EnvAction(x=int(x_bl), y=int(y_bl), rot=int(rot))
+                gid = candidates.gid
+                if gid is None:
+                    raise ValueError("candidate gid is required")
+                placement = EnvAction(gid=gid, x=int(x_bl), y=int(y_bl), rot=int(rot))
                 obs_core, reward, session.terminated, session.truncated, info = engine.step_action(placement)
                 session.obs = adapter.build_observation(obs_core)
             

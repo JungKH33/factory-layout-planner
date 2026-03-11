@@ -9,6 +9,7 @@ import gymnasium as gym
 import torch
 
 from envs.env import FactoryLayoutEnv, GroupId
+from envs.action_space import ActionSpace
 
 from .base import BaseDecisionAdapter
 
@@ -183,6 +184,7 @@ class GreedyDecisionAdapter(BaseDecisionAdapter):
         y_bl: int,
         rot: int,
         wh_cache: Dict[int, Tuple[int, int]],
+        valid_by_rot: Dict[int, torch.Tensor],
     ) -> bool:
         w, h = wh_cache[int(rot)]
         gw = int(env.grid_width)
@@ -192,24 +194,17 @@ class GreedyDecisionAdapter(BaseDecisionAdapter):
             return True
         if w <= 0 or h <= 0:
             return True
+        valid_map = valid_by_rot.get(int(rot), None)
+        if not isinstance(valid_map, torch.Tensor):
+            return True
+        H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
+        if x_bl < 0 or y_bl < 0 or x_bl >= W or y_bl >= H:
+            return True
+        return not bool(valid_map[int(y_bl), int(x_bl)].item())
 
-        invalid = env.get_maps().invalid  # torch.BoolTensor[H,W]
-        clear_invalid = env.get_maps().clear_invalid  # torch.BoolTensor[H,W]
-
-        x0 = int(x_bl)
-        y0 = int(y_bl)
-        x1 = x0 + int(w) - 1
-        y1 = y0 + int(h) - 1
-        xc = (x0 + x1) // 2
-        yc = (y0 + y1) // 2
-
-        pts = ((x0, y0), (x1, y0), (x0, y1), (x1, y1), (xc, yc))
-        for px, py in pts:
-            if bool(invalid[py, px].item()):
-                return True
-            if bool(clear_invalid[py, px].item()):
-                return True
-        return False
+    def _build_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rot: int) -> torch.Tensor:
+        spec = env.group_specs[gid]
+        return env.get_state().is_placeable_map(gid=gid, spec=spec, rot=int(rot))
 
     def _score_sorted(
         self,
@@ -380,19 +375,38 @@ class GreedyDecisionAdapter(BaseDecisionAdapter):
         group = env.group_specs[gid]
         rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
         wh_cache = {int(r): self._wh_int(env, gid, int(r)) for r in rotations}
+        valid_by_rot = {int(r): self._build_valid_map(env, gid=gid, rot=int(r)) for r in rotations}
         unique_tagged = self._dedup_tagged(raw_tagged, quant_step, group)
-        valid_candidates = [
+        prefiltered = [
             c
             for _, c in unique_tagged
-            if (not self._cheap_reject_body(env, gid=gid, x_bl=int(c[1]), y_bl=int(c[2]), rot=int(c[3]), wh_cache=wh_cache))
-            and group.is_placeable(
+            if not self._cheap_reject_body(
+                env,
+                gid=gid,
                 x_bl=int(c[1]),
                 y_bl=int(c[2]),
                 rot=int(c[3]),
-                invalid=env.get_maps().invalid,
-                clear_invalid=env.get_maps().clear_invalid,
+                wh_cache=wh_cache,
+                valid_by_rot=valid_by_rot,
             )
         ]
+        valid_candidates: List[Tuple[GroupId, int, int, int]] = []
+        if prefiltered:
+            xyrot = torch.tensor(
+                [[int(c[1]), int(c[2]), int(c[3])] for c in prefiltered],
+                dtype=torch.long,
+                device=device,
+            )
+            placeable = env.is_placeable_mask(
+                ActionSpace(
+                    xyrot=xyrot,
+                    mask=torch.ones((int(xyrot.shape[0]),), dtype=torch.bool, device=device),
+                    gid=gid,
+                )
+            )
+            for i, cand in enumerate(prefiltered):
+                if bool(placeable[i].item()):
+                    valid_candidates.append(cand)
 
         final = valid_candidates[: self.k]
         mask = torch.zeros((self.k,), dtype=torch.bool, device=device)
@@ -415,6 +429,7 @@ class GreedyDecisionAdapter(BaseDecisionAdapter):
         group = env.group_specs[next_group_id]
         rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
         wh_cache = {int(r): self._wh_int(env, next_group_id, int(r)) for r in rotations}
+        valid_by_rot = {int(r): self._build_valid_map(env, gid=next_group_id, rot=int(r)) for r in rotations}
 
         raw_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
         raw_tagged.extend((0, c) for c in self._source_high(env, next_group_id, n_high * self.oversample_factor))
@@ -423,18 +438,36 @@ class GreedyDecisionAdapter(BaseDecisionAdapter):
         raw_tagged.extend((3, c) for c in self._source_random(env, next_group_id, n_rand * self.oversample_factor))
 
         unique_tagged = self._dedup_tagged(raw_tagged, q, group)
-        valid_tagged = [
+        prefiltered_tagged = [
             (src, c)
             for src, c in unique_tagged
-            if (not self._cheap_reject_body(env, gid=next_group_id, x_bl=int(c[1]), y_bl=int(c[2]), rot=int(c[3]), wh_cache=wh_cache))
-            and group.is_placeable(
+            if not self._cheap_reject_body(
+                env,
+                gid=next_group_id,
                 x_bl=int(c[1]),
                 y_bl=int(c[2]),
                 rot=int(c[3]),
-                invalid=env.get_maps().invalid,
-                clear_invalid=env.get_maps().clear_invalid,
+                wh_cache=wh_cache,
+                valid_by_rot=valid_by_rot,
             )
         ]
+        valid_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
+        if prefiltered_tagged:
+            xyrot = torch.tensor(
+                [[int(c[1]), int(c[2]), int(c[3])] for _, c in prefiltered_tagged],
+                dtype=torch.long,
+                device=device,
+            )
+            placeable = env.is_placeable_mask(
+                ActionSpace(
+                    xyrot=xyrot,
+                    mask=torch.ones((int(xyrot.shape[0]),), dtype=torch.bool, device=device),
+                    gid=next_group_id,
+                )
+            )
+            for i, tagged in enumerate(prefiltered_tagged):
+                if bool(placeable[i].item()):
+                    valid_tagged.append(tagged)
 
         pools: Dict[int, List[Tuple[GroupId, int, int, int]]] = {0: [], 1: [], 2: [], 3: []}
         for src, c in valid_tagged:

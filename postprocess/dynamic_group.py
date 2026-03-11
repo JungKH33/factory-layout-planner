@@ -364,7 +364,7 @@ if __name__ == "__main__":
     for gid, x, y, rot in placements:
         if gid in env.get_state().remaining:
             obs, reward, terminated, truncated, info = env.step_action(
-                EnvAction(x=int(x), y=int(y), rot=int(rot))
+                EnvAction(gid=gid, x=int(x), y=int(y), rot=int(rot))
             )
             print(f"    Placed {gid} at ({x}, {y}, rot={rot}) - reason: {info.get('reason')}")
     

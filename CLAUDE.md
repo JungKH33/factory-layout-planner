@@ -143,6 +143,6 @@ Zone constraint logic: weight `<` → invalid, height `<` → invalid, dry `>` �
 - **Grid units**: integer cells. `grid_size` (meters/cell) is only for display/output.
 - **Device ownership**: engine's `device` is set at construction; all tensors follow it. Adapters inherit device on `bind()`.
 - **`inference.py` config**: module-level constants (`ENV_JSON`, `WRAPPER_MODE`, `AGENT_MODE`, `SEARCH_MODE`, etc.) — no CLI args.
-- **`remaining[0]` = current facility**: always places `remaining[0]` next. Ordering agents reorder this list. `gid=None` in `EnvAction` means "use remaining[0]".
+- **Current facility selection**: adapters usually build candidates for `remaining[0]` (ordering agents can reorder this list), but `EnvAction` itself now requires explicit `gid`.
 - **Delta pattern**: all candidate evaluation uses `delta_cost()` (vectorized incremental) rather than full `cost()` per candidate.
 - **Static-sharing on copy**: `GridMaps.copy()` shares static tensors by reference, clones only runtime tensors. Makes MCTS snapshots cheap.

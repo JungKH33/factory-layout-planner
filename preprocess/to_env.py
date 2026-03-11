@@ -638,26 +638,15 @@ def validate_and_adjust_groups(
         
         # placeable 검사 (remaining = 아직 배치 안 된 그룹)
         problematic_groups = []
+        state = env.get_state()
         for gid in env.get_state().remaining:
             g = env.group_specs[gid]
             if g.rotatable:
-                mask0 = g.is_placeable_mask(
-                    rot=0,
-                    invalid=env.get_maps().invalid,
-                    clear_invalid=env.get_maps().clear_invalid,
-                )
-                mask90 = g.is_placeable_mask(
-                    rot=90,
-                    invalid=env.get_maps().invalid,
-                    clear_invalid=env.get_maps().clear_invalid,
-                )
+                mask0 = state.is_placeable_map(gid=gid, spec=g, rot=0)
+                mask90 = state.is_placeable_map(gid=gid, spec=g, rot=90)
                 count = int(mask0.sum().item()) + int(mask90.sum().item())
             else:
-                mask0 = g.is_placeable_mask(
-                    rot=0,
-                    invalid=env.get_maps().invalid,
-                    clear_invalid=env.get_maps().clear_invalid,
-                )
+                mask0 = state.is_placeable_map(gid=gid, spec=g, rot=0)
                 count = int(mask0.sum().item())
             
             if count == 0:

@@ -4,12 +4,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 
 from .base import PlacementBase
-
-RectI = Tuple[int, int, int, int]
-
 
 @dataclass
 class StaticPlacement(PlacementBase):
@@ -173,12 +169,6 @@ class StaticSpec:
     def _exits_from_bl(self, x_bl: float, y_bl: float, rot: int) -> List[Tuple[float, float]]:
         return self._ports_from_bl(x_bl, y_bl, rot, self.exits_rel)
 
-    def _body_rect_bl(self, x_bl: int, y_bl: int, rot: int) -> RectI:
-        w, h = self._rotated_size(rot)
-        x0 = int(x_bl)
-        y0 = int(y_bl)
-        return (x0, y0, x0 + int(w), y0 + int(h))
-
     def _center_from_bl_batch(
         self,
         x_bl: torch.Tensor,
@@ -217,128 +207,6 @@ class StaticSpec:
 
     def _exits_from_bl_batch(self, center: torch.Tensor, rot_idx: torch.Tensor) -> torch.Tensor:
         return self._ports_from_bl_batch(self.exits_rel, center, rot_idx)
-
-    @staticmethod
-    def _pad_rect_i(rect: RectI, *, cL: int, cR: int, cB: int, cT: int) -> RectI:
-        x0, y0, x1, y1 = rect
-        return (x0 - int(cL), y0 - int(cB), x1 + int(cR), y1 + int(cT))
-
-    @staticmethod
-    def _recti_hits_invalid(rect: RectI, invalid: torch.Tensor) -> bool:
-        x0, y0, x1, y1 = rect
-        H, W = invalid.shape
-        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
-            return True
-        if x0 >= x1 or y0 >= y1:
-            return False
-        return bool(torch.any(invalid[y0:y1, x0:x1]).item())
-
-    def is_placeable(
-        self,
-        *,
-        x_bl: int,
-        y_bl: int,
-        rot: int,
-        invalid: torch.Tensor,
-        clear_invalid: torch.Tensor,
-    ) -> bool:
-        r = self._resolve_rot(rot)
-        rect = self._body_rect_bl(x_bl, y_bl, r)
-        cL, cR, cB, cT = self._clearance_lrtb(r)
-        rect_pad = self._pad_rect_i(rect, cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT))
-
-        if self._recti_hits_invalid(rect, invalid):
-            return False
-        if self._recti_hits_invalid(rect, clear_invalid):
-            return False
-        if self._recti_hits_invalid(rect_pad, invalid):
-            return False
-        return True
-
-    def is_placeable_mask(
-        self,
-        *,
-        rot: int,
-        invalid: torch.Tensor,
-        clear_invalid: torch.Tensor,
-    ) -> torch.Tensor:
-        r = self._resolve_rot(rot)
-        w, h = self._rotated_size(r)
-        w, h = int(w), int(h)
-        cL, cR, cB, cT = self._clearance_lrtb(r)
-        kw = w + cL + cR
-        kh = h + cB + cT
-
-        H, W = invalid.shape
-        result = torch.zeros((H, W), dtype=torch.bool, device=self.device)
-        if kh > H or kw > W or h <= 0 or w <= 0:
-            return result
-
-        inv_f = invalid.float().unsqueeze(0).unsqueeze(0)
-        clear_f = clear_invalid.float().unsqueeze(0).unsqueeze(0)
-
-        body_kernel = torch.ones((1, 1, h, w), device=self.device, dtype=torch.float32)
-        pad_kernel = torch.ones((1, 1, kh, kw), device=self.device, dtype=torch.float32)
-
-        body_inv = F.conv2d(inv_f, body_kernel, padding=0).squeeze()
-        body_clear = F.conv2d(clear_f, body_kernel, padding=0).squeeze()
-        pad_inv = F.conv2d(inv_f, pad_kernel, padding=0).squeeze()
-
-        valid_h = H - kh + 1
-        valid_w = W - kw + 1
-        if valid_h <= 0 or valid_w <= 0:
-            return result
-
-        body_inv_slice = body_inv[cB : cB + valid_h, cL : cL + valid_w]
-        body_clear_slice = body_clear[cB : cB + valid_h, cL : cL + valid_w]
-
-        valid_mask = (body_inv_slice == 0) & (body_clear_slice == 0) & (pad_inv == 0)
-        result[:valid_h, :valid_w] = valid_mask
-        return result
-
-    def is_placeable_batch(
-        self,
-        *,
-        x: object,
-        y: object,
-        rot: object,
-        invalid: torch.Tensor,
-        clear_invalid: torch.Tensor,
-    ) -> torch.Tensor:
-        """Batch placeable check; scalar or tensor inputs supported."""
-        scalar_input = not (torch.is_tensor(x) or torch.is_tensor(y) or torch.is_tensor(rot))
-        if scalar_input:
-            x = torch.tensor([int(x)], dtype=torch.long, device=self.device)
-            y = torch.tensor([int(y)], dtype=torch.long, device=self.device)
-            rot = torch.tensor([int(rot)], dtype=torch.long, device=self.device)
-
-        x = x.to(device=self.device, dtype=torch.long).view(-1)
-        y = y.to(device=self.device, dtype=torch.long).view(-1)
-        rot = rot.to(device=self.device, dtype=torch.long).view(-1)
-
-        H, W = invalid.shape
-
-        mask_0 = self.is_placeable_mask(rot=0, invalid=invalid, clear_invalid=clear_invalid)
-        mask_90 = self.is_placeable_mask(rot=90, invalid=invalid, clear_invalid=clear_invalid)
-
-        in_bounds = (x >= 0) & (x < W) & (y >= 0) & (y < H)
-
-        rot_norm = torch.remainder(rot, 360)
-        if torch.any((rot_norm % 90) != 0):
-            raise ValueError("rot must be multiples of 90")
-        if not bool(self.rotatable):
-            rot_norm = torch.zeros_like(rot_norm)
-        is_rot0 = (rot_norm == 0) | (rot_norm == 180)
-
-        x_clamped = x.clamp(0, W - 1)
-        y_clamped = y.clamp(0, H - 1)
-
-        result_0 = mask_0[y_clamped, x_clamped]
-        result_90 = mask_90[y_clamped, x_clamped]
-
-        result = torch.where(is_rot0, result_0, result_90)
-        result = result & in_bounds
-        return result
 
     def build_placement(self, *, x_bl: int, y_bl: int, rot: int) -> StaticPlacement:
         """Build a placed-instance snapshot with absolute/rotated values."""
@@ -388,17 +256,6 @@ class StaticSpec:
             "max_x",
             "min_y",
             "max_y",
-            "x_bl",
-            "y_bl",
-            "rot",
-            "w",
-            "h",
-            "cx",
-            "cy",
-            "clearance_left",
-            "clearance_right",
-            "clearance_bottom",
-            "clearance_top",
         }
         unknown = set(needed) - supported
         if unknown:
@@ -420,20 +277,8 @@ class StaticSpec:
         rot_idx = self._rot_idx(rot)
         out: Dict[str, torch.Tensor] = {}
 
-        if {"x_bl", "y_bl", "rot"} & needed:
-            if "x_bl" in needed:
-                out["x_bl"] = x_bl.to(dtype=torch.float32)
-            if "y_bl" in needed:
-                out["y_bl"] = y_bl.to(dtype=torch.float32)
-            if "rot" in needed:
-                out["rot"] = rot.to(dtype=torch.float32)
-
-        if {"w", "h", "min_x", "max_x", "min_y", "max_y", "cx", "cy"} & needed:
+        if {"min_x", "max_x", "min_y", "max_y"} & needed:
             w, h = self._wh_for_rot(rot_idx)
-            if "w" in needed:
-                out["w"] = w
-            if "h" in needed:
-                out["h"] = h
             if "min_x" in needed or "max_x" in needed:
                 min_x = x_bl.to(dtype=torch.float32)
                 if "min_x" in needed:
@@ -446,68 +291,15 @@ class StaticSpec:
                     out["min_y"] = min_y
                 if "max_y" in needed:
                     out["max_y"] = min_y + h
-            if "cx" in needed or "cy" in needed:
-                center = self._center_from_bl_batch(x_bl, y_bl, rot_idx)
-                if "cx" in needed:
-                    out["cx"] = center[:, 0]
-                if "cy" in needed:
-                    out["cy"] = center[:, 1]
 
         if {"entries", "exits"} & needed:
             center = self._center_from_bl_batch(x_bl, y_bl, rot_idx)
-            entry_xy = self._entries_from_bl_batch(center, rot_idx)
-            exit_xy = self._exits_from_bl_batch(center, rot_idx)
             if "entries" in needed:
-                out["entries"] = entry_xy
+                out["entries"] = self._entries_from_bl_batch(center, rot_idx)
             if "exits" in needed:
-                out["exits"] = exit_xy
-
-        if {"clearance_left", "clearance_right", "clearance_bottom", "clearance_top"} & needed:
-            r = torch.remainder(rot, 360)
-            if not bool(self.rotatable):
-                r = torch.zeros_like(r)
-            cL, cR, cB, cT = (
-                int(self.clearance_left_rel),
-                int(self.clearance_right_rel),
-                int(self.clearance_bottom_rel),
-                int(self.clearance_top_rel),
-            )
-            cL0 = torch.full((M,), cL, device=self.device, dtype=torch.float32)
-            cR0 = torch.full((M,), cR, device=self.device, dtype=torch.float32)
-            cB0 = torch.full((M,), cB, device=self.device, dtype=torch.float32)
-            cT0 = torch.full((M,), cT, device=self.device, dtype=torch.float32)
-
-            r0 = (r == 0)
-            r90 = (r == 90)
-            r180 = (r == 180)
-            r270 = (r == 270)
-
-            cL_t = torch.where(r0, cL0, torch.where(r90, cB0, torch.where(r180, cR0, cT0)))
-            cR_t = torch.where(r0, cR0, torch.where(r90, cT0, torch.where(r180, cL0, cB0)))
-            cB_t = torch.where(r0, cB0, torch.where(r90, cR0, torch.where(r180, cT0, cL0)))
-            cT_t = torch.where(r0, cT0, torch.where(r90, cL0, torch.where(r180, cB0, cR0)))
-
-            if "clearance_left" in needed:
-                out["clearance_left"] = cL_t
-            if "clearance_right" in needed:
-                out["clearance_right"] = cR_t
-            if "clearance_bottom" in needed:
-                out["clearance_bottom"] = cB_t
-            if "clearance_top" in needed:
-                out["clearance_top"] = cT_t
+                out["exits"] = self._exits_from_bl_batch(center, rot_idx)
 
         return out
-
-    def build_placement_batch(
-        self,
-        *,
-        x_bl: object,
-        y_bl: object,
-        rot: object,
-        needed: set[str],
-    ) -> Dict[str, torch.Tensor]:
-        """Backward-compatible alias for build_candidate_features()."""
-        return self.build_candidate_features(x_bl=x_bl, y_bl=y_bl, rot=rot, needed=needed)
 
 
 if __name__ == "__main__":
@@ -538,7 +330,7 @@ if __name__ == "__main__":
     y = torch.randint(0, H, (M,), device=device)
     rot = torch.randint(0, 4, (M,), device=device) * 90
 
-    # build_placement vs build_placement_batch
+    # build_placement vs build_candidate_features
     scalar = geom.build_placement(x_bl=10, y_bl=5, rot=90)
     print(
         "build_placement(x_bl=10,y_bl=5,rot=90) -> "
@@ -554,7 +346,7 @@ if __name__ == "__main__":
 
     needed = {"entries", "exits", "min_x"}
     t2 = time.perf_counter()
-    batch = geom.build_placement_batch(x_bl=x, y_bl=y, rot=rot, needed=needed)
+    batch = geom.build_candidate_features(x_bl=x, y_bl=y, rot=rot, needed=needed)
     if device.type == "cuda":
         torch.cuda.synchronize()
     t3 = time.perf_counter()
@@ -569,49 +361,3 @@ if __name__ == "__main__":
     )
     print(f"build_placement loop: {scalar_ms:.2f} ms total, {scalar_ms / M:.4f} ms/elem")
     print(f"build_candidate_features: {batch_ms:.2f} ms total, {batch_ms / M:.6f} ms/elem")
-
-    # is_placeable vs is_placeable_batch
-    sample_ok = geom.is_placeable(x_bl=10, y_bl=5, rot=90, invalid=invalid, clear_invalid=clear_invalid)
-    print(f"is_placeable(x_bl=10,y_bl=5,rot=90) -> {sample_ok}")
-
-    t4 = time.perf_counter()
-    for i in range(M):
-        _ = geom.is_placeable(
-            x_bl=int(x[i].item()),
-            y_bl=int(y[i].item()),
-            rot=int(rot[i].item()),
-            invalid=invalid,
-            clear_invalid=clear_invalid,
-        )
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    t5 = time.perf_counter()
-
-    t6 = time.perf_counter()
-    mask_batch = geom.is_placeable_batch(
-        x=x,
-        y=y,
-        rot=rot,
-        invalid=invalid,
-        clear_invalid=clear_invalid,
-    )
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    t7 = time.perf_counter()
-
-    scalar_ms = (t5 - t4) * 1000.0
-    batch_ms = (t7 - t6) * 1000.0
-    print(f"is_placeable_batch(M={M}) -> true={int(mask_batch.sum().item())}")
-    print(f"is_placeable loop: {scalar_ms:.2f} ms total, {scalar_ms / M:.4f} ms/elem")
-    print(f"is_placeable_batch: {batch_ms:.2f} ms total, {batch_ms / M:.6f} ms/elem")
-
-    # is_placeable_mask
-    t8 = time.perf_counter()
-    mask = geom.is_placeable_mask(rot=0, invalid=invalid, clear_invalid=clear_invalid)
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    t9 = time.perf_counter()
-    print(
-        f"is_placeable_mask(rot=0) -> shape={tuple(mask.shape)}, true={int(mask.sum().item())}"
-    )
-    print(f"is_placeable_mask: {(t9 - t8) * 1000.0:.2f} ms total")

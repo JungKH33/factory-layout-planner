@@ -47,7 +47,10 @@ class BaseDecisionAdapter(ABC):
         """Decode action index to EnvAction using action-space xyrot table."""
         a = self.validate_action_index(action, action_space)
         xyz = action_space.xyrot[a]
-        return EnvAction(x=int(xyz[0].item()), y=int(xyz[1].item()), rot=int(xyz[2].item()))
+        gid = action_space.gid
+        if gid is None:
+            raise ValueError("action_space.gid is required to decode EnvAction")
+        return EnvAction(gid=gid, x=int(xyz[0].item()), y=int(xyz[1].item()), rot=int(xyz[2].item()))
 
     def num_valid_actions(self, action_space: ActionSpace) -> int:
         """Return number of valid actions in given action-space."""
@@ -92,7 +95,6 @@ class BaseDecisionAdapter(ABC):
 
     def build_action_space(self) -> ActionSpace:
         """Generate action_space from current engine state."""
-        self._sync_zone_with_current_gid()
         self.mask = self.create_mask()
         if not isinstance(self.mask, torch.Tensor):
             raise TypeError("create_mask() must return torch.Tensor")
@@ -118,10 +120,6 @@ class BaseDecisionAdapter(ABC):
                 meta["action_delta"] = delta
 
         return ActionSpace(xyrot=xyrot, mask=mask, gid=gid, meta=(meta if meta else None))
-
-    def _sync_zone_with_current_gid(self) -> None:
-        gid = self.current_gid()
-        self.engine.get_state().set_current_gid(gid)
 
     def build_observation(self) -> Dict[str, Any]:
         """Build policy observation only (no action-space fields) from current engine state."""
