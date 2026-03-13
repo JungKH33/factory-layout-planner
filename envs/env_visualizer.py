@@ -6,7 +6,8 @@ from typing import Optional, Callable
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from matplotlib.widgets import CheckButtons
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.widgets import RadioButtons
 from matplotlib.lines import Line2D
 import numpy as np
 import networkx as nx
@@ -87,6 +88,7 @@ def _install_click_legend(
     title: str = "Click legend to toggle",
     legend_ax: Optional[plt.Axes] = None,
     connect_once_state: Optional[dict[str, Any]] = None,
+    on_toggle: Optional[Callable[[str, bool], None]] = None,
 ) -> dict[str, Any]:
     """Create a clickable legend that toggles artist visibility.
 
@@ -133,6 +135,7 @@ def _install_click_legend(
     state["groups"] = groups
     state["legend_artist_to_key"] = legend_artist_to_key
     state["vis"] = vis
+    state["on_toggle"] = on_toggle
 
     if connect_once_state is None:
         def _on_pick(event) -> None:
@@ -149,11 +152,253 @@ def _install_click_legend(
                 artist.set_alpha(1.0 if not cur else 0.35)
             except Exception:
                 pass
+            cb = state.get("on_toggle", None)
+            if callable(cb):
+                cb(key, not cur)
             fig.canvas.draw_idle()
 
         fig.canvas.mpl_connect("pick_event", _on_pick)
 
     return state
+
+
+_CONSTRAINT_BASE_COLORS = [
+    "#1e90ff",
+    "#2ca02c",
+    "#ff7f0e",
+    "#9467bd",
+    "#8c564b",
+    "#17becf",
+    "#e377c2",
+    "#bcbd22",
+]
+
+
+def _constraint_names(engine: Any) -> list[str]:
+    constraints = getattr(engine, "zone_constraints", None)
+    if not isinstance(constraints, dict):
+        return []
+    return [str(name) for name in constraints.keys()]
+
+
+def _constraint_color(name: str, names: list[str]) -> str:
+    idx = 0
+    try:
+        idx = names.index(str(name))
+    except ValueError:
+        idx = 0
+    return _CONSTRAINT_BASE_COLORS[idx % len(_CONSTRAINT_BASE_COLORS)]
+
+
+def _constraint_cmap(name: str, names: list[str]) -> LinearSegmentedColormap:
+    base = _constraint_color(name, names)
+    return LinearSegmentedColormap.from_list(
+        f"constraint_{str(name)}",
+        ["#ffffff", base],
+    )
+
+
+def _resolve_constraint_gid(engine: Any, action_space: Optional[CandidateSet]) -> Optional[Any]:
+    if action_space is not None:
+        gid = getattr(action_space, "gid", None)
+        if gid is None:
+            meta = getattr(action_space, "meta", None) or {}
+            gid = meta.get("gid", None)
+        if gid is not None:
+            return gid
+    state = engine.get_state()
+    remaining = getattr(state, "remaining", [])
+    if remaining:
+        return remaining[0]
+    return None
+
+
+def _compare_constraint(src: torch.Tensor, v: Any, *, op: str) -> torch.Tensor:
+    if op == "<":
+        return src < v
+    if op == "<=":
+        return src <= v
+    if op == ">":
+        return src > v
+    if op == ">=":
+        return src >= v
+    if op == "==":
+        return src == v
+    if op == "!=":
+        return src != v
+    raise ValueError(f"unsupported op: {op!r}")
+
+
+def _plot_constraint_rects(
+    ax: plt.Axes,
+    *,
+    cfg: dict[str, Any],
+    color: str,
+    label_values: bool,
+) -> list[Any]:
+    arts: list[Any] = []
+    areas = cfg.get("areas", [])
+    if not isinstance(areas, list):
+        return arts
+    for area in areas:
+        if not isinstance(area, dict):
+            continue
+        rect = area.get("rect", None)
+        if rect is None:
+            continue
+        x0, y0, x1, y1 = (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        w = max(0, x1 - x0)
+        h = max(0, y1 - y0)
+        if w <= 0 or h <= 0:
+            continue
+        patch = patches.Rectangle(
+            (x0, y0),
+            w,
+            h,
+            linewidth=1.1,
+            edgecolor=color,
+            facecolor=color,
+            alpha=0.07,
+            linestyle="-",
+            zorder=1.0,
+        )
+        ax.add_patch(patch)
+        arts.append(patch)
+        if label_values and area.get("value", None) is not None:
+            label = ax.text(
+                x0 + w / 2.0,
+                y0 + h / 2.0,
+                str(area["value"]),
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=color,
+                bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.65, linewidth=0.0),
+                zorder=1.1,
+            )
+            arts.append(label)
+    return arts
+
+
+def _plot_constraint_overlay(
+    ax: plt.Axes,
+    *,
+    engine: Any,
+    mode: str,
+    target: str,
+    constraint_gid: Optional[Any],
+) -> tuple[list[Any], list[str], Optional[Any], Optional[str]]:
+    mode_norm = str(mode).strip().lower()
+    target_norm = str(target)
+    names = _constraint_names(engine)
+    constraints = getattr(engine, "zone_constraints", None)
+    maps = getattr(engine.get_maps(), "constraint_maps", {})
+
+    if not isinstance(constraints, dict) or not names:
+        return [], ["constraint: none"], None, None
+    if mode_norm == "off":
+        return [], ["constraint: off"], None, None
+
+    arts: list[Any] = []
+    summary: list[str] = [f"mode: {mode_norm}"]
+
+    if mode_norm == "outline":
+        draw_names = names if target_norm == "All" else [target_norm]
+        draw_names = [name for name in draw_names if name in constraints]
+        if not draw_names:
+            return [], ["constraint: outline", "target: none"], None, None
+        summary.append(f"target: {'all' if target_norm == 'All' else target_norm}")
+        for name in draw_names:
+            cfg = constraints.get(name, {})
+            color = _constraint_color(name, names)
+            arts.extend(
+                _plot_constraint_rects(
+                    ax,
+                    cfg=cfg,
+                    color=color,
+                    label_values=(target_norm != "All"),
+                )
+            )
+            default_v = cfg.get("default", None)
+            op = str(cfg.get("op", ""))
+            area_count = len(cfg.get("areas", [])) if isinstance(cfg.get("areas", []), list) else 0
+            summary.append(f"{name}: {op} {default_v} | areas={area_count}")
+        return arts, summary, None, None
+
+    if target_norm == "All":
+        return [], [f"mode: {mode_norm}", "target: select a specific constraint"], None, None
+    if target_norm not in constraints or target_norm not in maps:
+        return [], [f"mode: {mode_norm}", f"target: {target_norm}", "constraint map missing"], None, None
+
+    cfg = constraints[target_norm]
+    color = _constraint_color(target_norm, names)
+    cmap_tensor = maps[target_norm]
+    default_v = cfg.get("default", None)
+    dtype = str(cfg.get("dtype", ""))
+    op = str(cfg.get("op", ""))
+    summary.extend([
+        f"constraint: {target_norm}",
+        f"dtype: {dtype}",
+        f"rule: cell {op} group_value",
+        f"default: {default_v}",
+    ])
+
+    if mode_norm == "value":
+        arr = cmap_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+        vmin = float(np.nanmin(arr))
+        vmax = float(np.nanmax(arr))
+        if abs(vmax - vmin) < 1e-9:
+            vmax = vmin + 1.0
+        im = ax.imshow(
+            arr,
+            origin="lower",
+            extent=(0, engine.grid_width, 0, engine.grid_height),
+            cmap=_constraint_cmap(target_norm, names),
+            vmin=vmin,
+            vmax=vmax,
+            alpha=0.28,
+            interpolation="nearest",
+            zorder=0.2,
+        )
+        arts.append(im)
+        arts.extend(_plot_constraint_rects(ax, cfg=cfg, color=color, label_values=True))
+        summary.append(f"range: [{float(np.nanmin(arr)):.3f}, {float(np.nanmax(arr)):.3f}]")
+        return arts, summary, im, f"{target_norm} value"
+
+    if mode_norm == "check":
+        if constraint_gid is None:
+            return [], summary + ["gid: unavailable"], None, None
+        spec = engine.group_specs.get(constraint_gid, None)
+        zone_values = dict(getattr(spec, "zone_values", {}) or {}) if spec is not None else {}
+        if target_norm not in zone_values:
+            return [], summary + [f"gid: {constraint_gid}", "group value: missing"], None, None
+        group_value = zone_values[target_norm]
+        pass_mask = _compare_constraint(cmap_tensor, group_value, op=op)
+        pass_np = pass_mask.detach().cpu().numpy().astype(bool, copy=False)
+        rgba = np.zeros((pass_np.shape[0], pass_np.shape[1], 4), dtype=np.float32)
+        rgba[..., 0] = np.where(pass_np, 0.0, 0.839)
+        rgba[..., 1] = np.where(pass_np, 0.627, 0.153)
+        rgba[..., 2] = np.where(pass_np, 0.172, 0.157)
+        rgba[..., 3] = np.where(pass_np, 0.18, 0.22)
+        im = ax.imshow(
+            rgba,
+            origin="lower",
+            extent=(0, engine.grid_width, 0, engine.grid_height),
+            interpolation="nearest",
+            zorder=0.2,
+        )
+        arts.append(im)
+        arts.extend(_plot_constraint_rects(ax, cfg=cfg, color=color, label_values=False))
+        pass_ratio = float(pass_np.mean()) if pass_np.size > 0 else 0.0
+        summary.extend([
+            f"gid: {constraint_gid}",
+            f"group value: {group_value}",
+            f"pass cells: {pass_ratio * 100.0:.1f}%",
+            "overlay: green=pass, red=fail",
+        ])
+        return arts, summary, None, None
+
+    return [], [f"constraint mode unsupported: {mode_norm}"], None, None
 
 
 def _draw_layout_layers(
@@ -162,6 +407,10 @@ def _draw_layout_layers(
     engine: Any,
     action_space: Optional[CandidateSet] = None,
     routes: Optional[list[Any]] = None,
+    constraint_mode: str = "outline",
+    constraint_target: str = "All",
+    constraint_gid: Optional[Any] = None,
+    constraint_meta_out: Optional[dict[str, Any]] = None,
 ) -> dict[str, list[Any]]:
     """Draw the same base layers used by plot_layout (zones/masks/layout/flow/score/action_space/routes)."""
     zone_artists: dict[str, list[Any]] = {"constraint": [], "forbidden": []}
@@ -216,33 +465,19 @@ def _draw_layout_layers(
             t.set_visible(True)
             zone_artists[kind].append(t)
 
-    # zones (generic constraints)
-    constraints = getattr(engine, "zone_constraints", None)
-    if isinstance(constraints, dict):
-        for cname, cfg in constraints.items():
-            if not isinstance(cfg, dict):
-                continue
-            areas = cfg.get("areas", [])
-            op = str(cfg.get("op", ""))
-            if not isinstance(areas, list):
-                continue
-            for a in areas:
-                if not isinstance(a, dict):
-                    continue
-                rect = a.get("rect", None)
-                value = a.get("value", None)
-                if rect is None:
-                    continue
-                label = None if value is None else f"{cname}{op}{value}"
-                _add_zone_rect(
-                    rect=rect,
-                    kind="constraint",
-                    edgecolor="#1e90ff",
-                    facecolor="#1e90ff",
-                    alpha=0.10,
-                    linestyle="-",
-                    label=label,
-                )
+    constraint_art, constraint_summary, constraint_mappable, constraint_cbar_label = _plot_constraint_overlay(
+        ax,
+        engine=engine,
+        mode=constraint_mode,
+        target=constraint_target,
+        constraint_gid=constraint_gid,
+    )
+    zone_artists["constraint"].extend(constraint_art)
+    if constraint_meta_out is not None:
+        constraint_meta_out.clear()
+        constraint_meta_out["summary_lines"] = list(constraint_summary)
+        constraint_meta_out["mappable"] = constraint_mappable
+        constraint_meta_out["colorbar_label"] = constraint_cbar_label
 
     # forbidden_areas
     if hasattr(engine, "forbidden_areas") and isinstance(getattr(engine, "forbidden_areas"), list):
@@ -366,7 +601,7 @@ def plot_layout(env: Any, *, action_space: Optional[CandidateSet] = None, routes
     """Interactive viewer (dynamic toggles only).
 
     - No save_path/show_* args here on purpose: use `save_layout(...)` for saving.
-    - This function always opens a window and lets you toggle layers via CheckButtons.
+    - This function always opens a window and lets you toggle layers via the external legend.
     
     Args:
         env: FactoryLayoutEnv or wrapper
@@ -376,23 +611,111 @@ def plot_layout(env: Any, *, action_space: Optional[CandidateSet] = None, routes
     # Support both engine (`FactoryLayoutEnv`) and wrapper envs by unwrapping.
     engine = getattr(env, "engine", env)
 
-    # Keep legend outside the layout area (separate axis on the right).
-    fig = plt.figure(figsize=(12, 6))
-    gs = fig.add_gridspec(nrows=1, ncols=2, width_ratios=[20, 5], wspace=0.05)
+    # Keep legend / constraint controls outside the layout area.
+    fig = plt.figure(figsize=(15, 6.5))
+    gs = fig.add_gridspec(nrows=1, ncols=3, width_ratios=[20, 1, 7], wspace=0.15)
     ax = fig.add_subplot(gs[0, 0])
-    ax_leg = fig.add_subplot(gs[0, 1])
+    cax_constraint = fig.add_subplot(gs[0, 1])
+    cax_constraint.axis("off")
+    right_gs = gs[0, 2].subgridspec(nrows=4, ncols=1, height_ratios=[5, 3, 5, 4], hspace=0.35)
+    ax_leg = fig.add_subplot(right_gs[0, 0])
+    ax_mode = fig.add_subplot(right_gs[1, 0])
+    ax_target = fig.add_subplot(right_gs[2, 0])
+    ax_constraint_info = fig.add_subplot(right_gs[3, 0])
     ax_leg.axis("off")
+    ax_constraint_info.axis("off")
     ax.set_xlim(0, engine.grid_width)
     ax.set_ylim(0, engine.grid_height)
     ax.set_aspect("equal")
-    ax.set_title("FactoryLayoutEnv")
-
-    groups = _draw_layout_layers(ax=ax, engine=engine, action_space=action_space, routes=routes)
     layer_vis = _default_layer_visibility()
-    _apply_layer_visibility(groups, layer_vis)
-    _install_click_legend(fig=fig, ax=ax, groups=groups, vis=layer_vis, legend_ax=ax_leg)
+    legend_state: dict[str, Any] | None = None
+    constraint_cbar = None
+    constraint_meta: dict[str, Any] = {}
+    constraint_names = _constraint_names(engine)
+    mode_labels = ["Off", "Outline", "Value", "Check"]
+    target_labels = ["All"] + constraint_names if constraint_names else ["All"]
+    constraint_state = {
+        "mode": "outline",
+        "target": "All",
+    }
+    mode_radio = RadioButtons(ax_mode, mode_labels, active=1)
+    target_radio = RadioButtons(ax_target, target_labels, active=0)
+    ax_mode.set_title("Constraint", fontsize=10)
+    ax_target.set_title("Target", fontsize=10)
+    info_text = ax_constraint_info.text(
+        0.01,
+        0.99,
+        "",
+        transform=ax_constraint_info.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9,
+        family="monospace",
+    )
 
-    plt.tight_layout()
+    def _render() -> None:
+        nonlocal legend_state, constraint_cbar
+        ax.clear()
+        ax_leg.clear()
+        ax_leg.axis("off")
+        ax.set_xlim(0, engine.grid_width)
+        ax.set_ylim(0, engine.grid_height)
+        ax.set_aspect("equal")
+        ax.set_title("FactoryLayoutEnv")
+
+        constraint_gid = _resolve_constraint_gid(engine, action_space)
+        groups = _draw_layout_layers(
+            ax=ax,
+            engine=engine,
+            action_space=action_space,
+            routes=routes,
+            constraint_mode=constraint_state["mode"],
+            constraint_target=constraint_state["target"],
+            constraint_gid=constraint_gid,
+            constraint_meta_out=constraint_meta,
+        )
+        _apply_layer_visibility(groups, layer_vis)
+        legend_state = _install_click_legend(
+            fig=fig,
+            ax=ax,
+            groups=groups,
+            vis=layer_vis,
+            legend_ax=ax_leg,
+            connect_once_state=legend_state,
+            on_toggle=lambda _key, _visible: _render(),
+        )
+
+        mappable = constraint_meta.get("mappable", None)
+        if bool(layer_vis.get("constraint_zones", True)) and mappable is not None:
+            cax_constraint.axis("on")
+            if constraint_cbar is None:
+                constraint_cbar = fig.colorbar(mappable, cax=cax_constraint)
+            else:
+                constraint_cbar.update_normal(mappable)
+            label = constraint_meta.get("colorbar_label", None)
+            if label:
+                constraint_cbar.set_label(str(label))
+        else:
+            if constraint_cbar is not None:
+                constraint_cbar.remove()
+                constraint_cbar = None
+            cax_constraint.clear()
+            cax_constraint.axis("off")
+
+        info_text.set_text("\n".join(constraint_meta.get("summary_lines", [])))
+        fig.canvas.draw_idle()
+
+    def _on_mode_clicked(label: str) -> None:
+        constraint_state["mode"] = str(label).strip().lower()
+        _render()
+
+    def _on_target_clicked(label: str) -> None:
+        constraint_state["target"] = str(label)
+        _render()
+
+    mode_radio.on_clicked(_on_mode_clicked)
+    target_radio.on_clicked(_on_target_clicked)
+    _render()
     plt.show()
 
 
@@ -424,22 +747,28 @@ def browse_steps(
 
     # Fixed layout so axes don't shrink when navigating:
     # - main axis: layout + scatter
-    # - right axis: colorbar
-    # - far-right axis: clickable legend (outside layout)
+    # - side axes: policy/constraint colorbars
+    # - far-right column: legend + constraint controls
     # - bottom axis: info panel (outside plot area)
-    fig = plt.figure(figsize=(13, 7))
+    fig = plt.figure(figsize=(16, 7))
     gs = fig.add_gridspec(
         nrows=2,
-        ncols=3,
+        ncols=4,
         height_ratios=[12, 2],
-        width_ratios=[20, 1, 5],
+        width_ratios=[20, 1, 1, 7],
         wspace=0.15,
         hspace=0.15,
     )
     ax = fig.add_subplot(gs[0, 0])
-    cax = fig.add_subplot(gs[0, 1])
-    ax_leg = fig.add_subplot(gs[0, 2])
+    cax_policy = fig.add_subplot(gs[0, 1])
+    cax_constraint = fig.add_subplot(gs[0, 2])
+    right_gs = gs[0, 3].subgridspec(nrows=4, ncols=1, height_ratios=[5, 3, 5, 4], hspace=0.35)
+    ax_leg = fig.add_subplot(right_gs[0, 0])
+    ax_mode = fig.add_subplot(right_gs[1, 0])
+    ax_target = fig.add_subplot(right_gs[2, 0])
+    ax_constraint_info = fig.add_subplot(right_gs[3, 0])
     ax_leg.axis("off")
+    ax_constraint_info.axis("off")
     ax_info = fig.add_subplot(gs[1, :])
     ax_info.axis("off")
 
@@ -451,7 +780,8 @@ def browse_steps(
     # persistent artists (updated in-place)
     sc = None
     sc_sel = None
-    cbar = None
+    policy_cbar = None
+    constraint_cbar = None
     info_text = ax_info.text(
         0.01,
         0.5,
@@ -466,6 +796,28 @@ def browse_steps(
     cur = {"idx": 0}
     layer_vis = _default_layer_visibility()
     legend_state: dict[str, Any] | None = None
+    constraint_meta: dict[str, Any] = {}
+    constraint_names = _constraint_names(engine)
+    mode_labels = ["Off", "Outline", "Value", "Check"]
+    target_labels = ["All"] + constraint_names if constraint_names else ["All"]
+    constraint_state = {
+        "mode": "outline",
+        "target": "All",
+    }
+    mode_radio = RadioButtons(ax_mode, mode_labels, active=1)
+    target_radio = RadioButtons(ax_target, target_labels, active=0)
+    ax_mode.set_title("Constraint", fontsize=10)
+    ax_target.set_title("Target", fontsize=10)
+    constraint_info_text = ax_constraint_info.text(
+        0.01,
+        0.99,
+        "",
+        transform=ax_constraint_info.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9,
+        family="monospace",
+    )
 
     def _frame_to_xy(frame: StepFrame) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float]]]:
         cand = frame.action_space
@@ -506,7 +858,7 @@ def browse_steps(
         return np.asarray(xs), np.asarray(ys), np.asarray(cs, dtype=np.float32), sel_xy
 
     def _render(idx: int) -> None:
-        nonlocal sc, sc_sel, cbar
+        nonlocal sc, sc_sel, policy_cbar, constraint_cbar
         nonlocal legend_state
         idx = int(max(0, min(len(frames) - 1, idx)))
         cur["idx"] = idx
@@ -537,7 +889,16 @@ def browse_steps(
 
         # Draw the same base UI layers as plot_layout (zones/masks/layout/flow/score),
         # then overlay policy-colored action_space on top.
-        groups = _draw_layout_layers(ax=ax, engine=engine, action_space=None)
+        constraint_gid = _resolve_constraint_gid(engine, f.action_space)
+        groups = _draw_layout_layers(
+            ax=ax,
+            engine=engine,
+            action_space=None,
+            constraint_mode=constraint_state["mode"],
+            constraint_target=constraint_state["target"],
+            constraint_gid=constraint_gid,
+            constraint_meta_out=constraint_meta,
+        )
         xy_data = _frame_to_xy(f)
         if xy_data is not None:
             xs, ys, cs, (sx, sy) = xy_data
@@ -559,22 +920,42 @@ def browse_steps(
             vis=layer_vis,
             legend_ax=ax_leg,
             connect_once_state=legend_state,
+            on_toggle=lambda _key, _visible: _render(cur["idx"]),
         )
 
         # colorbar (fixed axis; no layout shrink). Create once, then update.
         if xy_data is not None and sc is not None:
-            cax.axis("on")
-            if cbar is None:
-                cbar = fig.colorbar(sc, cax=cax)
-                cbar.set_label("policy score / prob")
+            cax_policy.axis("on")
+            if policy_cbar is None:
+                policy_cbar = fig.colorbar(sc, cax=cax_policy)
+                policy_cbar.set_label("policy score / prob")
             else:
-                cbar.update_normal(sc)
+                policy_cbar.update_normal(sc)
         else:
-            if cbar is not None:
-                cbar.remove()
-                cbar = None
-            cax.clear()
-            cax.axis("off")
+            if policy_cbar is not None:
+                policy_cbar.remove()
+                policy_cbar = None
+            cax_policy.clear()
+            cax_policy.axis("off")
+
+        constraint_mappable = constraint_meta.get("mappable", None)
+        if bool(layer_vis.get("constraint_zones", True)) and constraint_mappable is not None:
+            cax_constraint.axis("on")
+            if constraint_cbar is None:
+                constraint_cbar = fig.colorbar(constraint_mappable, cax=cax_constraint)
+            else:
+                constraint_cbar.update_normal(constraint_mappable)
+            label = constraint_meta.get("colorbar_label", None)
+            if label:
+                constraint_cbar.set_label(str(label))
+        else:
+            if constraint_cbar is not None:
+                constraint_cbar.remove()
+                constraint_cbar = None
+            cax_constraint.clear()
+            cax_constraint.axis("off")
+
+        constraint_info_text.set_text("\n".join(constraint_meta.get("summary_lines", [])))
 
         # info panel outside the plot
         parts = [f"step={f.step_idx}", f"cost={f.cost:.3f}"]
@@ -602,6 +983,16 @@ def browse_steps(
             _render(cur["idx"] - 1)
             return
 
+    def _on_mode_clicked(label: str) -> None:
+        constraint_state["mode"] = str(label).strip().lower()
+        _render(cur["idx"])
+
+    def _on_target_clicked(label: str) -> None:
+        constraint_state["target"] = str(label)
+        _render(cur["idx"])
+
+    mode_radio.on_clicked(_on_mode_clicked)
+    target_radio.on_clicked(_on_target_clicked)
     fig.canvas.mpl_connect("key_press_event", _on_key)
     _render(0)
     plt.show()
@@ -794,6 +1185,87 @@ def _plot_flow_overlay(ax: plt.Axes, env) -> list[Any]:
                 arrowprops=dict(arrowstyle="-|>", color="blue", lw=0.8, alpha=0.3),
             )
             arts.append(ann)
+    arts.extend(_plot_port_overlay(ax, env, port_pairs=port_pairs))
+    return arts
+
+
+def _coord_key(x: float, y: float) -> tuple[float, float]:
+    return (round(float(x), 6), round(float(y), 6))
+
+
+def _plot_port_overlay(
+    ax: plt.Axes,
+    env,
+    *,
+    port_pairs: Optional[dict[Any, tuple[tuple[float, float], tuple[float, float]]]] = None,
+) -> list[Any]:
+    """Draw all placed ports as fixed-size circles.
+
+    - entries: green circles
+    - exits: red circles
+    - active ports keep the same size and use higher alpha only
+    """
+    if not env.get_state().placed:
+        return []
+
+    pairs = port_pairs if port_pairs is not None else env.get_state().flow.flow_port_pairs
+    active_entries: set[tuple[float, float]] = set()
+    active_exits: set[tuple[float, float]] = set()
+    for cached in pairs.values():
+        if not isinstance(cached, tuple) or len(cached) != 2:
+            continue
+        exit_xy, entry_xy = cached
+        active_exits.add(_coord_key(exit_xy[0], exit_xy[1]))
+        active_entries.add(_coord_key(entry_xy[0], entry_xy[1]))
+
+    inactive_entry_xs: list[float] = []
+    inactive_entry_ys: list[float] = []
+    active_entry_xs: list[float] = []
+    active_entry_ys: list[float] = []
+    inactive_exit_xs: list[float] = []
+    inactive_exit_ys: list[float] = []
+    active_exit_xs: list[float] = []
+    active_exit_ys: list[float] = []
+
+    for gid in env.get_state().placed:
+        p = env.get_state().placements[gid]
+        for x, y in getattr(p, "entries", []):
+            if _coord_key(x, y) in active_entries:
+                active_entry_xs.append(float(x))
+                active_entry_ys.append(float(y))
+            else:
+                inactive_entry_xs.append(float(x))
+                inactive_entry_ys.append(float(y))
+        for x, y in getattr(p, "exits", []):
+            if _coord_key(x, y) in active_exits:
+                active_exit_xs.append(float(x))
+                active_exit_ys.append(float(y))
+            else:
+                inactive_exit_xs.append(float(x))
+                inactive_exit_ys.append(float(y))
+
+    arts: list[Any] = []
+
+    def _scatter(xs: list[float], ys: list[float], *, color: str, alpha: float) -> None:
+        if not xs:
+            return
+        sc = ax.scatter(
+            xs,
+            ys,
+            s=28,
+            c=color,
+            alpha=alpha,
+            edgecolors="white",
+            linewidths=0.8,
+            marker="o",
+            zorder=4.0,
+        )
+        arts.append(sc)
+
+    _scatter(inactive_entry_xs, inactive_entry_ys, color="#2ca02c", alpha=0.40)
+    _scatter(active_entry_xs, active_entry_ys, color="#2ca02c", alpha=0.90)
+    _scatter(inactive_exit_xs, inactive_exit_ys, color="#d62728", alpha=0.40)
+    _scatter(active_exit_xs, active_exit_ys, color="#d62728", alpha=0.90)
     return arts
 
 
