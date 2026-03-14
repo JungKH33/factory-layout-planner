@@ -7,7 +7,6 @@ from typing import Optional, Callable
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.widgets import RadioButtons
 from matplotlib.lines import Line2D
 import numpy as np
 import networkx as nx
@@ -39,14 +38,8 @@ def _set_visible_group(group: list[Any], v: bool) -> None:
             pass
 
 
-def _default_layer_visibility() -> dict[str, bool]:
-    # Match plot_layout defaults:
-    # - zones ON
-    # - forbidden masks ON
-    # - engine-internal invalid/clearance OFF (toggle when debugging)
-    # - flow/score/action_space ON
-    # - routes ON (if provided)
-    return {
+def _default_layer_visibility(constraint_names: list[str] = ()) -> dict[str, bool]:
+    vis = {
         "forbidden_areas": True,
         "invalid_mask": False,
         "clearance_mask": False,
@@ -54,8 +47,10 @@ def _default_layer_visibility() -> dict[str, bool]:
         "score": True,
         "action_space": True,
         "routes": True,
-        "constraint_zones": True,
     }
+    for name in constraint_names:
+        vis[f"zone:{name}"] = False
+    return vis
 
 
 def _apply_layer_visibility(groups: dict[str, list[Any]], vis: dict[str, bool]) -> None:
@@ -65,9 +60,8 @@ def _apply_layer_visibility(groups: dict[str, list[Any]], vis: dict[str, bool]) 
         _set_visible_group(g, bool(vis[k]))
 
 
-def _legend_proxies() -> list[Any]:
-    # Keep consistent legend ordering/labels across viewers.
-    return [
+def _legend_proxies(constraint_names: list[str] = ()) -> list[Any]:
+    proxies = [
         patches.Patch(facecolor="#d62728", edgecolor="#d62728", alpha=0.15, label="forbidden_areas"),
         patches.Patch(facecolor="#8b0000", edgecolor="#8b0000", alpha=0.10, label="invalid_mask"),
         patches.Patch(facecolor="#ff6b6b", edgecolor="#ff6b6b", alpha=0.10, label="clearance_mask"),
@@ -75,8 +69,13 @@ def _legend_proxies() -> list[Any]:
         Line2D([0], [0], color="black", lw=0.0, marker="s", markersize=8, label="score"),
         Line2D([0], [0], color="green", lw=0.0, marker="o", markersize=6, alpha=0.65, label="action_space"),
         Line2D([0], [0], color="orange", lw=2.0, alpha=0.8, label="routes"),
-        patches.Patch(facecolor="#1e90ff", edgecolor="#1e90ff", alpha=0.10, label="constraint_zones"),
     ]
+    for name in constraint_names:
+        color = _constraint_color(name, list(constraint_names))
+        proxies.append(
+            patches.Patch(facecolor=color, edgecolor=color, alpha=0.15, label=f"zone:{name}"),
+        )
+    return proxies
 
 
 def _install_click_legend(
@@ -89,6 +88,7 @@ def _install_click_legend(
     legend_ax: Optional[plt.Axes] = None,
     connect_once_state: Optional[dict[str, Any]] = None,
     on_toggle: Optional[Callable[[str, bool], None]] = None,
+    constraint_names: list[str] = (),
 ) -> dict[str, Any]:
     """Create a clickable legend that toggles artist visibility.
 
@@ -96,7 +96,7 @@ def _install_click_legend(
     the internal (groups, mapping) references each render (important for browse_steps).
     """
     leg_host = legend_ax if legend_ax is not None else ax
-    proxies = _legend_proxies()
+    proxies = _legend_proxies(constraint_names=constraint_names)
     leg = leg_host.legend(handles=proxies, loc="upper left", title=title, framealpha=0.85)
 
     # Make both legend TEXT and HANDLE clickable. (Users often click the color box/line.)
@@ -192,41 +192,14 @@ def _constraint_color(name: str, names: list[str]) -> str:
 
 def _constraint_cmap(name: str, names: list[str]) -> LinearSegmentedColormap:
     base = _constraint_color(name, names)
+    # Convert hex to RGB, create light variant (30% saturation) so min values are also visible.
+    from matplotlib.colors import to_rgb
+    r, g, b = to_rgb(base)
+    light = (r + (1 - r) * 0.7, g + (1 - g) * 0.7, b + (1 - b) * 0.7)
     return LinearSegmentedColormap.from_list(
         f"constraint_{str(name)}",
-        ["#ffffff", base],
+        [light, base],
     )
-
-
-def _resolve_constraint_gid(engine: Any, action_space: Optional[CandidateSet]) -> Optional[Any]:
-    if action_space is not None:
-        gid = getattr(action_space, "gid", None)
-        if gid is None:
-            meta = getattr(action_space, "meta", None) or {}
-            gid = meta.get("gid", None)
-        if gid is not None:
-            return gid
-    state = engine.get_state()
-    remaining = getattr(state, "remaining", [])
-    if remaining:
-        return remaining[0]
-    return None
-
-
-def _compare_constraint(src: torch.Tensor, v: Any, *, op: str) -> torch.Tensor:
-    if op == "<":
-        return src < v
-    if op == "<=":
-        return src <= v
-    if op == ">":
-        return src > v
-    if op == ">=":
-        return src >= v
-    if op == "==":
-        return src == v
-    if op == "!=":
-        return src != v
-    raise ValueError(f"unsupported op: {op!r}")
 
 
 def _plot_constraint_rects(
@@ -235,9 +208,11 @@ def _plot_constraint_rects(
     cfg: dict[str, Any],
     color: str,
     label_values: bool,
+    name: str = "",
 ) -> list[Any]:
     arts: list[Any] = []
     areas = cfg.get("areas", [])
+    op = str(cfg.get("op", ""))
     if not isinstance(areas, list):
         return arts
     for area in areas:
@@ -268,7 +243,7 @@ def _plot_constraint_rects(
             label = ax.text(
                 x0 + w / 2.0,
                 y0 + h / 2.0,
-                str(area["value"]),
+                f"{name}{op}{area['value']}",
                 ha="center",
                 va="center",
                 fontsize=8,
@@ -280,140 +255,19 @@ def _plot_constraint_rects(
     return arts
 
 
-def _plot_constraint_overlay(
-    ax: plt.Axes,
-    *,
-    engine: Any,
-    mode: str,
-    target: str,
-    constraint_gid: Optional[Any],
-) -> tuple[list[Any], list[str], Optional[Any], Optional[str]]:
-    mode_norm = str(mode).strip().lower()
-    target_norm = str(target)
-    names = _constraint_names(engine)
-    constraints = getattr(engine, "zone_constraints", None)
-    maps = getattr(engine.get_maps(), "constraint_maps", {})
-
-    if not isinstance(constraints, dict) or not names:
-        return [], ["constraint: none"], None, None
-    if mode_norm == "off":
-        return [], ["constraint: off"], None, None
-
-    arts: list[Any] = []
-    summary: list[str] = [f"mode: {mode_norm}"]
-
-    if mode_norm == "outline":
-        draw_names = names if target_norm == "All" else [target_norm]
-        draw_names = [name for name in draw_names if name in constraints]
-        if not draw_names:
-            return [], ["constraint: outline", "target: none"], None, None
-        summary.append(f"target: {'all' if target_norm == 'All' else target_norm}")
-        for name in draw_names:
-            cfg = constraints.get(name, {})
-            color = _constraint_color(name, names)
-            arts.extend(
-                _plot_constraint_rects(
-                    ax,
-                    cfg=cfg,
-                    color=color,
-                    label_values=(target_norm != "All"),
-                )
-            )
-            default_v = cfg.get("default", None)
-            op = str(cfg.get("op", ""))
-            area_count = len(cfg.get("areas", [])) if isinstance(cfg.get("areas", []), list) else 0
-            summary.append(f"{name}: {op} {default_v} | areas={area_count}")
-        return arts, summary, None, None
-
-    if target_norm == "All":
-        return [], [f"mode: {mode_norm}", "target: select a specific constraint"], None, None
-    if target_norm not in constraints or target_norm not in maps:
-        return [], [f"mode: {mode_norm}", f"target: {target_norm}", "constraint map missing"], None, None
-
-    cfg = constraints[target_norm]
-    color = _constraint_color(target_norm, names)
-    cmap_tensor = maps[target_norm]
-    default_v = cfg.get("default", None)
-    dtype = str(cfg.get("dtype", ""))
-    op = str(cfg.get("op", ""))
-    summary.extend([
-        f"constraint: {target_norm}",
-        f"dtype: {dtype}",
-        f"rule: cell {op} group_value",
-        f"default: {default_v}",
-    ])
-
-    if mode_norm == "value":
-        arr = cmap_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
-        vmin = float(np.nanmin(arr))
-        vmax = float(np.nanmax(arr))
-        if abs(vmax - vmin) < 1e-9:
-            vmax = vmin + 1.0
-        im = ax.imshow(
-            arr,
-            origin="lower",
-            extent=(0, engine.grid_width, 0, engine.grid_height),
-            cmap=_constraint_cmap(target_norm, names),
-            vmin=vmin,
-            vmax=vmax,
-            alpha=0.28,
-            interpolation="nearest",
-            zorder=0.2,
-        )
-        arts.append(im)
-        arts.extend(_plot_constraint_rects(ax, cfg=cfg, color=color, label_values=True))
-        summary.append(f"range: [{float(np.nanmin(arr)):.3f}, {float(np.nanmax(arr)):.3f}]")
-        return arts, summary, im, f"{target_norm} value"
-
-    if mode_norm == "check":
-        if constraint_gid is None:
-            return [], summary + ["gid: unavailable"], None, None
-        spec = engine.group_specs.get(constraint_gid, None)
-        zone_values = dict(getattr(spec, "zone_values", {}) or {}) if spec is not None else {}
-        if target_norm not in zone_values:
-            return [], summary + [f"gid: {constraint_gid}", "group value: missing"], None, None
-        group_value = zone_values[target_norm]
-        pass_mask = _compare_constraint(cmap_tensor, group_value, op=op)
-        pass_np = pass_mask.detach().cpu().numpy().astype(bool, copy=False)
-        rgba = np.zeros((pass_np.shape[0], pass_np.shape[1], 4), dtype=np.float32)
-        rgba[..., 0] = np.where(pass_np, 0.0, 0.839)
-        rgba[..., 1] = np.where(pass_np, 0.627, 0.153)
-        rgba[..., 2] = np.where(pass_np, 0.172, 0.157)
-        rgba[..., 3] = np.where(pass_np, 0.18, 0.22)
-        im = ax.imshow(
-            rgba,
-            origin="lower",
-            extent=(0, engine.grid_width, 0, engine.grid_height),
-            interpolation="nearest",
-            zorder=0.2,
-        )
-        arts.append(im)
-        arts.extend(_plot_constraint_rects(ax, cfg=cfg, color=color, label_values=False))
-        pass_ratio = float(pass_np.mean()) if pass_np.size > 0 else 0.0
-        summary.extend([
-            f"gid: {constraint_gid}",
-            f"group value: {group_value}",
-            f"pass cells: {pass_ratio * 100.0:.1f}%",
-            "overlay: green=pass, red=fail",
-        ])
-        return arts, summary, None, None
-
-    return [], [f"constraint mode unsupported: {mode_norm}"], None, None
-
-
 def _draw_layout_layers(
     *,
     ax: plt.Axes,
     engine: Any,
     action_space: Optional[CandidateSet] = None,
     routes: Optional[list[Any]] = None,
-    constraint_mode: str = "outline",
-    constraint_target: str = "All",
-    constraint_gid: Optional[Any] = None,
-    constraint_meta_out: Optional[dict[str, Any]] = None,
 ) -> dict[str, list[Any]]:
-    """Draw the same base layers used by plot_layout (zones/masks/layout/flow/score/action_space/routes)."""
-    zone_artists: dict[str, list[Any]] = {"constraint": [], "forbidden": []}
+    """Draw the same base layers used by plot_layout.
+
+    Each zone constraint gets its own group keyed as ``zone:<name>``
+    so the clickable legend can toggle individual value-map overlays.
+    """
+    forbidden_artists: list[Any] = []
     misc_artists: dict[str, list[Any]] = {
         "invalid_mask": [],
         "clearance_mask": [],
@@ -423,63 +277,39 @@ def _draw_layout_layers(
         "routes": [],
     }
 
-    def _add_zone_rect(
-        *,
-        rect: list[int] | tuple[int, int, int, int],
-        kind: str,
-        edgecolor: str,
-        facecolor: str,
-        alpha: float,
-        linestyle: str = "-",
-        label: Optional[str] = None,
-    ) -> None:
-        x0, y0, x1, y1 = (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
-        w = max(0, x1 - x0)
-        h = max(0, y1 - y0)
-        if w <= 0 or h <= 0:
-            return
-        p = patches.Rectangle(
-            (x0, y0),
-            w,
-            h,
-            linewidth=1.2,
-            edgecolor=edgecolor,
-            facecolor=facecolor,
-            alpha=alpha,
-            linestyle=linestyle,
-        )
-        p.set_visible(True)
-        ax.add_patch(p)
-        zone_artists[kind].append(p)
-        if label:
-            t = ax.text(
-                x0 + w / 2.0,
-                y0 + h / 2.0,
-                str(label),
-                ha="center",
-                va="center",
-                fontsize=8,
-                color=edgecolor,
-                bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.55, linewidth=0.0),
-            )
-            t.set_visible(True)
-            zone_artists[kind].append(t)
+    # --- per-constraint value overlays --------------------------------
+    per_zone: dict[str, list[Any]] = {}
+    constraints = getattr(engine, "zone_constraints", None)
+    if isinstance(constraints, dict):
+        names = _constraint_names(engine)
+        maps_obj = engine.get_maps()
+        constraint_maps = getattr(maps_obj, "constraint_maps", {})
+        for name in names:
+            cfg = constraints[name]
+            color = _constraint_color(name, names)
+            arts: list[Any] = []
+            if name in constraint_maps:
+                arr = constraint_maps[name].detach().cpu().numpy().astype(np.float32, copy=False)
+                vmin = float(np.nanmin(arr))
+                vmax = float(np.nanmax(arr))
+                if abs(vmax - vmin) < 1e-9:
+                    vmax = vmin + 1.0
+                im = ax.imshow(
+                    arr,
+                    origin="lower",
+                    extent=(0, engine.grid_width, 0, engine.grid_height),
+                    cmap=_constraint_cmap(name, names),
+                    vmin=vmin,
+                    vmax=vmax,
+                    alpha=0.45,
+                    interpolation="nearest",
+                    zorder=0.2,
+                )
+                arts.append(im)
+            arts.extend(_plot_constraint_rects(ax, cfg=cfg, color=color, label_values=True, name=name))
+            per_zone[f"zone:{name}"] = arts
 
-    constraint_art, constraint_summary, constraint_mappable, constraint_cbar_label = _plot_constraint_overlay(
-        ax,
-        engine=engine,
-        mode=constraint_mode,
-        target=constraint_target,
-        constraint_gid=constraint_gid,
-    )
-    zone_artists["constraint"].extend(constraint_art)
-    if constraint_meta_out is not None:
-        constraint_meta_out.clear()
-        constraint_meta_out["summary_lines"] = list(constraint_summary)
-        constraint_meta_out["mappable"] = constraint_mappable
-        constraint_meta_out["colorbar_label"] = constraint_cbar_label
-
-    # forbidden_areas
+    # --- forbidden_areas ----------------------------------------------
     if hasattr(engine, "forbidden_areas") and isinstance(getattr(engine, "forbidden_areas"), list):
         for a in getattr(engine, "forbidden_areas"):
             if not isinstance(a, dict):
@@ -487,29 +317,27 @@ def _draw_layout_layers(
             rect = a.get("rect", None)
             if rect is None:
                 continue
-            _add_zone_rect(
-                rect=rect,
-                kind="forbidden",
-                edgecolor="#d62728",
-                facecolor="#d62728",
-                alpha=0.15,
-                linestyle="-",
-                label=None,
+            x0, y0, x1, y1 = int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
+            w, h = max(0, x1 - x0), max(0, y1 - y0)
+            if w <= 0 or h <= 0:
+                continue
+            p = patches.Rectangle(
+                (x0, y0), w, h,
+                linewidth=1.2, edgecolor="#d62728", facecolor="#d62728", alpha=0.15,
             )
+            ax.add_patch(p)
+            forbidden_artists.append(p)
 
-    # engine internal masks (start hidden)
-    maps = getattr(engine, "_maps", None)
-    inv = maps.invalid if maps is not None else getattr(engine, "_invalid", None)
+    # --- engine internal masks (start hidden) -------------------------
+    maps = engine.get_maps()
+    inv = maps.invalid
     if inv is not None:
         mi = _plot_mask(ax, inv, color="#8b0000", alpha=1)
         if mi is not None:
             mi.set_visible(False)
             misc_artists["invalid_mask"].append(mi)
 
-    # clearance-only ring
-    clr = maps.clear_invalid if maps is not None else getattr(engine, "_clear_invalid", None)
-    occ = maps.occ_invalid if maps is not None else getattr(engine, "_occ_invalid", None)
-    clr_vis = (clr & (~occ)) if (clr is not None and occ is not None) else clr
+    clr_vis = (maps.clear_invalid & (~maps.occ_invalid))
     if clr_vis is not None:
         mc2 = _plot_mask(ax, clr_vis, color="#ff6b6b", alpha=1)
         if mc2 is not None:
@@ -585,16 +413,17 @@ def _draw_layout_layers(
                 pass
         misc_artists["routes"].extend(route_arts)
 
-    return {
-        "forbidden_areas": zone_artists["forbidden"],
+    groups: dict[str, list[Any]] = {
+        "forbidden_areas": forbidden_artists,
         "invalid_mask": misc_artists["invalid_mask"],
         "clearance_mask": misc_artists["clearance_mask"],
         "flow": misc_artists["flow"],
         "score": misc_artists["score"],
         "action_space": misc_artists["action_space"],
         "routes": misc_artists["routes"],
-        "constraint_zones": zone_artists["constraint"],
     }
+    groups.update(per_zone)
+    return groups
 
 
 def plot_layout(env: Any, *, action_space: Optional[CandidateSet] = None, routes: Optional[list[Any]] = None) -> None:
@@ -610,51 +439,21 @@ def plot_layout(env: Any, *, action_space: Optional[CandidateSet] = None, routes
     """
     # Support both engine (`FactoryLayoutEnv`) and wrapper envs by unwrapping.
     engine = getattr(env, "engine", env)
+    c_names = _constraint_names(engine)
 
-    # Keep legend / constraint controls outside the layout area.
-    fig = plt.figure(figsize=(15, 6.5))
-    gs = fig.add_gridspec(nrows=1, ncols=3, width_ratios=[20, 1, 7], wspace=0.15)
+    fig = plt.figure(figsize=(13, 6.5))
+    gs = fig.add_gridspec(nrows=1, ncols=2, width_ratios=[20, 7], wspace=0.15)
     ax = fig.add_subplot(gs[0, 0])
-    cax_constraint = fig.add_subplot(gs[0, 1])
-    cax_constraint.axis("off")
-    right_gs = gs[0, 2].subgridspec(nrows=4, ncols=1, height_ratios=[5, 3, 5, 4], hspace=0.35)
-    ax_leg = fig.add_subplot(right_gs[0, 0])
-    ax_mode = fig.add_subplot(right_gs[1, 0])
-    ax_target = fig.add_subplot(right_gs[2, 0])
-    ax_constraint_info = fig.add_subplot(right_gs[3, 0])
+    ax_leg = fig.add_subplot(gs[0, 1])
     ax_leg.axis("off")
-    ax_constraint_info.axis("off")
     ax.set_xlim(0, engine.grid_width)
     ax.set_ylim(0, engine.grid_height)
     ax.set_aspect("equal")
-    layer_vis = _default_layer_visibility()
+    layer_vis = _default_layer_visibility(c_names)
     legend_state: dict[str, Any] | None = None
-    constraint_cbar = None
-    constraint_meta: dict[str, Any] = {}
-    constraint_names = _constraint_names(engine)
-    mode_labels = ["Off", "Outline", "Value", "Check"]
-    target_labels = ["All"] + constraint_names if constraint_names else ["All"]
-    constraint_state = {
-        "mode": "outline",
-        "target": "All",
-    }
-    mode_radio = RadioButtons(ax_mode, mode_labels, active=1)
-    target_radio = RadioButtons(ax_target, target_labels, active=0)
-    ax_mode.set_title("Constraint", fontsize=10)
-    ax_target.set_title("Target", fontsize=10)
-    info_text = ax_constraint_info.text(
-        0.01,
-        0.99,
-        "",
-        transform=ax_constraint_info.transAxes,
-        ha="left",
-        va="top",
-        fontsize=9,
-        family="monospace",
-    )
 
     def _render() -> None:
-        nonlocal legend_state, constraint_cbar
+        nonlocal legend_state
         ax.clear()
         ax_leg.clear()
         ax_leg.axis("off")
@@ -663,16 +462,11 @@ def plot_layout(env: Any, *, action_space: Optional[CandidateSet] = None, routes
         ax.set_aspect("equal")
         ax.set_title("FactoryLayoutEnv")
 
-        constraint_gid = _resolve_constraint_gid(engine, action_space)
         groups = _draw_layout_layers(
             ax=ax,
             engine=engine,
             action_space=action_space,
             routes=routes,
-            constraint_mode=constraint_state["mode"],
-            constraint_target=constraint_state["target"],
-            constraint_gid=constraint_gid,
-            constraint_meta_out=constraint_meta,
         )
         _apply_layer_visibility(groups, layer_vis)
         legend_state = _install_click_legend(
@@ -683,38 +477,10 @@ def plot_layout(env: Any, *, action_space: Optional[CandidateSet] = None, routes
             legend_ax=ax_leg,
             connect_once_state=legend_state,
             on_toggle=lambda _key, _visible: _render(),
+            constraint_names=c_names,
         )
-
-        mappable = constraint_meta.get("mappable", None)
-        if bool(layer_vis.get("constraint_zones", True)) and mappable is not None:
-            cax_constraint.axis("on")
-            if constraint_cbar is None:
-                constraint_cbar = fig.colorbar(mappable, cax=cax_constraint)
-            else:
-                constraint_cbar.update_normal(mappable)
-            label = constraint_meta.get("colorbar_label", None)
-            if label:
-                constraint_cbar.set_label(str(label))
-        else:
-            if constraint_cbar is not None:
-                constraint_cbar.remove()
-                constraint_cbar = None
-            cax_constraint.clear()
-            cax_constraint.axis("off")
-
-        info_text.set_text("\n".join(constraint_meta.get("summary_lines", [])))
         fig.canvas.draw_idle()
 
-    def _on_mode_clicked(label: str) -> None:
-        constraint_state["mode"] = str(label).strip().lower()
-        _render()
-
-    def _on_target_clicked(label: str) -> None:
-        constraint_state["target"] = str(label)
-        _render()
-
-    mode_radio.on_clicked(_on_mode_clicked)
-    target_radio.on_clicked(_on_target_clicked)
     _render()
     plt.show()
 
@@ -745,30 +511,21 @@ def browse_steps(
     if not hasattr(wrapper, "set_state"):
         raise ValueError("browse_steps requires a wrapper env with set_state(get_state_copy()) support.")
 
-    # Fixed layout so axes don't shrink when navigating:
-    # - main axis: layout + scatter
-    # - side axes: policy/constraint colorbars
-    # - far-right column: legend + constraint controls
-    # - bottom axis: info panel (outside plot area)
-    fig = plt.figure(figsize=(16, 7))
+    c_names = _constraint_names(engine)
+
+    fig = plt.figure(figsize=(15, 7))
     gs = fig.add_gridspec(
         nrows=2,
-        ncols=4,
+        ncols=3,
         height_ratios=[12, 2],
-        width_ratios=[20, 1, 1, 7],
+        width_ratios=[20, 1, 7],
         wspace=0.15,
         hspace=0.15,
     )
     ax = fig.add_subplot(gs[0, 0])
     cax_policy = fig.add_subplot(gs[0, 1])
-    cax_constraint = fig.add_subplot(gs[0, 2])
-    right_gs = gs[0, 3].subgridspec(nrows=4, ncols=1, height_ratios=[5, 3, 5, 4], hspace=0.35)
-    ax_leg = fig.add_subplot(right_gs[0, 0])
-    ax_mode = fig.add_subplot(right_gs[1, 0])
-    ax_target = fig.add_subplot(right_gs[2, 0])
-    ax_constraint_info = fig.add_subplot(right_gs[3, 0])
+    ax_leg = fig.add_subplot(gs[0, 2])
     ax_leg.axis("off")
-    ax_constraint_info.axis("off")
     ax_info = fig.add_subplot(gs[1, :])
     ax_info.axis("off")
 
@@ -781,7 +538,6 @@ def browse_steps(
     sc = None
     sc_sel = None
     policy_cbar = None
-    constraint_cbar = None
     info_text = ax_info.text(
         0.01,
         0.5,
@@ -794,30 +550,8 @@ def browse_steps(
     )
 
     cur = {"idx": 0}
-    layer_vis = _default_layer_visibility()
+    layer_vis = _default_layer_visibility(c_names)
     legend_state: dict[str, Any] | None = None
-    constraint_meta: dict[str, Any] = {}
-    constraint_names = _constraint_names(engine)
-    mode_labels = ["Off", "Outline", "Value", "Check"]
-    target_labels = ["All"] + constraint_names if constraint_names else ["All"]
-    constraint_state = {
-        "mode": "outline",
-        "target": "All",
-    }
-    mode_radio = RadioButtons(ax_mode, mode_labels, active=1)
-    target_radio = RadioButtons(ax_target, target_labels, active=0)
-    ax_mode.set_title("Constraint", fontsize=10)
-    ax_target.set_title("Target", fontsize=10)
-    constraint_info_text = ax_constraint_info.text(
-        0.01,
-        0.99,
-        "",
-        transform=ax_constraint_info.transAxes,
-        ha="left",
-        va="top",
-        fontsize=9,
-        family="monospace",
-    )
 
     def _frame_to_xy(frame: StepFrame) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float]]]:
         cand = frame.action_space
@@ -858,7 +592,7 @@ def browse_steps(
         return np.asarray(xs), np.asarray(ys), np.asarray(cs, dtype=np.float32), sel_xy
 
     def _render(idx: int) -> None:
-        nonlocal sc, sc_sel, policy_cbar, constraint_cbar
+        nonlocal sc, sc_sel, policy_cbar
         nonlocal legend_state
         idx = int(max(0, min(len(frames) - 1, idx)))
         cur["idx"] = idx
@@ -887,17 +621,10 @@ def browse_steps(
         ax_leg.clear()
         ax_leg.axis("off")
 
-        # Draw the same base UI layers as plot_layout (zones/masks/layout/flow/score),
-        # then overlay policy-colored action_space on top.
-        constraint_gid = _resolve_constraint_gid(engine, f.action_space)
         groups = _draw_layout_layers(
             ax=ax,
             engine=engine,
             action_space=None,
-            constraint_mode=constraint_state["mode"],
-            constraint_target=constraint_state["target"],
-            constraint_gid=constraint_gid,
-            constraint_meta_out=constraint_meta,
         )
         xy_data = _frame_to_xy(f)
         if xy_data is not None:
@@ -921,6 +648,7 @@ def browse_steps(
             legend_ax=ax_leg,
             connect_once_state=legend_state,
             on_toggle=lambda _key, _visible: _render(cur["idx"]),
+            constraint_names=c_names,
         )
 
         # colorbar (fixed axis; no layout shrink). Create once, then update.
@@ -937,25 +665,6 @@ def browse_steps(
                 policy_cbar = None
             cax_policy.clear()
             cax_policy.axis("off")
-
-        constraint_mappable = constraint_meta.get("mappable", None)
-        if bool(layer_vis.get("constraint_zones", True)) and constraint_mappable is not None:
-            cax_constraint.axis("on")
-            if constraint_cbar is None:
-                constraint_cbar = fig.colorbar(constraint_mappable, cax=cax_constraint)
-            else:
-                constraint_cbar.update_normal(constraint_mappable)
-            label = constraint_meta.get("colorbar_label", None)
-            if label:
-                constraint_cbar.set_label(str(label))
-        else:
-            if constraint_cbar is not None:
-                constraint_cbar.remove()
-                constraint_cbar = None
-            cax_constraint.clear()
-            cax_constraint.axis("off")
-
-        constraint_info_text.set_text("\n".join(constraint_meta.get("summary_lines", [])))
 
         # info panel outside the plot
         parts = [f"step={f.step_idx}", f"cost={f.cost:.3f}"]
@@ -983,16 +692,6 @@ def browse_steps(
             _render(cur["idx"] - 1)
             return
 
-    def _on_mode_clicked(label: str) -> None:
-        constraint_state["mode"] = str(label).strip().lower()
-        _render(cur["idx"])
-
-    def _on_target_clicked(label: str) -> None:
-        constraint_state["target"] = str(label)
-        _render(cur["idx"])
-
-    mode_radio.on_clicked(_on_mode_clicked)
-    target_radio.on_clicked(_on_target_clicked)
     fig.canvas.mpl_connect("key_press_event", _on_key)
     _render(0)
     plt.show()
