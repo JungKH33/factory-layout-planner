@@ -371,7 +371,7 @@ class GridMaps:
         else:
             raise RuntimeError(f"unsupported collision backend: {self._resolved_collision_check!r}")
 
-        result[:valid_h, :valid_w] = valid_mask
+        result[cB:cB + valid_h, cL:cL + valid_w] = valid_mask
         return result
 
     def bind_group_specs(self, group_specs: Dict[GroupId, StaticSpec]) -> None:

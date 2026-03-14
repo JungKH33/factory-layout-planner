@@ -35,7 +35,7 @@ class GreedyV3DecisionAdapter(BaseDecisionAdapter):
         oversample_factor: int = 2,
         edge_ratio: float = 0.8,
         random_seed: Optional[int] = None,
-        optimize_rotation: bool = True,
+        optimize_rotation: bool = False,
     ):
         super().__init__()
         self.k = int(k)
