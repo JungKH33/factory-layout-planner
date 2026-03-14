@@ -226,28 +226,18 @@ class MaskPlaceDecisionAdapter(BaseDecisionAdapter):
         return maps, state
 
     def build_observation(self) -> Dict[str, Any]:
-        return dict(self.engine.build_observation())
-
-    def build_action_space(self) -> ActionSpace:
-        candidates = super().build_action_space()
-
+        """MaskPlace observation: state vector + 5 map channels."""
+        self.mask = self.create_mask()
         maps, state = self._build_maps_and_state()
         self._last_maps = maps
-        meta = dict(candidates.meta or {})
-        # Keep maskplace-specific tensors with candidates (not observation).
-        meta["state"] = state
-        meta["canvas"] = maps[0]
-        meta["net_img"] = maps[1]
-        meta["invalid_map"] = maps[2]
-        meta["net_img_2"] = maps[3]
-        meta["invalid_2_map"] = maps[4]
-
-        return ActionSpace(
-            xyrot=candidates.xyrot,
-            mask=candidates.mask,
-            gid=candidates.gid,
-            meta=meta,
-        )
+        return {
+            "state": state,
+            "canvas": maps[0],
+            "net_img": maps[1],
+            "invalid_map": maps[2],
+            "net_img_2": maps[3],
+            "invalid_2_map": maps[4],
+        }
 
     def get_state_copy(self) -> Dict[str, object]:
         snap = dict(super().get_state_copy())

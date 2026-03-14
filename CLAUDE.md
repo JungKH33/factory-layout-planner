@@ -54,9 +54,13 @@ inference.py                     ← episode loop, visualization, output
 Decision adapters (`decision_adapters/`) are **not** Gymnasium envs. They are pure stateless-ish adapters that:
 - `build_action_space()` → `ActionSpace(xyrot, mask)` from current engine state
 - `decode_action(index, action_space)` → `EnvAction(gid, x, y, rot)`
-- `build_observation()` → dict for agent policies
+- `build_observation()` → model-specific dict (greedy returns `{}`, AlphaChip returns graph tensors, etc.)
+
+**Observation ownership**: Each adapter defines its own observation format. The engine (`FactoryLayoutEnv`) does NOT build observations — `step_action()` and `reset()` return `{}` for obs. Adapters call engine state APIs directly to build what they need.
 
 The pipeline calls `engine.step_action(action)` directly — adapters never step the env themselves.
+
+For RL training, `AdapterGymEnv` (`decision_adapters/gym_env.py`) wraps engine + adapter into a `gym.Env` with proper `step()`/`reset()` that returns adapter observations with `action_mask`.
 
 Available adapters: `GreedyDecisionAdapter`, `GreedyV2DecisionAdapter`, `GreedyV3DecisionAdapter` (recommended), `AlphaChipDecisionAdapter`, `MaskPlaceDecisionAdapter`.
 
@@ -100,8 +104,8 @@ Search operates at the **adapter** level. Each MCTS node stores an `EnvState` co
 
 ```python
 DecisionPipeline.decide():
-  1. ordering_agent.reorder(env, obs)       # optional: reorders remaining[]
-  2. adapter.build_observation()             # -> obs dict
+  1. ordering_agent.reorder(env)             # optional: reorders remaining[]
+  2. adapter.build_observation()             # -> model-specific obs (greedy: {})
   3. adapter.build_action_space()            # -> ActionSpace (runs create_mask internally)
   4. search.select(obs, agent, action_space) # or agent.select_action(obs, action_space)
   5. adapter.decode_action(index, action_space) # -> EnvAction

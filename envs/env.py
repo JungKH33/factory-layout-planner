@@ -437,7 +437,7 @@ class FactoryLayoutEnv(gym.Env):
             reward,
         )
 
-        return self.build_observation(), float(reward), False, True, info
+        return {}, float(reward), False, True, info
 
     def build_observation(self) -> Dict[str, torch.Tensor]:
         """Return model-agnostic engine observation.
@@ -475,7 +475,7 @@ class FactoryLayoutEnv(gym.Env):
         # 1. 이미 완료된 경우
         if not self._state.remaining:
             self._state.step(apply=False)
-            return self.build_observation(), 0.0, True, False, {"reason": "done"}
+            return {}, 0.0, True, False, {"reason": "done"}
 
         try:
             gid_eff, x_bl, y_bl, r = self._normalize_action(action)
@@ -530,7 +530,7 @@ class FactoryLayoutEnv(gym.Env):
                 reward,
             )
 
-        return self.build_observation(), float(reward), bool(terminated), bool(truncated), info
+        return {}, float(reward), bool(terminated), bool(truncated), info
 
     # ---- gym api ----
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
@@ -589,7 +589,7 @@ class FactoryLayoutEnv(gym.Env):
                     rot=int(rot),
                 )
                 self._apply_resolved_placement(gid, placement)
-        return self.build_observation(), {}
+        return {}, {}
 
     def step(self, action: EnvAction):
         """Gym-compatible step proxy for engine-only usage."""

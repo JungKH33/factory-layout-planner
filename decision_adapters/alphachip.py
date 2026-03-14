@@ -129,8 +129,8 @@ class AlphaChipDecisionAdapter(BaseDecisionAdapter):
         return ok.reshape(-1)
 
     def build_observation(self) -> Dict[str, Any]:
-        obs = dict(self.engine.build_observation())
-        # Attach AlphaChip graph tensors (AlphaChip-specific; do not come from engine caches).
+        self.mask = None
+        obs: Dict[str, Any] = {}
         gid = self._next_gid()
         cur_idx = int(self.engine.gid_to_idx.get(gid, 0)) if gid is not None else 0
         obs["x"] = self._build_x()

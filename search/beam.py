@@ -113,7 +113,7 @@ class BeamSearch(BaseSearch):
                     if not bool(valid_mask[a].item()):
                         continue
                     self._set_engine_state(engine=engine, adapter=adapter, engine_state=state)
-                    _obs2, reward, terminated, truncated, _info = self._apply_action_index(
+                    reward, terminated, truncated, _info = self._apply_action_index(
                         engine=engine,
                         adapter=adapter,
                         action=int(a),
@@ -185,18 +185,20 @@ class BeamSearch(BaseSearch):
         action: int,
         action_space: CandidateSet,
     ):
+        """Apply discrete action index via decode -> engine.step_action.
+
+        Returns (reward, terminated, truncated, info) — no observation.
+        Callers build observation via adapter.build_observation() only when needed.
+        """
         try:
             placement = adapter.decode_action(int(action), action_space)
         except IndexError:
-            obs_out = adapter.build_observation()
-            return obs_out, float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
+            return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
         except ValueError as e:
-            obs_out = adapter.build_observation()
             reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
-            return obs_out, float(engine.failure_penalty()), False, True, {"reason": reason}
-        _obs_env, reward, terminated, truncated, info = engine.step_action(placement)
-        obs2 = adapter.build_observation()
-        return obs2, float(reward), bool(terminated), bool(truncated), info
+            return float(engine.failure_penalty()), False, True, {"reason": reason}
+        _, reward, terminated, truncated, info = engine.step_action(placement)
+        return float(reward), bool(terminated), bool(truncated), info
 
     def _emit_beam_progress(
         self,
@@ -276,13 +278,13 @@ if __name__ == "__main__":
     obs_env, _info = engine.reset(options=loaded.reset_kwargs)
     adapter.bind(engine)
     obs = adapter.build_observation()
+    root_action_space = adapter.build_action_space()
 
     agent = GreedyAgent(prior_temperature=1.0)
     search = BeamSearch(config=BeamConfig(beam_width=8, depth=3, expansion_topk=16))
     search.set_adapter(adapter)
 
     t0 = time.perf_counter()
-    root_action_space = adapter.build_action_space()
     next_gid = root_action_space.gid
     a = search.select(obs=obs, agent=agent, root_action_space=root_action_space)
     dt_ms = (time.perf_counter() - t0) * 1000.0

@@ -94,8 +94,14 @@ class BaseDecisionAdapter(ABC):
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 
     def build_action_space(self) -> ActionSpace:
-        """Generate action_space from current engine state."""
-        self.mask = self.create_mask()
+        """Generate action_space from current engine state.
+
+        If ``build_observation()`` already called ``create_mask()`` and
+        stored ``self.mask``, the existing mask is reused to avoid
+        redundant computation.
+        """
+        if self.mask is None:
+            self.mask = self.create_mask()
         if not isinstance(self.mask, torch.Tensor):
             raise TypeError("create_mask() must return torch.Tensor")
 
@@ -121,10 +127,15 @@ class BaseDecisionAdapter(ABC):
 
         return ActionSpace(xyrot=xyrot, mask=mask, gid=gid, meta=(meta if meta else None))
 
+    @abstractmethod
     def build_observation(self) -> Dict[str, Any]:
-        """Build policy observation only (no action-space fields) from current engine state."""
-        env_obs = self.engine.build_observation()
-        return dict(env_obs)
+        """Build policy observation from current engine state.
+
+        Each adapter defines its own observation format tailored to the
+        model/agent it serves.  Greedy adapters may return ``{}`` since
+        the greedy agent only uses ``action_space.meta["action_delta"]``.
+        """
+        raise NotImplementedError
 
     # ---- state api (for wrapped search/MCTS) ----
     def get_state_copy(self) -> Dict[str, object]:

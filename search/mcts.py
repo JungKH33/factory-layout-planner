@@ -280,19 +280,20 @@ class MCTSSearch(BaseSearch):
         action: int,
         action_space: CandidateSet,
     ):
-        """Apply discrete action index via decode -> engine.step_action."""
+        """Apply discrete action index via decode -> engine.step_action.
+
+        Returns (reward, terminated, truncated, info) — no observation.
+        Callers build observation via adapter.build_observation() only when needed.
+        """
         try:
             placement = adapter.decode_action(int(action), action_space)
         except IndexError:
-            obs_out = adapter.build_observation()
-            return obs_out, float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
+            return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
         except ValueError as e:
-            obs_out = adapter.build_observation()
             reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
-            return obs_out, float(engine.failure_penalty()), False, True, {"reason": reason}
-        _obs_env, reward, terminated, truncated, info = engine.step_action(placement)
-        obs2 = adapter.build_observation()
-        return obs2, float(reward), bool(terminated), bool(truncated), info
+            return float(engine.failure_penalty()), False, True, {"reason": reason}
+        _, reward, terminated, truncated, info = engine.step_action(placement)
+        return float(reward), bool(terminated), bool(truncated), info
 
     def _track_terminal(self, *, engine: FactoryLayoutEnv, adapter: BaseDecisionAdapter, cum_reward: float) -> None:
         """Track terminal state if tracking is enabled."""
@@ -403,7 +404,7 @@ class MCTSSearch(BaseSearch):
                 # Restore engine state only once, right before expansion.
                 self._set_engine_state(engine=engine, adapter=adapter, engine_state=node.engine_state)
                 cand = node.action_space
-                obs2, reward, terminated, truncated, _info = self._apply_action_index(
+                reward, terminated, truncated, _info = self._apply_action_index(
                     engine=engine,
                     adapter=adapter,
                     action=int(action),
@@ -419,6 +420,7 @@ class MCTSSearch(BaseSearch):
                     )
                     priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
                 else:
+                    obs2 = adapter.build_observation()
                     next_action_space = adapter.build_action_space()
                     priors = self._safe_priors(
                         agent=agent,
@@ -484,7 +486,7 @@ class MCTSSearch(BaseSearch):
             obs = adapter.build_observation()
             action_space = adapter.build_action_space()
             if int(action_space.mask.to(torch.int64).sum().item()) == 0:
-                _obs2, reward, terminated, truncated, _ = self._apply_action_index(
+                reward, terminated, truncated, _ = self._apply_action_index(
                     engine=engine,
                     adapter=adapter,
                     action=0,
@@ -496,7 +498,7 @@ class MCTSSearch(BaseSearch):
                 break
 
             a = agent.select_action(obs=obs, action_space=action_space)
-            _obs2, reward, terminated, truncated, _ = self._apply_action_index(
+            reward, terminated, truncated, _ = self._apply_action_index(
                 engine=engine,
                 adapter=adapter,
                 action=int(a),
@@ -528,13 +530,13 @@ if __name__ == "__main__":
     obs_env, _info = engine.reset(options=loaded.reset_kwargs)
     adapter.bind(engine)
     obs = adapter.build_observation()
+    root_action_space = adapter.build_action_space()
 
     agent = GreedyAgent(prior_temperature=1.0)
     search = MCTSSearch(config=MCTSConfig(num_simulations=50, rollout_enabled=True, rollout_depth=5, dirichlet_epsilon=0.0))
     search.set_adapter(adapter)
 
     t0 = time.perf_counter()
-    root_action_space = adapter.build_action_space()
     next_gid = root_action_space.gid
     a = search.select(obs=obs, agent=agent, root_action_space=root_action_space)
     dt_ms = (time.perf_counter() - t0) * 1000.0

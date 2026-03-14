@@ -37,7 +37,7 @@ class DecisionPipeline:
         adapter = self.adapter
 
         if self.ordering_agent is not None:
-            self.ordering_agent.reorder(env=adapter.engine, obs=adapter.build_observation())
+            self.ordering_agent.reorder(env=adapter.engine, obs={})
 
         observation = adapter.build_observation()
         action_space = adapter.build_action_space()

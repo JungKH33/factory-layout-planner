@@ -92,9 +92,9 @@ if __name__ == "__main__":
     engine = loaded.env
     engine.log = False
     adapter = GreedyDecisionAdapter(k=50, scan_step=10.0, quant_step=10.0, random_seed=0)
-    _obs_env, _info = engine.reset(options=loaded.reset_kwargs)
+    engine.reset(options=loaded.reset_kwargs)
     adapter.bind(engine)
-    obs = adapter.build_observation(_obs_env)
+    obs = adapter.build_observation()
     action_space = adapter.build_action_space()
     next_gid = action_space.gid
     agent = GreedyAgent(prior_temperature=1.0)

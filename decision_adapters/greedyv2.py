@@ -58,6 +58,10 @@ class GreedyV2DecisionAdapter(BaseDecisionAdapter):
         self.action_xyrot: Optional[torch.Tensor] = None  # long [K,3]
         self.action_delta: Optional[torch.Tensor] = None  # float [K]
 
+    def build_observation(self) -> Dict[str, Any]:
+        self.mask = None
+        return {}
+
     def create_mask(self) -> torch.Tensor:
         # Keep candidate sampling deterministic from engine state.
         self._rng = random.Random(self.action_space_seed())
