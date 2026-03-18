@@ -167,7 +167,6 @@ def build_torchrl_env(*, cfg: Cfg, device: torch.device):
             self._gym = MaskPlaceAdapter(
                 engine=engine,
                 grid=int(cfg.grid),
-                orient=int(cfg.rot),
                 soft_coefficient=float(cfg.soft_coefficient),
             )
             self._reset_kwargs = reset_kwargs

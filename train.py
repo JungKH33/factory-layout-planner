@@ -445,7 +445,6 @@ def build_env_factory(*, cfg: TrainConfig) -> Tuple[Any, Dict[str, Any]]:
             env = MaskPlaceAdapter(
                 engine=engine,
                 grid=int(cfg.grid),
-                orient=int(cfg.rot),
                 soft_coefficient=float(cfg.soft_coefficient),
             )
             # pass reset kwargs via env.reset(options=...)
@@ -454,7 +453,7 @@ def build_env_factory(*, cfg: TrainConfig) -> Tuple[Any, Dict[str, Any]]:
         elif cfg.mode == "alphachip":
             from agents.placement.alphachip import AlphaChipAdapter
 
-            env = AlphaChipAdapter(engine=engine, coarse_grid=int(cfg.coarse_grid), orient=int(cfg.alphachip_rot))
+            env = AlphaChipAdapter(engine=engine, coarse_grid=int(cfg.coarse_grid))
             env._reset_kwargs = reset_kwargs  # type: ignore[attr-defined]
             env = NumpyObsWrapper(env, state_uint8=False)
         else:

@@ -413,7 +413,7 @@ class MCTSSearch(BaseSearch):
 
                 if terminal:
                     next_action_space = CandidateSet(
-                        poses=torch.zeros((0, 3), dtype=torch.long, device=adapter.device),
+                        poses=torch.zeros((0, 2), dtype=torch.float32, device=adapter.device),
                         mask=torch.zeros((0,), dtype=torch.bool, device=adapter.device),
                         meta={"terminal": True},
                     )
@@ -540,7 +540,7 @@ if __name__ == "__main__":
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     valid_n = int(root_action_space.mask.sum().item())
-    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0, 0]
+    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0]
 
     print("search.mcts demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)

@@ -15,7 +15,7 @@ class PlacementBase:
 
     x_bl: int
     y_bl: int
-    orient: int
+    rotation: int
     entries: List[Tuple[float, float]]
     exits: List[Tuple[float, float]]
     min_x: float
@@ -28,5 +28,5 @@ class PlacementBase:
     clearance_top: int
 
     def pose(self) -> Tuple[int, int, int]:
-        """Return bottom-left pose tuple (x_bl, y_bl, orient)."""
-        return int(self.x_bl), int(self.y_bl), int(self.orient)
+        """Return bottom-left pose tuple (x_bl, y_bl, rotation)."""
+        return int(self.x_bl), int(self.y_bl), int(self.rotation)

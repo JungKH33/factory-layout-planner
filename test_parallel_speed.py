@@ -8,17 +8,17 @@ from envs.action_space import ActionSpace
 from envs.env_loader import load_env
 
 
-def _score_poses(env, gid, x, y, orient):
+def _score_poses(env, gid, x, y, rotation):
     """Test helper: build ActionSpace from poses and score via engine."""
     spec = env.group_specs[gid]
     needed = env.reward_required
     x_t = x if torch.is_tensor(x) else torch.tensor([int(x)], dtype=torch.long, device=env.device)
     y_t = y if torch.is_tensor(y) else torch.tensor([int(y)], dtype=torch.long, device=env.device)
-    o_t = orient if torch.is_tensor(orient) else torch.tensor([int(orient)], dtype=torch.long, device=env.device)
+    o_t = rotation if torch.is_tensor(rotation) else torch.tensor([int(rotation)], dtype=torch.long, device=env.device)
     x_t = x_t.to(dtype=torch.long, device=env.device).view(-1)
     y_t = y_t.to(dtype=torch.long, device=env.device).view(-1)
     o_t = o_t.to(dtype=torch.long, device=env.device).view(-1)
-    features = spec.build_candidate_features(x_bl=x_t, y_bl=y_t, orient=o_t, needed=needed)
+    features = spec.build_candidate_features(x_bl=x_t, y_bl=y_t, rotation=o_t, needed=needed)
     entries = features.get("entries", None)
     exits = features.get("exits", None)
     aspace = ActionSpace(

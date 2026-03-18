@@ -152,8 +152,10 @@ def main() -> None:
         logger.info("Pre-placing %s groups (hardcoded)", len(PRE_PLACEMENTS))
         for gid, x, y, rot in PRE_PLACEMENTS:
             if gid in base_env.get_state().remaining:
+                _spec = base_env.group_specs[gid]
+                _w, _h = _spec.rotated_size(int(rot))
                 _obs, _reward, _terminated, _truncated, info = base_env.step_action(
-                    EnvAction(gid=gid, x=int(x), y=int(y), orient=int(rot) // 90 if int(rot) in (90, 270) else 0)
+                    EnvAction(gid=gid, x_c=float(x) + float(_w) / 2.0, y_c=float(y) + float(_h) / 2.0)
                 )
                 if info.get("reason") == "placed":
                     logger.info("Placed: %s at (%s, %s), rot=%s", gid, x, y, rot)

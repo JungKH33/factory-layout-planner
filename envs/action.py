@@ -8,16 +8,14 @@ GroupId = Union[int, str]
 
 @dataclass(frozen=True)
 class EnvAction:
-    """Coarse placement action (intent).
+    """Placement action: center coordinates (orient-free).
 
     - gid is required.
-    - x/y are bottom-left integer grid coordinates.
-    - orient is a coarse orientation class: 0 = {R0, R180} family,
-      1 = {R90, R270} family.  The engine resolves this to a concrete
-      rot/mirror via StaticSpec.resolve().
+    - x_c/y_c are center coordinates (float, orient-independent).
+    - The engine resolves to concrete rotation/mirror via
+      StaticSpec.resolve().
     """
 
     gid: GroupId
-    x: int
-    y: int
-    orient: int
+    x_c: float
+    y_c: float

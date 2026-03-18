@@ -363,8 +363,10 @@ if __name__ == "__main__":
     
     for gid, x, y, rot in placements:
         if gid in env.get_state().remaining:
+            _spec = env.group_specs[gid]
+            _w, _h = _spec.rotated_size(int(rot))
             obs, reward, terminated, truncated, info = env.step_action(
-                EnvAction(gid=gid, x=int(x), y=int(y), orient=1 if int(rot) in (90, 270) else 0)
+                EnvAction(gid=gid, x_c=float(x) + float(_w) / 2.0, y_c=float(y) + float(_h) / 2.0)
             )
             print(f"    Placed {gid} at ({x}, {y}, rot={rot}) - reason: {info.get('reason')}")
     

@@ -115,9 +115,9 @@ class FlowGraph:
 
     @staticmethod
     def _ports_from_placement(placement: object, *, kind: str) -> List[Tuple[float, float]]:
-        cx = float(getattr(placement, "cx", 0.0))
-        cy = float(getattr(placement, "cy", 0.0))
-        fallback = (cx, cy)
+        x_c = float(getattr(placement, "x_c", 0.0))
+        y_c = float(getattr(placement, "y_c", 0.0))
+        fallback = (x_c, y_c)
         src = getattr(placement, kind, None)
         if torch.is_tensor(src):
             t = src.to(dtype=torch.float32).view(-1, 2)

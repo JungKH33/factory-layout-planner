@@ -82,7 +82,7 @@ class BaseAdapter(ABC):
         gid = action_space.gid
         if gid is None:
             raise ValueError("action_space.gid is required to decode EnvAction")
-        return EnvAction(gid=gid, x=int(pose[0].item()), y=int(pose[1].item()), orient=int(pose[2].item()))
+        return EnvAction(gid=gid, x_c=float(pose[0].item()), y_c=float(pose[1].item()))
 
     def num_valid_actions(self, action_space: ActionSpace) -> int:
         """Return number of valid actions in given action-space."""
@@ -120,17 +120,17 @@ class BaseAdapter(ABC):
             p = eng.get_state().placements.get(gid, None)
             if p is None:
                 continue
-            x_bl, y_bl, orient = p.pose()
-            parts.append(f"{gid}:{int(x_bl)}:{int(y_bl)}:{int(orient)}")
+            x_bl, y_bl, rotation = p.pose()
+            parts.append(f"{gid}:{int(x_bl)}:{int(y_bl)}:{int(rotation)}")
         raw = "|".join(parts).encode("utf-8", errors="ignore")
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 
     def _score_poses(self, gid: GroupId, poses: torch.Tensor) -> torch.Tensor:
-        """Score candidate poses by evaluating all (rotation, mirror) variants.
+        """Score candidate center poses by evaluating all (rotation, mirror) variants.
 
-        poses: [N, 3] tensor of (x_bl, y_bl, orient).
+        poses: [N, 2] float tensor of (x_c, y_c).
         Returns: [N] float32 — per-position minimum delta cost across all
-        variants in each orient family.
+        rotation/mirror variants.
         """
         spec = self.engine.group_specs[gid]
         needed = self.engine.reward_required
@@ -139,26 +139,18 @@ class BaseAdapter(ABC):
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
 
         best = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
+        rotations = (0, 90, 180, 270) if spec.rotatable else (0,)
+        mirrors = (False, True) if spec.mirrorable else (False,)
 
-        for o in poses[:, 2].unique().tolist():
-            o_int = int(o)
-            o_mask = (poses[:, 2] == o_int)
-            sub = poses[o_mask]
-            M = int(sub.shape[0])
-            if M == 0:
-                continue
-
-            rotations = ((0, 180) if o_int == 0 else (90, 270)) if spec.rotatable else ((0,) if o_int == 0 else ())
-            mirrors = (False, True) if spec.mirrorable else (False,)
-
-            for rot in rotations:
-                for m in mirrors:
-                    features = spec.build_candidate_features(
-                        x_bl=sub[:, 0], y_bl=sub[:, 1],
-                        rotation=rot, mirror=m, needed=needed,
-                    )
-                    scores = self._features_to_delta(gid, sub, features)
-                    best[o_mask] = torch.min(best[o_mask], scores)
+        for rot in rotations:
+            for m in mirrors:
+                rr = spec._resolve_rotation(rot)
+                features = spec.build_candidate_features(
+                    x_c=poses[:, 0], y_c=poses[:, 1],
+                    rotation=rr, mirror=m, needed=needed,
+                )
+                scores = self._features_to_delta(gid, poses, features)
+                best = torch.min(best, scores)
 
         return best
 
@@ -178,7 +170,7 @@ class BaseAdapter(ABC):
         if exits is not None:
             exits_mask = torch.ones(exits.shape[:2], dtype=torch.bool, device=self.device)
         aspace = ActionSpace(
-            poses=poses.to(dtype=torch.long, device=self.device),
+            poses=poses.to(dtype=torch.float32, device=self.device).view(-1, 2),
             mask=torch.ones(poses.shape[0], dtype=torch.bool, device=self.device),
             gid=gid,
             entries=entries, exits=exits,
@@ -207,10 +199,10 @@ class BaseAdapter(ABC):
         poses_raw = getattr(self, "action_poses", None)
         if not isinstance(poses_raw, torch.Tensor):
             raise ValueError("adapter must provide torch.Tensor action_poses from create_mask()")
-        poses = poses_raw.to(dtype=torch.long, device=self.device)
-        if poses.ndim != 2 or int(poses.shape[0]) != n_actions or int(poses.shape[1]) != 3:
+        poses = poses_raw.to(dtype=torch.float32, device=self.device)
+        if poses.ndim != 2 or int(poses.shape[0]) != n_actions or int(poses.shape[1]) != 2:
             raise ValueError(
-                f"action_poses must have shape [N,3], got {tuple(poses.shape)} for N={n_actions}"
+                f"action_poses must have shape [N,2], got {tuple(poses.shape)} for N={n_actions}"
             )
 
         meta: Dict[str, Any] = {}

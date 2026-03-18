@@ -77,8 +77,8 @@ def main() -> None:
         "greedy": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
         "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
         "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5},
-        "alphachip": {"coarse_grid": int(ALPHACHIP_GRID), "orient": 0},
-        "maskplace": {"grid": 224, "orient": 0, "soft_coefficient": 1.0},
+        "alphachip": {"coarse_grid": int(ALPHACHIP_GRID)},
+        "maskplace": {"grid": 224, "soft_coefficient": 1.0},
     }
     agent_kwargs: dict = {
         "greedy": {"prior_temperature": 1.0},
@@ -204,13 +204,12 @@ def main() -> None:
             )
         else:
             logger.info(
-                "step %s next_gid=%s search=%s action=(%s,%s,%s)",
+                "step %s next_gid=%s search=%s action=(%.1f,%.1f)",
                 step,
                 next_gid,
                 dbg.get("search", SEARCH_MODE),
-                int(action.x),
-                int(action.y),
-                int(action.orient),
+                float(action.x_c),
+                float(action.y_c),
             )
 
         if terminated or truncated:

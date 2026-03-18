@@ -288,7 +288,7 @@ if __name__ == "__main__":
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     valid_n = int(root_action_space.mask.sum().item())
-    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0, 0]
+    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0]
 
     print("search.beam demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)

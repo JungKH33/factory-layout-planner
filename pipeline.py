@@ -111,7 +111,7 @@ if __name__ == "__main__":
 
     print("pipeline demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", (engine.get_state().remaining[0] if engine.get_state().remaining else None))
-    print(" result=", {"reason": reason, "action": None if reason != "ok" else (action.x, action.y, action.orient)})
+    print(" result=", {"reason": reason, "action": None if reason != "ok" else (action.x_c, action.y_c)})
     print(" debug=", dbg)
     print(" reward=", reward, "terminated=", terminated, "truncated=", truncated, "reason=", info.get("reason"))
     print(f" elapsed_ms={dt_ms:.2f}")

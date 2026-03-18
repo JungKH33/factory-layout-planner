@@ -17,7 +17,7 @@ StrideBBox = Tuple[int, int, int, int]  # (min_sx, min_sy, max_sx, max_sy), incl
 class DynamicGeom:
     """Resolved dynamic geometry in placed orientation."""
 
-    orient: int
+    rotation: int
     unit_w: int
     unit_h: int
     unit_z: float
@@ -50,7 +50,7 @@ class DynamicPlacement:
 
     x_bl: int
     y_bl: int
-    orient: int
+    rotation: int
     placed_units: Set[GridXY] = field(default_factory=set)  # unit-anchor grid cells
     unit_rows: List[Dict[str, float]] = field(default_factory=list)
     total_capacity: int = 0
@@ -66,8 +66,8 @@ class DynamicPlacement:
     exits: List[Tuple[float, float]] = field(default_factory=list)
 
     def pose(self) -> Tuple[int, int, int]:
-        """Return bottom-left pose tuple (x_bl, y_bl, orient)."""
-        return int(self.x_bl), int(self.y_bl), int(self.orient)
+        """Return bottom-left pose tuple (x_bl, y_bl, rotation)."""
+        return int(self.x_bl), int(self.y_bl), int(self.rotation)
 
 
 class DynamicPlanner:
@@ -524,7 +524,7 @@ class DynamicPlanner:
         result = DynamicPlacement(
             x_bl=start_x,
             y_bl=start_y,
-            orient=int(geom.orient),
+            rotation=int(geom.rotation),
             max_capacity=target_capacity,
         )
         if target_capacity <= 0:
@@ -629,7 +629,7 @@ class DynamicPlanner:
                     "unit_y_grid": float(y),
                     "unit_w_grid": float(int(geom.unit_w)),
                     "unit_h_grid": float(int(geom.unit_h)),
-                    "orient": float(int(geom.orient)),
+                    "rotation": float(int(geom.rotation)),
                     "capacity": float(int(available_capacity)),
                 }
             )

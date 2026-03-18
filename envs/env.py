@@ -244,8 +244,8 @@ class FactoryLayoutEnv(gym.Env):
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
 
         poses = torch.tensor(
-            [[p.x_bl, p.y_bl, p.orient] for p in placements],
-            dtype=torch.long, device=self.device,
+            [[p.x_c, p.y_c] for p in placements],
+            dtype=torch.float32, device=self.device,
         )
 
         # Build entries/exits tensors from placement geometry
@@ -288,10 +288,10 @@ class FactoryLayoutEnv(gym.Env):
         )
         return self.delta_cost(gid, aspace)
 
-    def placeable_map(self, *, gid: GroupId, orient: int) -> torch.Tensor:
-        """Return placeable map (OR of all rotation/mirror variants) for the given orient."""
+    def placeable_map(self, *, gid: GroupId, rotation: int) -> torch.Tensor:
+        """Return placeable map (OR of mirror variants) for the given concrete rotation."""
         spec = self.group_specs[gid]
-        geometries = spec.variant_geometries(int(orient))
+        geometries = spec.variant_geometries(int(rotation))
         result = None
         for body_w, body_h, cL, cR, cB, cT in geometries:
             m = self._state.is_placeable_map(
@@ -307,20 +307,24 @@ class FactoryLayoutEnv(gym.Env):
             return torch.zeros((H, W), dtype=torch.bool, device=self.device)
         return result
 
-    def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, int, int, int]:
+    def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, float, float]:
         if not isinstance(action, EnvAction):
             raise TypeError(f"expected EnvAction, got {type(action).__name__}")
         gid_eff: GroupId = action.gid
         if gid_eff not in self.group_specs:
             raise KeyError(f"unknown gid={gid_eff!r}")
-        return gid_eff, int(action.x), int(action.y), int(action.orient)
+        return gid_eff, float(action.x_c), float(action.y_c)
 
     def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'PlacementBase | None']:
-        """Resolve a coarse EnvAction to (gid, concrete StaticPlacement or None)."""
-        gid, x_bl, y_bl, orient = self._normalize_action(action)
+        """Resolve a center-based EnvAction to (gid, concrete StaticPlacement or None).
+
+        Tries all (rotation, mirror) variants at the given center and picks the
+        cheapest placeable one.
+        """
+        gid, x_c, y_c = self._normalize_action(action)
         geom = self._group_spec(gid)
 
-        def _check_placeable(body_w, body_h, cL, cR, cB, cT):
+        def _check_placeable(x_bl, y_bl, body_w, body_h, cL, cR, cB, cT):
             return self._state.is_placeable(
                 gid=gid, x_bl=int(x_bl), y_bl=int(y_bl),
                 body_w=int(body_w), body_h=int(body_h),
@@ -328,9 +332,8 @@ class FactoryLayoutEnv(gym.Env):
             )
 
         placement = geom.resolve(
-            x_bl=int(x_bl),
-            y_bl=int(y_bl),
-            orient=int(orient),
+            x_c=float(x_c),
+            y_c=float(y_c),
             is_placeable_fn=_check_placeable,
             score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
         )
@@ -412,7 +415,7 @@ class FactoryLayoutEnv(gym.Env):
                     "gid": gid,
                     "x": int(getattr(p, "x_bl")),
                     "y": int(getattr(p, "y_bl")),
-                    "orient": int(getattr(p, "orient")),
+                    "rotation": int(p.rotation),
                 })
         
         # 그룹 정보
@@ -494,7 +497,7 @@ class FactoryLayoutEnv(gym.Env):
             return {}, 0.0, True, False, {"reason": "done"}
 
         try:
-            gid_eff, x_bl, y_bl, orient = self._normalize_action(action)
+            gid_eff, x_c, y_c = self._normalize_action(action)
         except TypeError:
             raise
         except Exception:
@@ -576,43 +579,41 @@ class FactoryLayoutEnv(gym.Env):
         # Apply validated initial placements (and sync caches).
         if initial_positions is not None:
             if not isinstance(initial_positions, dict):
-                raise ValueError("reset(options): initial_positions must be a dict {gid: (x,y,orient)}")
+                raise ValueError("reset(options): initial_positions must be a dict {gid: (x,y,rot)}")
             for gid, pose in initial_positions.items():
                 if gid not in self.group_specs:
                     raise ValueError(f"reset(options): initial_positions has unknown group id: {gid!r}")
                 if (not isinstance(pose, (tuple, list))) or len(pose) != 3:
-                    raise ValueError(f"reset(options): initial_positions[{gid!r}] must be (x,y,orient)")
+                    raise ValueError(f"reset(options): initial_positions[{gid!r}] must be (x,y,rot)")
                 x = int(pose[0])
                 y = int(pose[1])
-                orient = int(pose[2])
+                rot = int(pose[2]) * 90  # config orient 0/1 → rotation 0/90
                 if gid in self._state.placed:
                     raise ValueError(f"reset(options): initial_positions contains duplicate gid: {gid!r}")
                 geom = self._group_spec(gid)
+                w_r, h_r = geom.rotated_size(rot)
+                x_c = float(x) + w_r / 2.0
+                y_c = float(y) + h_r / 2.0
 
-                def _check_placeable_for_reset(body_w, body_h, cL, cR, cB, cT):
+                def _check_placeable_for_reset(x_bl, y_bl, body_w, body_h, cL, cR, cB, cT):
                     return self._state.is_placeable(
-                        gid=gid, x_bl=int(x), y_bl=int(y),
+                        gid=gid, x_bl=int(x_bl), y_bl=int(y_bl),
                         body_w=int(body_w), body_h=int(body_h),
                         cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
                     )
 
                 placement = geom.resolve(
-                    x_bl=int(x),
-                    y_bl=int(y),
-                    orient=int(orient),
+                    x_c=x_c,
+                    y_c=y_c,
                     is_placeable_fn=_check_placeable_for_reset,
                     score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
                 )
                 if placement is None:
                     warnings.warn(
-                        f"reset(options): invalid initial placement gid={gid!r} pose=({x},{y},{orient}) - placing anyway",
+                        f"reset(options): invalid initial placement gid={gid!r} pose=({x},{y},{rot}) - placing anyway",
                         stacklevel=2,
                     )
-                    placement = geom.build_placement(
-                        x_bl=int(x),
-                        y_bl=int(y),
-                        orient=int(orient),
-                    )
+                    placement = geom.build_placement(x_c=x_c, y_c=y_c, rotation=rot)
                 self._apply_resolved_placement(gid, placement)
         return {}, {}
 
@@ -726,8 +727,9 @@ if __name__ == "__main__":
 
     # --- step: C 배치 ---
     t2 = time.perf_counter()
+    # C: 18×12 at rotation=0 → center = (74 + 9, 22 + 6) = (83, 28)
     obs2, reward, terminated, truncated, info = env.step_action(
-        EnvAction(gid="C", x=74, y=22, orient=0)
+        EnvAction(gid="C", x_c=83.0, y_c=28.0)
     )
     step_ms = (time.perf_counter() - t2) * 1000.0
 

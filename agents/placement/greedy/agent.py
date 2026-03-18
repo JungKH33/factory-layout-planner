@@ -105,7 +105,7 @@ if __name__ == "__main__":
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     valid_n = int(action_space.mask.sum().item())
-    pose = action_space.poses[a].tolist() if int(action_space.poses.shape[0]) > 0 else [0, 0, 0]
+    pose = action_space.poses[a].tolist() if int(action_space.poses.shape[0]) > 0 else [0, 0]
 
     print("agents.greedy demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)

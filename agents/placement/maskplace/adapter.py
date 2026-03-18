@@ -28,14 +28,12 @@ class MaskPlaceAdapter(BaseAdapter):
         self,
         *,
         grid: int = 224,
-        orient: int = 0,
         soft_coefficient: float = 1.0,
     ):
         super().__init__()
         self.grid_width = 1
         self.grid_height = 1
         self.grid = int(grid)
-        self.orient = int(orient)
         self.soft_coefficient = float(soft_coefficient)
 
         self.action_space = gym.spaces.Discrete(self.grid * self.grid)
@@ -43,7 +41,7 @@ class MaskPlaceAdapter(BaseAdapter):
 
         # cached last-built maps (for debugging/visualization)
         self._last_maps: Optional[torch.Tensor] = None  # float32 [5,G,G]
-        self.action_poses: Optional[torch.Tensor] = None  # long [G*G,3]
+        self.action_poses: Optional[torch.Tensor] = None  # float32 [G*G,2]
 
     def bind(self, engine: FactoryLayoutEnv) -> None:
         super().bind(engine)
@@ -66,44 +64,31 @@ class MaskPlaceAdapter(BaseAdapter):
             return None
         return self.engine.get_state().remaining[k]
 
-    def _orient_for_gid(self, gid: Optional[GroupId]) -> int:
-        """Return orient token for the configured orient."""
-        if gid is None:
-            return 0
-        group = self.engine.group_specs[gid]
-        return int(self.orient if group.rotatable else 0)
-
     def _action_poses_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
-        """Return long [G*G,3] table mapping action index -> (x_bl, y_bl, orient)."""
+        """Return float32 [G*G,2] table mapping action index -> (x_c, y_c) center coordinates."""
         g = int(self.grid)
         if gid is None:
-            return torch.zeros((g * g, 3), dtype=torch.long, device=self.device)
-
-        group = self.engine.group_specs[gid]
-        orient = self._orient_for_gid(gid)
-        w, h = group.rotated_size(orient)
-        w_i, h_i = int(w), int(h)
+            return torch.zeros((g * g, 2), dtype=torch.float32, device=self.device)
 
         cell_w, cell_h = self.cell_wh()
         ii = torch.arange(g, device=self.device).view(-1, 1).expand(g, g)
         jj = torch.arange(g, device=self.device).view(1, -1).expand(g, g)
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
-        x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
-        y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
-        orient_map = torch.full((g, g), int(orient), dtype=torch.long, device=self.device)
-        return torch.stack([x_bl, y_bl, orient_map], dim=-1).view(g * g, 3)
+        return torch.stack([cx, cy], dim=-1).view(g * g, 2).to(dtype=torch.float32)
 
     def _create_mask_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
-        """Return torch.BoolTensor[G*G] valid-action mask for a specific gid."""
+        """Return torch.BoolTensor[G*G] valid-action mask for a specific gid.
+
+        Since rotation is no longer part of the action, we check ALL valid
+        rotations and OR the results: a center cell is valid if the
+        facility can be placed there in *any* rotation.
+        """
         if gid is None:
             return torch.zeros((self.grid * self.grid,), dtype=torch.bool, device=self.device)
 
         group = self.engine.group_specs[gid]
-        orient = self._orient_for_gid(gid)
-        valid_map = self._valid_top_left_body(gid=gid, orient=orient)  # bool[H,W]
-        H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
-
+        rotations = (0, 90, 180, 270) if group.rotatable else (0,)
         g = int(self.grid)
         cell_w, cell_h = self.cell_wh()
         ii = torch.arange(g, device=self.device).view(-1, 1).expand(g, g)
@@ -111,46 +96,38 @@ class MaskPlaceAdapter(BaseAdapter):
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
 
-        w, h = group.rotated_size(orient)
-        w_i, h_i = int(w), int(h)
-        x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
-        y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
-
-        inside = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
         ok = torch.zeros((g, g), dtype=torch.bool, device=self.device)
-        ok[inside] = valid_map[y_bl[inside], x_bl[inside]]
+        for rotation in rotations:
+            valid_map = self._valid_top_left_body(gid=gid, rotation=rotation)
+            H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
+            w, h = group.rotated_size(rotation)
+            w_i, h_i = int(w), int(h)
+            x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
+            y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
+            inside = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
+            ok_v = torch.zeros((g, g), dtype=torch.bool, device=self.device)
+            ok_v[inside] = valid_map[y_bl[inside], x_bl[inside]]
+            ok = ok | ok_v
         return ok.reshape(-1)
 
     def _score_map_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
         """Return score map [G,G] for a specific gid using batch delta_cost (lower is better)."""
         g = int(self.grid)
-        g2 = g * g
         if gid is None:
             return torch.zeros((g, g), dtype=torch.float32, device=self.device)
-
-        group = self.engine.group_specs[gid]
-        orient = self._orient_for_gid(gid)
-        w, h = group.rotated_size(orient)
-        w_i, h_i = int(w), int(h)
 
         cell_w, cell_h = self.cell_wh()
         ii = torch.arange(g, device=self.device).view(-1, 1).expand(g, g)
         jj = torch.arange(g, device=self.device).view(1, -1).expand(g, g)
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
-        x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
-        y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
 
-        x_flat = x_bl.reshape(-1)
-        y_flat = y_bl.reshape(-1)
-        o_flat = torch.full((g2,), int(orient), dtype=torch.long, device=self.device)
-
-        poses = torch.stack([x_flat, y_flat, o_flat], dim=-1)
+        poses = torch.stack([cx.reshape(-1), cy.reshape(-1)], dim=-1)  # [G*G, 2] float
         scores = self._score_poses(gid, poses).to(dtype=torch.float32)
         return scores.view(g, g)
 
-    def _valid_top_left_body(self, *, gid: GroupId, orient: int) -> torch.Tensor:
-        return self.engine.placeable_map(gid=gid, orient=int(orient))
+    def _valid_top_left_body(self, *, gid: GroupId, rotation: int) -> torch.Tensor:
+        return self.engine.placeable_map(gid=gid, rotation=int(rotation))
 
     def create_mask(self) -> torch.Tensor:
         gid = self._next_gid()
@@ -259,7 +236,7 @@ class MaskPlaceAdapter(BaseAdapter):
         super().set_state(state)
         ax = state.get("action_poses", None)
         if isinstance(ax, torch.Tensor):
-            self.action_poses = ax.to(device=self.device, dtype=torch.long).clone()
+            self.action_poses = ax.to(device=self.device, dtype=torch.float32).clone()
         else:
             self.action_poses = None
         lm = state.get("_last_maps", None)
@@ -285,7 +262,7 @@ if __name__ == "__main__":
     engine = loaded.env
     engine.log = False
 
-    adapter = MaskPlaceAdapter(grid=224, orient=0)
+    adapter = MaskPlaceAdapter(grid=224)
 
     t0 = time.perf_counter()
     _obs_env, _info = engine.reset(options=loaded.reset_kwargs)

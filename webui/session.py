@@ -177,7 +177,7 @@ class Session:
                 y=float(p.y_bl),
                 w=float(p.w),
                 h=float(p.h),
-                rot=int(p.orient),
+                rot=int(p.rotation),
             ))
         
         # Candidates
@@ -188,21 +188,12 @@ class Session:
             scores = self.scores if self.scores is not None else np.zeros(len(poses))
 
             for i in range(len(poses)):
-                x_bl, y_bl, orient = poses[i]
-                # Convert to center for display
-                if self.candidates.gid is not None:
-                    spec = engine.group_specs[self.candidates.gid]
-                    w, h = spec.rotated_size(int(orient))
-                    cx = float(x_bl) + w / 2.0
-                    cy = float(y_bl) + h / 2.0
-                else:
-                    cx, cy = float(x_bl), float(y_bl)
-
+                x_c, y_c = float(poses[i, 0]), float(poses[i, 1])
                 candidates.append(CandidateInfo(
                     index=i,
-                    x=float(cx),
-                    y=float(cy),
-                    rot=int(orient),
+                    x=x_c,
+                    y=y_c,
+                    rot=0,
                     score=float(scores[i]) if i < len(scores) else 0.0,
                     valid=bool(mask[i]),
                     visits=0,
@@ -269,14 +260,14 @@ class Session:
                 # Add positions if both are placed
                 if src in engine.get_state().placed:
                     p_src = engine.get_state().placements[src]
-                    sx = float(getattr(p_src, "cx"))
-                    sy = float(getattr(p_src, "cy"))
+                    sx = float(getattr(p_src, "x_c"))
+                    sy = float(getattr(p_src, "y_c"))
                     edge.src_x = float(sx)
                     edge.src_y = float(sy)
                 if dst in engine.get_state().placed:
                     p_dst = engine.get_state().placements[dst]
-                    dx = float(getattr(p_dst, "cx"))
-                    dy = float(getattr(p_dst, "cy"))
+                    dx = float(getattr(p_dst, "x_c"))
+                    dy = float(getattr(p_dst, "y_c"))
                     edge.dst_x = float(dx)
                     edge.dst_y = float(dy)
                 flow_edges.append(edge)
@@ -370,12 +361,10 @@ class SessionManager:
         elif req.wrapper_mode == "alphachip":
             env = AlphaChipAdapter(
                 coarse_grid=wrapper_params.get('coarse_grid', 128),
-                orient=0,
             )
         elif req.wrapper_mode == "maskplace":
             env = MaskPlaceAdapter(
                 grid=wrapper_params.get('grid', 224),
-                orient=0,
                 soft_coefficient=wrapper_params.get('soft_coefficient', 1.0),
             )
         else:

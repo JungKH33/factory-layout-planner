@@ -357,7 +357,7 @@ def _draw_layout_layers(
             alpha=0.6,
         )
         ax.add_patch(rect)
-        ax.text(p.cx, p.cy, str(gid), ha="center", va="center", fontsize=8)
+        ax.text(p.x_c, p.y_c, str(gid), ha="center", va="center", fontsize=8)
 
     # action_space (optional; caller may render their own)
     if action_space is not None:
@@ -369,12 +369,9 @@ def _draw_layout_layers(
         if int(poses.shape[0]) > 0:
             xs: list[float] = []
             ys: list[float] = []
-            if gid is None:
-                raise ValueError("CandidateSet must include `gid` (or meta['gid']) to convert BL->center for plotting.")
-            for x_bl, y_bl, orient in poses.detach().cpu().tolist():
-                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
-                xs.append(float(cx))
-                ys.append(float(cy))
+            for row in poses.detach().cpu().tolist():
+                xs.append(float(row[0]))
+                ys.append(float(row[1]))
             sc = ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
             sc.set_visible(True)
             misc_artists["action_space"].append(sc)
@@ -574,10 +571,9 @@ def browse_steps(
         ys: list[float] = []
         cs: list[float] = []
         for k in idxs.tolist():
-            x_bl, y_bl, orient = poses[k].tolist()
-            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
-            xs.append(float(cx))
-            ys.append(float(cy))
+            x_c, y_c = float(poses[k, 0]), float(poses[k, 1])
+            xs.append(x_c)
+            ys.append(y_c)
             cs.append(float(scores[k]))
 
         # selected action point (even if invalid, we still try to draw it)
@@ -585,9 +581,7 @@ def browse_steps(
         if sel < 0 or sel >= poses.shape[0]:
             sel_xy = (0.0, 0.0)
         else:
-            x_bl, y_bl, orient = poses[sel].tolist()
-            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
-            sel_xy = (float(cx), float(cy))
+            sel_xy = (float(poses[sel, 0]), float(poses[sel, 1]))
 
         return np.asarray(xs), np.asarray(ys), np.asarray(cs, dtype=np.float32), sel_xy
 
@@ -785,7 +779,7 @@ def save_layout(
             alpha=0.6,
         )
         ax.add_patch(rect)
-        ax.text(p.cx, p.cy, str(gid), ha="center", va="center", fontsize=8)
+        ax.text(p.x_c, p.y_c, str(gid), ha="center", va="center", fontsize=8)
 
     if action_space is not None:
         meta = action_space.meta or {}
@@ -796,12 +790,9 @@ def save_layout(
         if int(poses.shape[0]) > 0:
             xs: list[float] = []
             ys: list[float] = []
-            if gid is None:
-                raise ValueError("CandidateSet must include `gid` (or meta['gid']) to convert BL->center for plotting.")
-            for x_bl, y_bl, orient in poses.detach().cpu().tolist():
-                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
-                xs.append(float(cx))
-                ys.append(float(cy))
+            for row in poses.detach().cpu().tolist():
+                xs.append(float(row[0]))
+                ys.append(float(row[1]))
             ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
 
     if show_flow:
@@ -875,8 +866,8 @@ def _plot_flow_overlay(ax: plt.Axes, env) -> list[Any]:
             if cached is not None:
                 (sx, sy), (dx, dy) = cached
             else:
-                sx, sy = src_p.cx, src_p.cy
-                dx, dy = dst_p.cx, dst_p.cy
+                sx, sy = src_p.x_c, src_p.y_c
+                dx, dy = dst_p.x_c, dst_p.y_c
             ann = ax.annotate(
                 "",
                 xy=(dx, dy),
@@ -1025,12 +1016,6 @@ def _plot_routes_overlay(ax: plt.Axes, routes: list[Any]) -> list[Any]:
     return arts
 
 
-def _center_from_bl(engine: Any, *, gid: Any, x_bl: int, y_bl: int, orient: int) -> tuple[float, float]:
-    """Compute (cx, cy) from bottom-left coord using rotated_size(orient)."""
-    spec = engine.group_specs[gid]
-    w, h = spec.rotated_size(int(orient))
-    return (float(x_bl) + w / 2.0, float(y_bl) + h / 2.0)
-
 
 
 def _plot_mask(ax: plt.Axes, mask: Optional[object], *, color: str, alpha: float):
@@ -1139,7 +1124,7 @@ if __name__ == "__main__":
 
     # ---- 1) Coarse wrapper demo ----
     # For coarse, we just visualize the current layout (candidate visualization via decode is omitted in demo).
-    env1 = AlphaChipAdapter(engine=engine, coarse_grid=32, orient=0)
+    env1 = AlphaChipAdapter(engine=engine, coarse_grid=32)
     _obs1, _ = env1.reset(options={"initial_positions": initial_positions, "remaining_order": remaining_order})
     plot_layout(env1, action_space=None)
     plot_flow_graph(env1)

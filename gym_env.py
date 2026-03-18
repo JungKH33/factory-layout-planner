@@ -7,7 +7,7 @@ Usage::
     from gym_env import AdapterGymEnv
 
     loaded = load_env("envs/env_configs/basic_01.json", device=device)
-    adapter = MaskPlaceAdapter(grid=224, orient=0)
+    adapter = MaskPlaceAdapter(grid=224)
     env = AdapterGymEnv(engine=loaded.env, adapter=adapter,
                         reset_kwargs=loaded.reset_kwargs)
     obs, info = env.reset()

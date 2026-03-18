@@ -295,10 +295,14 @@ if __name__ == "__main__":
         for dx in range(-200, 201, 10):
             for dy in range(-200, 201, 10):
                 x, y = cx + dx, cy + dy
-                if not env.is_placeable(EnvAction(gid=gid, x=int(x), y=int(y), orient=0)):
+                _spec = env.group_specs[gid]
+                _w0, _h0 = _spec.rotated_size(0)
+                _x_c = float(x) + float(_w0) / 2.0
+                _y_c = float(y) + float(_h0) / 2.0
+                if not env.is_placeable(EnvAction(gid=gid, x_c=_x_c, y_c=_y_c)):
                     continue
                 _obs, _reward, _terminated, _truncated, info = env.step_action(
-                    EnvAction(gid=gid, x=int(x), y=int(y), orient=0)
+                    EnvAction(gid=gid, x_c=_x_c, y_c=_y_c)
                 )
                 if info.get("reason") == "placed":
                     print(f"    {gid} at ({x}, {y})")

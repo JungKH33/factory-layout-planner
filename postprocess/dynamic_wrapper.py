@@ -59,7 +59,8 @@ class DynamicStorageWrapper(gym.Env):
         self.observation_space = gym.spaces.Dict({})
         
         # 현재 후보들
-        self.action_poses: Optional[torch.Tensor] = None  # [k, 3] (x, y, rot)
+        self.action_poses: Optional[torch.Tensor] = None  # [k, 2] float (x_c, y_c)
+        self._action_rots: Optional[torch.Tensor] = None  # [k] int (rotation for decode)
         self.mask: Optional[torch.Tensor] = None  # [k] bool
         
         # inference.py 호환용
@@ -85,7 +86,8 @@ class DynamicStorageWrapper(gym.Env):
         
         if valid_indices.numel() == 0:
             # 유효한 action 없음
-            self.action_poses = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
+            self.action_poses = torch.zeros((self.k, 2), dtype=torch.float32, device=self.device)
+            self._action_rots = torch.zeros((self.k,), dtype=torch.long, device=self.device)
             return torch.zeros(self.k, dtype=torch.bool, device=self.device)
         
         # 각 유효 action의 world 좌표 수집
@@ -123,16 +125,18 @@ class DynamicStorageWrapper(gym.Env):
         selected = scored[:self.k]
         
         # 결과 텐서 생성
-        xyrot = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
+        poses = torch.zeros((self.k, 2), dtype=torch.float32, device=self.device)
+        rots = torch.zeros((self.k,), dtype=torch.long, device=self.device)
         mask = torch.zeros(self.k, dtype=torch.bool, device=self.device)
-        
+
         for i, (cost, action_idx, wx, wy, rot) in enumerate(selected):
-            xyrot[i, 0] = wx
-            xyrot[i, 1] = wy
-            xyrot[i, 2] = rot
+            poses[i, 0] = float(wx)
+            poses[i, 1] = float(wy)
+            rots[i] = int(rot)
             mask[i] = True
-        
-        self.action_poses = xyrot
+
+        self.action_poses = poses
+        self._action_rots = rots
         return mask
     
     # ========== Observation ==========
@@ -145,14 +149,14 @@ class DynamicStorageWrapper(gym.Env):
         if not isinstance(self.action_poses, torch.Tensor):
             raise ValueError("action_poses must be torch.Tensor after create_mask()")
         mask_t = self.mask.to(dtype=torch.bool, device=self.device).view(-1)
-        xyrot_t = self.action_poses.to(dtype=torch.long, device=self.device)
-        if xyrot_t.ndim != 2 or int(xyrot_t.shape[1]) != 3:
-            raise ValueError(f"action_poses must have shape [N,3], got {tuple(xyrot_t.shape)}")
-        if int(xyrot_t.shape[0]) != int(mask_t.shape[0]):
+        poses_t = self.action_poses.to(dtype=torch.float32, device=self.device)
+        if poses_t.ndim != 2 or int(poses_t.shape[1]) != 2:
+            raise ValueError(f"action_poses must have shape [N,2], got {tuple(poses_t.shape)}")
+        if int(poses_t.shape[0]) != int(mask_t.shape[0]):
             raise ValueError(
-                f"action-space size mismatch: poses={int(xyrot_t.shape[0])}, mask={int(mask_t.shape[0])}"
+                f"action-space size mismatch: poses={int(poses_t.shape[0])}, mask={int(mask_t.shape[0])}"
             )
-        return CandidateSet(poses=xyrot_t, mask=mask_t, gid=self.current_gid())
+        return CandidateSet(poses=poses_t, mask=mask_t, gid=self.current_gid())
     
     # ========== Action Decode ==========
     
@@ -161,18 +165,19 @@ class DynamicStorageWrapper(gym.Env):
         action: int,
         action_space: Optional[CandidateSet] = None,
     ) -> Tuple[float, float, int, int, int]:
-        """action (0~k-1) → (x_bl, y_bl, rot, 0, action).
-        
+        """action (0~k-1) → (x_c, y_c, rot, 0, action).
+
         Returns:
-            (x_bl, y_bl, rot, 0, action_idx)
+            (x_c, y_c, rot, 0, action_idx)
         """
         del action_space
         a = int(action)
         if self.action_poses is None or a < 0 or a >= self.k:
             return 0.0, 0.0, 0, 0, 0
-        
-        xyz = self.action_poses[a]
-        return float(xyz[0].item()), float(xyz[1].item()), int(xyz[2].item()), 0, a
+
+        xy = self.action_poses[a]
+        rot = int(self._action_rots[a].item()) if self._action_rots is not None else 0
+        return float(xy[0].item()), float(xy[1].item()), rot, 0, a
     
     # ========== Gym API ==========
     

@@ -25,13 +25,11 @@ class AlphaChipAdapter(BaseAdapter):
         self,
         *,
         coarse_grid: int,
-        orient: int = 0,
     ):
         super().__init__()
         self.grid_width = 1
         self.grid_height = 1
         self.coarse_grid = int(coarse_grid)
-        self.orient = int(orient)
 
         # AlphaChip graph tensors are adapter-specific caches, rebuilt when bound engine changes.
         self._graph_engine_key: Optional[Tuple[int, int, int]] = None
@@ -40,7 +38,7 @@ class AlphaChipAdapter(BaseAdapter):
 
         self.action_space = gym.spaces.Discrete(self.coarse_grid * self.coarse_grid)
         self.observation_space = gym.spaces.Dict({})
-        self.action_poses: Optional[torch.Tensor] = None  # long [G*G,3]
+        self.action_poses: Optional[torch.Tensor] = None  # float32 [G*G,2]
 
     def bind(self, engine: FactoryLayoutEnv) -> None:
         super().bind(engine)
@@ -90,21 +88,18 @@ class AlphaChipAdapter(BaseAdapter):
     def _next_gid(self) -> Optional[GroupId]:
         return self.current_gid()
 
-    def _valid_top_left_body(self, *, gid: GroupId, orient: int) -> torch.Tensor:
-        return self.engine.placeable_map(gid=gid, orient=int(orient))
+    def _valid_top_left_body(self, *, gid: GroupId, rotation: int) -> torch.Tensor:
+        return self.engine.placeable_map(gid=gid, rotation=int(rotation))
 
     def create_mask(self) -> torch.Tensor:
         gid = self._next_gid()
         if gid is None:
             self.action_poses = torch.zeros(
-                (self.coarse_grid * self.coarse_grid, 3), dtype=torch.long, device=self.device
+                (self.coarse_grid * self.coarse_grid, 2), dtype=torch.float32, device=self.device
             )
             return torch.zeros((self.coarse_grid * self.coarse_grid,), dtype=torch.bool, device=self.device)
 
         group = self.engine.group_specs[gid]
-        orient = int(self.orient if group.rotatable else 0)
-        valid_map = self._valid_top_left_body(gid=gid, orient=orient)  # bool[H,W]
-        H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
 
         g = int(self.coarse_grid)
         cell_w, cell_h = self.cell_wh()
@@ -114,16 +109,22 @@ class AlphaChipAdapter(BaseAdapter):
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
 
-        w, h = group.rotated_size(orient)
-        w_i, h_i = int(w), int(h)
-        x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
-        y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
-        orient_map = torch.full((g, g), int(orient), dtype=torch.long, device=self.device)
-        self.action_poses = torch.stack([x_bl, y_bl, orient_map], dim=-1).view(g * g, 3).to(dtype=torch.long)
+        self.action_poses = torch.stack([cx, cy], dim=-1).view(g * g, 2).to(dtype=torch.float32)
 
-        inside = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
+        # Check validity across ALL rotations; a center is valid if any rotation fits.
+        rotations = (0, 90, 180, 270) if group.rotatable else (0,)
         ok = torch.zeros((g, g), dtype=torch.bool, device=self.device)
-        ok[inside] = valid_map[y_bl[inside], x_bl[inside]]
+        for rot in rotations:
+            valid_map = self._valid_top_left_body(gid=gid, rotation=rot)
+            H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
+            w, h = group.rotated_size(rot)
+            w_i, h_i = int(w), int(h)
+            x_bl_o = torch.round(cx - (w_i / 2.0)).to(torch.long)
+            y_bl_o = torch.round(cy - (h_i / 2.0)).to(torch.long)
+            inside = (x_bl_o >= 0) & (y_bl_o >= 0) & (x_bl_o < W) & (y_bl_o < H)
+            ok_v = torch.zeros((g, g), dtype=torch.bool, device=self.device)
+            ok_v[inside] = valid_map[y_bl_o[inside], x_bl_o[inside]]
+            ok = ok | ok_v
         return ok.reshape(-1)
 
     def build_observation(self) -> Dict[str, Any]:
@@ -150,7 +151,7 @@ class AlphaChipAdapter(BaseAdapter):
         super().set_state(state)
         ax = state.get("action_poses", None)
         if isinstance(ax, torch.Tensor):
-            self.action_poses = ax.to(device=self.device, dtype=torch.long).clone()
+            self.action_poses = ax.to(device=self.device, dtype=torch.float32).clone()
         else:
             self.action_poses = None
 
@@ -170,9 +171,9 @@ class AlphaChipAdapter(BaseAdapter):
                 continue
             p = self.engine.get_state().placements[gid]
             x[int(idx), 2] = 1.0
-            x[int(idx), 3] = float(p.cx) / float(self.engine.grid_width)
-            x[int(idx), 4] = float(p.cy) / float(self.engine.grid_height)
-            x[int(idx), 5] = float(int(p.orient)) / 1.0
+            x[int(idx), 3] = float(p.x_c) / float(self.engine.grid_width)
+            x[int(idx), 4] = float(p.y_c) / float(self.engine.grid_height)
+            x[int(idx), 5] = float(int(p.rotation)) / 1.0
         return x
 
     def _build_netlist_metadata(self) -> torch.Tensor:
@@ -297,7 +298,7 @@ if __name__ == "__main__":
     engine = loaded.env
     engine.log = False
 
-    adapter = AlphaChipAdapter(coarse_grid=32, orient=0)
+    adapter = AlphaChipAdapter(coarse_grid=32)
 
     t0 = time.perf_counter()
     _obs_env, _info = engine.reset(options=loaded.reset_kwargs)

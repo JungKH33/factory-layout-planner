@@ -265,8 +265,11 @@ async def step(sid: str, req: StepRequest):
                 gid = candidates.gid
                 if gid is None:
                     raise ValueError("candidate gid is required")
-                orient = 1 if int(rot) in (90, 270) else 0
-                placement = EnvAction(gid=gid, x=int(x_bl), y=int(y_bl), orient=orient)
+                spec = engine.group_specs[gid]
+                w, h = spec.rotated_size(int(rot))
+                x_c = float(x_bl) + float(w) / 2.0
+                y_c = float(y_bl) + float(h) / 2.0
+                placement = EnvAction(gid=gid, x_c=x_c, y_c=y_c)
                 obs_core, reward, session.terminated, session.truncated, info = engine.step_action(placement)
                 session.obs = adapter.build_observation(obs_core)
             
