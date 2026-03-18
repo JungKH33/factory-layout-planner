@@ -25,13 +25,13 @@ class AlphaChipAdapter(BaseAdapter):
         self,
         *,
         coarse_grid: int,
-        rot: int = 0,
+        orient: int = 0,
     ):
         super().__init__()
         self.grid_width = 1
         self.grid_height = 1
         self.coarse_grid = int(coarse_grid)
-        self.rot = int(rot)
+        self.orient = int(orient)
 
         # AlphaChip graph tensors are adapter-specific caches, rebuilt when bound engine changes.
         self._graph_engine_key: Optional[Tuple[int, int, int]] = None
@@ -40,7 +40,7 @@ class AlphaChipAdapter(BaseAdapter):
 
         self.action_space = gym.spaces.Discrete(self.coarse_grid * self.coarse_grid)
         self.observation_space = gym.spaces.Dict({})
-        self.action_xyrot: Optional[torch.Tensor] = None  # long [G*G,3]
+        self.action_poses: Optional[torch.Tensor] = None  # long [G*G,3]
 
     def bind(self, engine: FactoryLayoutEnv) -> None:
         super().bind(engine)
@@ -90,21 +90,20 @@ class AlphaChipAdapter(BaseAdapter):
     def _next_gid(self) -> Optional[GroupId]:
         return self.current_gid()
 
-    def _valid_top_left_body(self, *, gid: GroupId, rot: int) -> torch.Tensor:
-        group = self.engine.group_specs[gid]
-        return self.engine.get_state().is_placeable_map(gid=gid, spec=group, rot=int(rot))
+    def _valid_top_left_body(self, *, gid: GroupId, orient: int) -> torch.Tensor:
+        return self.engine.placeable_map(gid=gid, orient=int(orient))
 
     def create_mask(self) -> torch.Tensor:
         gid = self._next_gid()
         if gid is None:
-            self.action_xyrot = torch.zeros(
+            self.action_poses = torch.zeros(
                 (self.coarse_grid * self.coarse_grid, 3), dtype=torch.long, device=self.device
             )
             return torch.zeros((self.coarse_grid * self.coarse_grid,), dtype=torch.bool, device=self.device)
 
         group = self.engine.group_specs[gid]
-        rot = int(self.rot if group.rotatable else 0)
-        valid_map = self._valid_top_left_body(gid=gid, rot=rot)  # bool[H,W]
+        orient = int(self.orient if group.rotatable else 0)
+        valid_map = self._valid_top_left_body(gid=gid, orient=orient)  # bool[H,W]
         H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
 
         g = int(self.coarse_grid)
@@ -115,13 +114,12 @@ class AlphaChipAdapter(BaseAdapter):
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
 
-        w, h = group._rotated_size(int(rot))
-        w_i = max(1, int(round(float(w))))
-        h_i = max(1, int(round(float(h))))
+        w, h = group.rotated_size(orient)
+        w_i, h_i = int(w), int(h)
         x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
         y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
-        rot_map = torch.full((g, g), int(rot), dtype=torch.long, device=self.device)
-        self.action_xyrot = torch.stack([x_bl, y_bl, rot_map], dim=-1).view(g * g, 3).to(dtype=torch.long)
+        orient_map = torch.full((g, g), int(orient), dtype=torch.long, device=self.device)
+        self.action_poses = torch.stack([x_bl, y_bl, orient_map], dim=-1).view(g * g, 3).to(dtype=torch.long)
 
         inside = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
         ok = torch.zeros((g, g), dtype=torch.bool, device=self.device)
@@ -142,19 +140,19 @@ class AlphaChipAdapter(BaseAdapter):
 
     def get_state_copy(self) -> Dict[str, object]:
         snap = dict(super().get_state_copy())
-        if isinstance(self.action_xyrot, torch.Tensor):
-            snap["action_xyrot"] = self.action_xyrot.clone()
+        if isinstance(self.action_poses, torch.Tensor):
+            snap["action_poses"] = self.action_poses.clone()
         else:
-            snap["action_xyrot"] = None
+            snap["action_poses"] = None
         return snap
 
     def set_state(self, state: Dict[str, object]) -> None:
         super().set_state(state)
-        ax = state.get("action_xyrot", None)
+        ax = state.get("action_poses", None)
         if isinstance(ax, torch.Tensor):
-            self.action_xyrot = ax.to(device=self.device, dtype=torch.long).clone()
+            self.action_poses = ax.to(device=self.device, dtype=torch.long).clone()
         else:
-            self.action_xyrot = None
+            self.action_poses = None
 
     def _build_x(self) -> torch.Tensor:
         """Build node features x: float32 [N,8] from engine state."""
@@ -165,18 +163,16 @@ class AlphaChipAdapter(BaseAdapter):
             gg = self.engine.group_specs[gid]
             x[int(i), 0] = float(gg.width) / float(self.engine.grid_width)
             x[int(i), 1] = float(gg.height) / float(self.engine.grid_height)
-        # dynamic features (placed + center + rot)
+        # dynamic features (placed + center + rotation)
         for gid in self.engine.get_state().placed:
             idx = self.engine.gid_to_idx.get(gid, None)
             if idx is None:
                 continue
             p = self.engine.get_state().placements[gid]
-            x_bl, y_bl, rot = p.pose()
-            cx, cy = self.engine.group_specs[gid]._center_from_bl(int(x_bl), int(y_bl), int(rot))
             x[int(idx), 2] = 1.0
-            x[int(idx), 3] = float(cx) / float(self.engine.grid_width)
-            x[int(idx), 4] = float(cy) / float(self.engine.grid_height)
-            x[int(idx), 5] = float(int(rot) % 360) / 360.0
+            x[int(idx), 3] = float(p.cx) / float(self.engine.grid_width)
+            x[int(idx), 4] = float(p.cy) / float(self.engine.grid_height)
+            x[int(idx), 5] = float(int(p.orient)) / 1.0
         return x
 
     def _build_netlist_metadata(self) -> torch.Tensor:
@@ -301,7 +297,7 @@ if __name__ == "__main__":
     engine = loaded.env
     engine.log = False
 
-    adapter = AlphaChipAdapter(coarse_grid=32, rot=0)
+    adapter = AlphaChipAdapter(coarse_grid=32, orient=0)
 
     t0 = time.perf_counter()
     _obs_env, _info = engine.reset(options=loaded.reset_kwargs)
@@ -320,9 +316,9 @@ if __name__ == "__main__":
     # Build BL candidates for visualization (avoid plotting all invalid points).
     g = int(adapter.coarse_grid)
     idxs = torch.where(candidates.mask)[0]
-    xy = candidates.xyrot[idxs]
+    xy = candidates.poses[idxs]
     cand0 = CandidateSet(
-        xyrot=xy,
+        poses=xy,
         mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
         gid=candidates.gid,
         meta={"g": g},
@@ -341,9 +337,9 @@ if __name__ == "__main__":
         _print_alphachip_obs({k: obs2[k] for k in obs2.keys()})
         _plot_alphachip_graph({k: obs2[k] for k in obs2.keys()}, title="AlphaChip obs graph (after 1 step)")
         idxs2 = torch.where(candidates2.mask)[0]
-        xy2 = candidates2.xyrot[idxs2]
+        xy2 = candidates2.poses[idxs2]
         cand1 = CandidateSet(
-            xyrot=xy2,
+            poses=xy2,
             mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
             gid=candidates2.gid,
             meta={"g": g},

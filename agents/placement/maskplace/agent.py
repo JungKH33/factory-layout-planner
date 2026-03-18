@@ -44,7 +44,7 @@ class MaskPlaceAgent:
             st = st.view(1, -1)
 
         probs, _value = self.model(st)
-        device = action_space.xyrot.device
+        device = action_space.poses.device
         pri = probs[0].to(device=device, dtype=torch.float32).view(-1)
 
         mask = action_space.mask.to(device=device, dtype=torch.bool).view(-1)

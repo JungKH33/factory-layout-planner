@@ -25,7 +25,7 @@ class StepFrame:
     cost: float
     step_idx: int
     action_space: Optional[CandidateSet] = None
-    scores: Optional["np.ndarray"] = None  # float [N] (same length as action_space.xyrot)
+    scores: Optional["np.ndarray"] = None  # float [N] (same length as action_space.poses)
     selected_action: Optional[int] = None
     value: Optional[float] = None
 
@@ -365,14 +365,14 @@ def _draw_layout_layers(
         gid = getattr(action_space, "gid", None)
         if gid is None:
             gid = meta.get("gid", None)
-        xyrot = action_space.xyrot[action_space.mask]
-        if int(xyrot.shape[0]) > 0:
+        poses = action_space.poses[action_space.mask]
+        if int(poses.shape[0]) > 0:
             xs: list[float] = []
             ys: list[float] = []
             if gid is None:
                 raise ValueError("CandidateSet must include `gid` (or meta['gid']) to convert BL->center for plotting.")
-            for x_bl, y_bl, rot in xyrot.detach().cpu().tolist():
-                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+            for x_bl, y_bl, orient in poses.detach().cpu().tolist():
+                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
                 xs.append(float(cx))
                 ys.append(float(cy))
             sc = ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
@@ -561,10 +561,10 @@ def browse_steps(
         if gid is None:
             raise ValueError("CandidateSet.gid is required for BL->center conversion.")
         mask = cand.mask.detach().cpu().numpy().astype(bool)
-        xyrot = cand.xyrot.detach().cpu().numpy()
+        poses = cand.poses.detach().cpu().numpy()
         scores = np.asarray(frame.scores, dtype=np.float32)
-        if scores.shape[0] != xyrot.shape[0]:
-            raise ValueError(f"scores length {scores.shape[0]} != action_space {xyrot.shape[0]}")
+        if scores.shape[0] != poses.shape[0]:
+            raise ValueError(f"scores length {scores.shape[0]} != action_space {poses.shape[0]}")
 
         idxs = np.where(mask)[0]
         if max_points is not None and idxs.shape[0] > int(max_points):
@@ -574,19 +574,19 @@ def browse_steps(
         ys: list[float] = []
         cs: list[float] = []
         for k in idxs.tolist():
-            x_bl, y_bl, rot = xyrot[k].tolist()
-            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+            x_bl, y_bl, orient = poses[k].tolist()
+            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
             xs.append(float(cx))
             ys.append(float(cy))
             cs.append(float(scores[k]))
 
         # selected action point (even if invalid, we still try to draw it)
         sel = int(frame.selected_action)
-        if sel < 0 or sel >= xyrot.shape[0]:
+        if sel < 0 or sel >= poses.shape[0]:
             sel_xy = (0.0, 0.0)
         else:
-            x_bl, y_bl, rot = xyrot[sel].tolist()
-            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+            x_bl, y_bl, orient = poses[sel].tolist()
+            cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
             sel_xy = (float(cx), float(cy))
 
         return np.asarray(xs), np.asarray(ys), np.asarray(cs, dtype=np.float32), sel_xy
@@ -792,14 +792,14 @@ def save_layout(
         gid = getattr(action_space, "gid", None)
         if gid is None:
             gid = meta.get("gid", None)
-        xyrot = action_space.xyrot[action_space.mask]
-        if int(xyrot.shape[0]) > 0:
+        poses = action_space.poses[action_space.mask]
+        if int(poses.shape[0]) > 0:
             xs: list[float] = []
             ys: list[float] = []
             if gid is None:
                 raise ValueError("CandidateSet must include `gid` (or meta['gid']) to convert BL->center for plotting.")
-            for x_bl, y_bl, rot in xyrot.detach().cpu().tolist():
-                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), rot=int(rot))
+            for x_bl, y_bl, orient in poses.detach().cpu().tolist():
+                cx, cy = _center_from_bl(engine, gid=gid, x_bl=int(x_bl), y_bl=int(y_bl), orient=int(orient))
                 xs.append(float(cx))
                 ys.append(float(cy))
             ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
@@ -1025,10 +1025,10 @@ def _plot_routes_overlay(ax: plt.Axes, routes: list[Any]) -> list[Any]:
     return arts
 
 
-def _center_from_bl(engine: Any, *, gid: Any, x_bl: int, y_bl: int, rot: int) -> tuple[float, float]:
-    """Compute (cx, cy) from bottom-left coord using group_specs._rotated_size."""
+def _center_from_bl(engine: Any, *, gid: Any, x_bl: int, y_bl: int, orient: int) -> tuple[float, float]:
+    """Compute (cx, cy) from bottom-left coord using rotated_size(orient)."""
     spec = engine.group_specs[gid]
-    w, h = spec._rotated_size(rot)
+    w, h = spec.rotated_size(int(orient))
     return (float(x_bl) + w / 2.0, float(y_bl) + h / 2.0)
 
 
@@ -1139,7 +1139,7 @@ if __name__ == "__main__":
 
     # ---- 1) Coarse wrapper demo ----
     # For coarse, we just visualize the current layout (candidate visualization via decode is omitted in demo).
-    env1 = AlphaChipAdapter(engine=engine, coarse_grid=32, rot=0)
+    env1 = AlphaChipAdapter(engine=engine, coarse_grid=32, orient=0)
     _obs1, _ = env1.reset(options={"initial_positions": initial_positions, "remaining_order": remaining_order})
     plot_layout(env1, action_space=None)
     plot_flow_graph(env1)
@@ -1160,7 +1160,7 @@ if __name__ == "__main__":
     # Greedy(TopK) wrapper already builds action_space; use obs-provided (decoded) action_space for plotting.
     topk_obs, _ = env2.reset(options={"initial_positions": initial_positions, "remaining_order": remaining_order})
     cand = None
-    if isinstance(topk_obs, dict) and ("action_mask" in topk_obs) and ("action_xyrot" in topk_obs):
-        cand = CandidateSet(xyrot=topk_obs["action_xyrot"], mask=topk_obs["action_mask"], gid=engine.get_state().remaining[0] if engine.get_state().remaining else None)
+    if isinstance(topk_obs, dict) and ("action_mask" in topk_obs) and ("action_poses" in topk_obs):
+        cand = CandidateSet(poses=topk_obs["action_poses"], mask=topk_obs["action_mask"], gid=engine.get_state().remaining[0] if engine.get_state().remaining else None)
     plot_layout(env2, action_space=cand)
     plot_flow_graph(env2)

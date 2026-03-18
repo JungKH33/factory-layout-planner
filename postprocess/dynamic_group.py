@@ -364,7 +364,7 @@ if __name__ == "__main__":
     for gid, x, y, rot in placements:
         if gid in env.get_state().remaining:
             obs, reward, terminated, truncated, info = env.step_action(
-                EnvAction(gid=gid, x=int(x), y=int(y), rot=int(rot))
+                EnvAction(gid=gid, x=int(x), y=int(y), orient=1 if int(rot) in (90, 270) else 0)
             )
             print(f"    Placed {gid} at ({x}, {y}, rot={rot}) - reason: {info.get('reason')}")
     
@@ -445,18 +445,13 @@ if __name__ == "__main__":
     for gid in env.get_state().placed:
         p = env.get_state().placements.get(gid)
         if p is not None:
-            x_bl, y_bl, rot = p.pose()
-            grp = env.group_specs[gid]
-            if rot == 0:
-                gw, gh = grp.width, grp.height
-            else:
-                gw, gh = grp.height, grp.width
+            gw, gh = float(p.w), float(p.h)
             rect = plt.Rectangle(
-                (x_bl - 0.5, y_bl - 0.5), gw, gh,
+                (p.x_bl - 0.5, p.y_bl - 0.5), gw, gh,
                 linewidth=2, edgecolor='yellow', facecolor='none'
             )
             ax1.add_patch(rect)
-            ax1.text(x_bl + gw/2, y_bl + gh/2, gid, ha='center', va='center', 
+            ax1.text(p.x_bl + gw/2, p.y_bl + gh/2, gid, ha='center', va='center',
                      fontsize=12, fontweight='bold', color='yellow')
     
     legend_patches_env = [
@@ -588,13 +583,8 @@ if __name__ == "__main__":
     for gid in env.get_state().placed:
         p = env.get_state().placements.get(gid)
         if p is not None:
-            x_bl, y_bl, rot = p.pose()
-            grp = env.group_specs[gid]
-            if rot == 0:
-                gw, gh = grp.width, grp.height
-            else:
-                gw, gh = grp.height, grp.width
-            ax4.text(x_bl + gw/2, y_bl + gh/2, gid, ha='center', va='center', 
+            gw, gh = float(p.w), float(p.h)
+            ax4.text(p.x_bl + gw/2, p.y_bl + gh/2, gid, ha='center', va='center',
                      fontsize=10, fontweight='bold', color='white',
                      bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
     

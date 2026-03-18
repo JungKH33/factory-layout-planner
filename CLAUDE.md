@@ -39,7 +39,7 @@ envs/env_configs/*.json                      ← problem definition (grid, facil
        ↓  env_loader.py
 envs/env.py                                  ← FactoryLayoutEnv (single production Gymnasium env)
        ↓
-agents/placement/greedy/adapter_v3.py        ← generates ActionSpace(xyrot[K,3], mask[K]) from engine state
+agents/placement/greedy/adapter_v3.py        ← generates ActionSpace(poses[K,3], mask[K]) from engine state
 agents/placement/greedy/agent.py             ← policy: argmin(Δcost) over candidates
 search/mcts.py                               ← optional tree search over adapter
        ↓
@@ -73,8 +73,8 @@ agents/
 
 **Adapters** are **not** Gymnasium envs. They are pure stateless-ish adapters that:
 - `build_observation()` → model-specific dict (greedy returns `{}`, AlphaChip returns graph tensors, etc.)
-- `build_action_space()` → `ActionSpace(xyrot, mask)` from current engine state
-- `decode_action(index, action_space)` → `EnvAction(gid, x, y, rot)`
+- `build_action_space()` → `ActionSpace(poses, mask)` from current engine state
+- `decode_action(index, action_space)` → `EnvAction(gid, x, y, orient)`
 
 The pipeline calls `engine.step_action(action)` directly — adapters never step the env themselves.
 

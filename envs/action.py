@@ -8,14 +8,16 @@ GroupId = Union[int, str]
 
 @dataclass(frozen=True)
 class EnvAction:
-    """Normalized placement action payload.
+    """Coarse placement action (intent).
 
     - gid is required.
     - x/y are bottom-left integer grid coordinates.
-    - rot is in degrees (multiples of 90 expected by env).
+    - orient is a coarse orientation class: 0 = {R0, R180} family,
+      1 = {R90, R270} family.  The engine resolves this to a concrete
+      rot/mirror via StaticSpec.resolve().
     """
 
     gid: GroupId
     x: int
     y: int
-    rot: int
+    orient: int

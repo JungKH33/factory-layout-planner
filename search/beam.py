@@ -154,7 +154,7 @@ class BeamSearch(BaseSearch):
         """Snapshot current engine state.
 
         The base implementation only copies the engine state.  Adapter state
-        (mask, action_xyrot, etc.) is intentionally NOT included – it is
+        (mask, action_poses, etc.) is intentionally NOT included – it is
         always rebuilt via ``adapter.build_action_space()`` after restoration.
         Subclasses may override to include adapter state if needed.
         """
@@ -288,9 +288,9 @@ if __name__ == "__main__":
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     valid_n = int(root_action_space.mask.sum().item())
-    xyrot = root_action_space.xyrot[a].tolist() if int(root_action_space.xyrot.shape[0]) > 0 else [0, 0, 0]
+    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0, 0]
 
     print("search.beam demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)
-    print(" action=", a, "valid_actions=", valid_n, "xyrot=", xyrot)
+    print(" action=", a, "valid_actions=", valid_n, "pose=", pose)
     print(f" elapsed_ms={dt_ms:.2f}")

@@ -83,6 +83,7 @@ def load_env(
             clearance_bottom_rel=_to_int(g.get("facility_clearance_bottom", 0)),
             clearance_top_rel=_to_int(g.get("facility_clearance_top", 0)),
             rotatable=bool(g.get("rotatable", True)),
+            mirrorable=bool(g.get("mirrorable", True)),
             zone_values=dict(zone_values_raw),
         )
 

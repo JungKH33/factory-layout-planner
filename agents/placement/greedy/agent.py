@@ -19,8 +19,8 @@ class GreedyAgent:
     prior_temperature: float = 1.0
 
     def policy(self, *, obs: dict, action_space: CandidateSet) -> torch.Tensor:
-        device = action_space.xyrot.device
-        N = int(action_space.xyrot.shape[0])
+        device = action_space.poses.device
+        N = int(action_space.poses.shape[0])
         priors = torch.zeros((N,), dtype=torch.float32, device=device)
         valid = action_space.mask
         valid_idx = torch.where(valid.view(-1))[0]
@@ -51,7 +51,7 @@ class GreedyAgent:
         return priors
 
     def select_action(self, *, obs: dict, action_space: CandidateSet) -> int:
-        N = int(action_space.xyrot.shape[0])
+        N = int(action_space.poses.shape[0])
         if N <= 0:
             return 0
 
@@ -64,7 +64,7 @@ class GreedyAgent:
         scores_meta = meta.get("action_delta", None)
         if not (isinstance(scores_meta, torch.Tensor) and int(scores_meta.numel()) == N):
             return int(valid_idx[0].item())
-        scores = scores_meta.to(dtype=torch.float32, device=action_space.xyrot.device).view(-1)[valid_idx]
+        scores = scores_meta.to(dtype=torch.float32, device=action_space.poses.device).view(-1)[valid_idx]
         best_k = int(torch.argmin(scores).item()) if scores.numel() > 0 else 0
         return int(valid_idx[best_k].item()) if int(valid_idx.numel()) > 0 else 0
 
@@ -105,9 +105,9 @@ if __name__ == "__main__":
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     valid_n = int(action_space.mask.sum().item())
-    xyrot = action_space.xyrot[a].tolist() if int(action_space.xyrot.shape[0]) > 0 else [0, 0, 0]
+    pose = action_space.poses[a].tolist() if int(action_space.poses.shape[0]) > 0 else [0, 0, 0]
 
     print("agents.greedy demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)
-    print(" action=", a, "valid_actions=", valid_n, "xyrot=", xyrot, "prior=", (float(pri[a].item()) if pri.numel() > 0 else 0.0))
+    print(" action=", a, "valid_actions=", valid_n, "pose=", pose, "prior=", (float(pri[a].item()) if pri.numel() > 0 else 0.0))
     print(f" elapsed_ms={dt_ms:.3f}")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
@@ -16,6 +16,8 @@ class StaticPlacement(PlacementBase):
 
     Inherits the common placement contract from PlacementBase and adds
     geometry fields (w, h, cx, cy) that are specific to static (fixed-size) facilities.
+    ``rotation`` is the concrete rotation (0/90/180/270) and ``mirror`` indicates
+    whether a local x-axis flip was applied before rotation.
     """
     # TODO(modularization): move single-port selection (including empty -> center fallback)
     # from env into placement-level API so env does not handle entries/exits shape branching.
@@ -23,6 +25,8 @@ class StaticPlacement(PlacementBase):
     h: float
     cx: float
     cy: float
+    rotation: int = 0
+    mirror: bool = False
 
 
 @dataclass
@@ -50,6 +54,7 @@ class StaticSpec:
     clearance_bottom_rel: int
     clearance_top_rel: int
     rotatable: bool = True
+    mirrorable: bool = False
     zone_values: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -77,30 +82,30 @@ class StaticSpec:
             )
 
     @staticmethod
-    def _norm_rot(rot: int) -> int:
+    def _norm_rotation(rotation: int) -> int:
         """Normalize rotation to {0,90,180,270} and validate."""
-        r = int(rot) % 360
+        r = int(rotation) % 360
         if r % 90 != 0:
-            raise ValueError(f"rot must be a multiple of 90 degrees, got {rot!r}")
+            raise ValueError(f"rotation must be a multiple of 90 degrees, got {rotation!r}")
         return r
 
-    def _resolve_rot(self, rot: int) -> int:
-        r = self._norm_rot(rot)
+    def _resolve_rotation(self, rotation: int) -> int:
+        r = self._norm_rotation(rotation)
         if not bool(self.rotatable):
             return 0
         return r
 
-    def _rotated_size(self, rot: int) -> Tuple[float, float]:
+    def _rotated_size(self, rotation: int) -> Tuple[float, float]:
         """Return rotated (w,h) for 90-degree-multiple rotations."""
-        r = self._resolve_rot(rot)
+        r = self._resolve_rotation(rotation)
         if r in (90, 270):
             return (float(self.height), float(self.width))
         return (float(self.width), float(self.height))
 
     @staticmethod
-    def _rotate_point(dx: float, dy: float, rot: int) -> Tuple[float, float]:
+    def _rotate_point(dx: float, dy: float, rotation: int) -> Tuple[float, float]:
         """Rotate a local point (dx,dy) CCW by multiples of 90 degrees."""
-        r = StaticSpec._norm_rot(rot)
+        r = StaticSpec._norm_rotation(rotation)
         if r == 0:
             return (float(dx), float(dy))
         if r == 90:
@@ -112,15 +117,15 @@ class StaticSpec:
         # unreachable
         return (float(dx), float(dy))
 
-    def _rot_idx(self, rot: torch.Tensor) -> torch.Tensor:
-        r = torch.remainder(rot, 360)
+    def _rotation_idx(self, rotation: torch.Tensor) -> torch.Tensor:
+        r = torch.remainder(rotation, 360)
         if torch.any((r % 90) != 0):
-            raise ValueError("rot must be multiples of 90")
+            raise ValueError("rotation must be multiples of 90")
         if not bool(self.rotatable):
             return torch.zeros_like(r, dtype=torch.long)
         return (r // 90).to(dtype=torch.long)
 
-    def _wh_for_rot(self, rot_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _wh_for_rotation(self, rot_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         w_choices = torch.tensor(
             [float(self.width), float(self.height), float(self.width), float(self.height)],
             dtype=torch.float32,
@@ -134,7 +139,7 @@ class StaticSpec:
         return w_choices[rot_idx], h_choices[rot_idx]
 
     @staticmethod
-    def _offsets_rot(base: torch.Tensor) -> torch.Tensor:
+    def _offsets_rotation(base: torch.Tensor) -> torch.Tensor:
         dx = base[:, 0]
         dy = base[:, 1]
         r0 = torch.stack([dx, dy], dim=1)
@@ -143,15 +148,17 @@ class StaticSpec:
         r270 = torch.stack([-dy, dx], dim=1)
         return torch.stack([r0, r90, r180, r270], dim=0)  # [4,N,2]
 
-    def _clearance_lrtb(self, rot: int) -> Tuple[int, int, int, int]:
-        """Return clearance (cL, cR, cB, cT) rotated with the body."""
-        r = self._resolve_rot(rot)
+    def _clearance_lrtb(self, rotation: int, *, mirror: bool = False) -> Tuple[int, int, int, int]:
+        """Return clearance (cL, cR, cB, cT) after optional mirror + rotation."""
+        r = self._resolve_rotation(rotation)
         cL, cR, cB, cT = (
             int(self.clearance_left_rel),
             int(self.clearance_right_rel),
             int(self.clearance_bottom_rel),
             int(self.clearance_top_rel),
         )
+        if bool(mirror):
+            cL, cR = cR, cL
         if r == 90:
             return (cB, cT, cR, cL)
         if r == 180:
@@ -160,36 +167,73 @@ class StaticSpec:
             return (cT, cB, cL, cR)
         return (cL, cR, cB, cT)
 
-    def _center_from_bl(self, x_bl: float, y_bl: float, rot: int) -> Tuple[float, float]:
-        w, h = self._rotated_size(rot)
+    def variant_geometries(self, orient: int) -> List[Tuple[int, int, int, int, int, int]]:
+        """Return unique (body_w, body_h, cL, cR, cB, cT) for each variant in the orient family.
+
+        Public API for env.placeable_map — no rotation/mirror details leak out.
+        """
+        o = int(orient) % 2
+        rotations = ((0, 180) if o == 0 else (90, 270)) if self.rotatable else ((0,) if o == 0 else ())
+        mirrors = (False, True) if self.mirrorable else (False,)
+        seen: set = set()
+        result: List[Tuple[int, int, int, int, int, int]] = []
+        for rot in rotations:
+            for m in mirrors:
+                r = self._resolve_rotation(rot)
+                w, h = self._rotated_size(r)
+                cL, cR, cB, cT = self._clearance_lrtb(r, mirror=m)
+                geom = (int(w), int(h), int(cL), int(cR), int(cB), int(cT))
+                if geom not in seen:
+                    seen.add(geom)
+                    result.append(geom)
+        return result
+
+    def rotated_size(self, orient: int) -> Tuple[int, int]:
+        """Return (body_w, body_h) for the canonical rotation of the orient family.
+
+        Public API for adapters that need w/h without accessing rotation internals.
+        orient=0 → R0 dimensions, orient=1 → R90 dimensions.
+        """
+        canonical_rotation = int(orient) * 90
+        r = self._resolve_rotation(canonical_rotation)
+        w, h = self._rotated_size(r)
+        return int(w), int(h)
+
+    def _center_from_bl(self, x_bl: float, y_bl: float, rotation: int) -> Tuple[float, float]:
+        w, h = self._rotated_size(rotation)
         return (float(x_bl) + float(w) / 2.0, float(y_bl) + float(h) / 2.0)
 
     def _ports_from_bl(
         self,
         x_bl: float,
         y_bl: float,
-        rot: int,
+        rotation: int,
         ports_rel: List[Tuple[float, float]],
+        *,
+        mirror: bool = False,
     ) -> List[Tuple[float, float]]:
         """Convert BL-relative port offsets to absolute world coordinates.
 
-        BL-relative → center-relative (subtract half_w, half_h) → rotate → add world center.
+        BL-relative → center-relative (subtract half_w, half_h) → mirror+rotate → add world center.
         """
-        r = self._resolve_rot(rot)
+        r = self._resolve_rotation(rotation)
         cx, cy = self._center_from_bl(x_bl, y_bl, r)
         half_w = self.width / 2.0
         half_h = self.height / 2.0
         out = []
         for dx_bl, dy_bl in ports_rel:
-            rdx, rdy = self._rotate_point(dx_bl - half_w, dy_bl - half_h, r)
+            dx = dx_bl - half_w
+            if bool(mirror):
+                dx = -dx
+            rdx, rdy = self._rotate_point(dx, dy_bl - half_h, r)
             out.append((cx + rdx, cy + rdy))
         return out
 
-    def _entries_from_bl(self, x_bl: float, y_bl: float, rot: int) -> List[Tuple[float, float]]:
-        return self._ports_from_bl(x_bl, y_bl, rot, self.entries_rel)
+    def _entries_from_bl(self, x_bl: float, y_bl: float, rotation: int, *, mirror: bool = False) -> List[Tuple[float, float]]:
+        return self._ports_from_bl(x_bl, y_bl, rotation, self.entries_rel, mirror=mirror)
 
-    def _exits_from_bl(self, x_bl: float, y_bl: float, rot: int) -> List[Tuple[float, float]]:
-        return self._ports_from_bl(x_bl, y_bl, rot, self.exits_rel)
+    def _exits_from_bl(self, x_bl: float, y_bl: float, rotation: int, *, mirror: bool = False) -> List[Tuple[float, float]]:
+        return self._ports_from_bl(x_bl, y_bl, rotation, self.exits_rel, mirror=mirror)
 
     def _center_from_bl_batch(
         self,
@@ -197,7 +241,7 @@ class StaticSpec:
         y_bl: torch.Tensor,
         rot_idx: torch.Tensor,
     ) -> torch.Tensor:
-        w, h = self._wh_for_rot(rot_idx)
+        w, h = self._wh_for_rotation(rot_idx)
         cx = x_bl.to(dtype=torch.float32) + w * 0.5
         cy = y_bl.to(dtype=torch.float32) + h * 0.5
         return torch.stack([cx, cy], dim=1)
@@ -207,10 +251,13 @@ class StaticSpec:
         ports_rel: List[Tuple[float, float]],
         center: torch.Tensor,   # [M, 2]
         rot_idx: torch.Tensor,  # [M]
+        *,
+        mirror: bool = False,
     ) -> torch.Tensor:          # [M, N, 2]
         """Batch version of _ports_from_bl.
 
-        BL-relative offsets → center-relative (subtract half_wh) → _offsets_rot → add world center.
+        BL-relative offsets → center-relative (subtract half_wh)
+        → optional mirror (negate dx) → _offsets_rotation → add world center.
         """
         M = int(center.shape[0])
         if not ports_rel:
@@ -221,37 +268,40 @@ class StaticSpec:
             dtype=torch.float32, device=self.device,
         )
         center_offsets = base - half_wh                     # [N, 2]  BL → center-relative
-        rot_offsets = self._offsets_rot(center_offsets)     # [4, N, 2]
+        if mirror:
+            center_offsets = center_offsets.clone()
+            center_offsets[:, 0] = -center_offsets[:, 0]
+        rot_offsets = self._offsets_rotation(center_offsets)     # [4, N, 2]
         return center[:, None, :] + rot_offsets[rot_idx]    # [M, N, 2]
 
-    def _entries_from_bl_batch(self, center: torch.Tensor, rot_idx: torch.Tensor) -> torch.Tensor:
-        return self._ports_from_bl_batch(self.entries_rel, center, rot_idx)
+    def _entries_from_bl_batch(self, center: torch.Tensor, rot_idx: torch.Tensor, *, mirror: bool = False) -> torch.Tensor:
+        return self._ports_from_bl_batch(self.entries_rel, center, rot_idx, mirror=mirror)
 
-    def _exits_from_bl_batch(self, center: torch.Tensor, rot_idx: torch.Tensor) -> torch.Tensor:
-        return self._ports_from_bl_batch(self.exits_rel, center, rot_idx)
+    def _exits_from_bl_batch(self, center: torch.Tensor, rot_idx: torch.Tensor, *, mirror: bool = False) -> torch.Tensor:
+        return self._ports_from_bl_batch(self.exits_rel, center, rot_idx, mirror=mirror)
 
-    def build_placement(self, *, x_bl: int, y_bl: int, rot: int) -> StaticPlacement:
-        """Build a placed-instance snapshot with absolute/rotated values."""
-        r = self._resolve_rot(rot)
+    def build_placement(self, *, x_bl: int, y_bl: int, orient: int) -> StaticPlacement:
+        """Build a placement using canonical rotation for the given orient.
+
+        Public API — only orient (0/1). Rotation/mirror are internal.
+        """
+        o = int(orient) % 2
+        r = self._resolve_rotation(o * 90)
         w, h = self._rotated_size(r)
         cx, cy = self._center_from_bl(x_bl, y_bl, r)
         entries = list(self._entries_from_bl(x_bl, y_bl, r))
         exits = list(self._exits_from_bl(x_bl, y_bl, r))
         cL, cR, cB, cT = self._clearance_lrtb(r)
-        min_x = float(x_bl)
-        max_x = float(x_bl) + float(w)
-        min_y = float(y_bl)
-        max_y = float(y_bl) + float(h)
         return StaticPlacement(
             entries=entries,
             exits=exits,
-            min_x=min_x,
-            max_x=max_x,
-            min_y=min_y,
-            max_y=max_y,
+            min_x=float(x_bl),
+            max_x=float(x_bl) + float(w),
+            min_y=float(y_bl),
+            max_y=float(y_bl) + float(h),
             x_bl=int(x_bl),
             y_bl=int(y_bl),
-            rot=int(r),
+            orient=o,
             w=float(w),
             h=float(h),
             cx=float(cx),
@@ -260,17 +310,97 @@ class StaticSpec:
             clearance_right=int(cR),
             clearance_bottom=int(cB),
             clearance_top=int(cT),
+            rotation=int(r),
+            mirror=False,
         )
+
+    def resolve(
+        self,
+        *,
+        x_bl: int,
+        y_bl: int,
+        orient: int,
+        is_placeable_fn: Callable[..., bool],
+        score_fn: Optional[Callable] = None,
+    ) -> 'StaticPlacement | None':
+        """Resolve coarse orient to the best concrete placement, or None.
+
+        Evaluates all (rotation, mirror) variants in the orient family, filters by
+        placeability, dedupes by geometry signature, and picks the one with lowest
+        score (delta_cost).
+
+        Callbacks (geometry-based — no rotation/mirror leakage):
+          is_placeable_fn(body_w, body_h, cL, cR, cB, cT) -> bool
+          score_fn(placements: List[StaticPlacement]) -> Tensor[N]
+        If *score_fn* is None, picks the first feasible variant.
+        """
+        o = int(orient) % 2
+        rotations = ((0, 180) if o == 0 else (90, 270)) if self.rotatable else ((0,) if o == 0 else ())
+        mirrors = (False, True) if self.mirrorable else (False,)
+
+        if not rotations:
+            return None
+
+        seen_sig: set = set()
+        placeable: List[StaticPlacement] = []
+        for rot in rotations:
+            for m in mirrors:
+                rr = self._resolve_rotation(rot)
+                w, h = self._rotated_size(rr)
+                cL, cR, cB, cT = self._clearance_lrtb(rr, mirror=m)
+
+                # Dedupe by geometry signature
+                entries = list(self._entries_from_bl(x_bl, y_bl, rr, mirror=m))
+                exits = list(self._exits_from_bl(x_bl, y_bl, rr, mirror=m))
+                sig = (
+                    (round(w, 6), round(h, 6)),
+                    (cL, cR, cB, cT),
+                    tuple((round(ex, 6), round(ey, 6)) for ex, ey in entries),
+                    tuple((round(ex, 6), round(ey, 6)) for ex, ey in exits),
+                )
+                if sig in seen_sig:
+                    continue
+                seen_sig.add(sig)
+
+                if not is_placeable_fn(int(w), int(h), cL, cR, cB, cT):
+                    continue
+
+                cx, cy = self._center_from_bl(x_bl, y_bl, rr)
+                placeable.append(StaticPlacement(
+                    entries=entries, exits=exits,
+                    min_x=float(x_bl), max_x=float(x_bl) + float(w),
+                    min_y=float(y_bl), max_y=float(y_bl) + float(h),
+                    x_bl=int(x_bl), y_bl=int(y_bl), orient=o,
+                    w=float(w), h=float(h), cx=float(cx), cy=float(cy),
+                    clearance_left=cL, clearance_right=cR,
+                    clearance_bottom=cB, clearance_top=cT,
+                    rotation=int(rr), mirror=bool(m),
+                ))
+
+        if not placeable:
+            return None
+        if score_fn is None or len(placeable) == 1:
+            return placeable[0]
+
+        scores = score_fn(placeable).to(dtype=torch.float32, device=self.device).view(-1)
+        return placeable[int(torch.argmin(scores).item())]
 
     def build_candidate_features(
         self,
         *,
         x_bl: object,
         y_bl: object,
-        rot: object,
+        orient: object = None,
+        rotation: object = None,
+        mirror: bool = False,
         needed: set[str],
     ) -> Dict[str, torch.Tensor]:
-        """Build candidate feature tensors for given pose vectors (only requested keys)."""
+        """Build candidate feature tensors for given pose vectors (only requested keys).
+
+        Either ``orient`` (coarse 0/1 → canonical rotation orient*90) or
+        ``rotation`` (concrete 0/90/180/270, int or tensor) must be provided.
+        When ``mirror=True``, port dx offsets are flipped before rotation.
+        """
         supported = {
             "entries",
             "exits",
@@ -283,24 +413,35 @@ class StaticSpec:
         if unknown:
             raise ValueError(f"build_candidate_features: unknown feature keys: {sorted(unknown)}")
 
-        scalar_input = not (torch.is_tensor(x_bl) or torch.is_tensor(y_bl) or torch.is_tensor(rot))
+        scalar_input = not (torch.is_tensor(x_bl) or torch.is_tensor(y_bl))
         if scalar_input:
             x_bl = torch.tensor([int(x_bl)], dtype=torch.long, device=self.device)
             y_bl = torch.tensor([int(y_bl)], dtype=torch.long, device=self.device)
-            rot = torch.tensor([int(rot)], dtype=torch.long, device=self.device)
 
         x_bl = x_bl.to(device=self.device, dtype=torch.long).view(-1)
         y_bl = y_bl.to(device=self.device, dtype=torch.long).view(-1)
-        rot = rot.to(device=self.device, dtype=torch.long).view(-1)
         M = int(x_bl.numel())
-        if int(y_bl.numel()) != M or int(rot.numel()) != M:
-            raise ValueError("build_candidate_features: x_bl,y_bl,rot must have same length")
+        if int(y_bl.numel()) != M:
+            raise ValueError("build_candidate_features: x_bl,y_bl must have same length")
 
-        rot_idx = self._rot_idx(rot)
+        if rotation is not None:
+            if not torch.is_tensor(rotation):
+                rotation = torch.full((M,), int(rotation), dtype=torch.long, device=self.device)
+            rot_idx = self._rotation_idx(rotation.to(device=self.device, dtype=torch.long).view(-1))
+        elif orient is not None:
+            if not torch.is_tensor(orient):
+                orient = torch.tensor([int(orient)], dtype=torch.long, device=self.device)
+            orient = orient.to(device=self.device, dtype=torch.long).view(-1)
+            if int(orient.numel()) != M:
+                raise ValueError("build_candidate_features: orient length must match x_bl,y_bl")
+            rot_idx = self._rotation_idx(orient * 90)
+        else:
+            raise ValueError("build_candidate_features: must provide orient or rotation")
+
         out: Dict[str, torch.Tensor] = {}
 
         if {"min_x", "max_x", "min_y", "max_y"} & needed:
-            w, h = self._wh_for_rot(rot_idx)
+            w, h = self._wh_for_rotation(rot_idx)
             if "min_x" in needed or "max_x" in needed:
                 min_x = x_bl.to(dtype=torch.float32)
                 if "min_x" in needed:
@@ -317,9 +458,9 @@ class StaticSpec:
         if {"entries", "exits"} & needed:
             center = self._center_from_bl_batch(x_bl, y_bl, rot_idx)
             if "entries" in needed:
-                out["entries"] = self._entries_from_bl_batch(center, rot_idx)
+                out["entries"] = self._entries_from_bl_batch(center, rot_idx, mirror=mirror)
             if "exits" in needed:
-                out["exits"] = self._exits_from_bl_batch(center, rot_idx)
+                out["exits"] = self._exits_from_bl_batch(center, rot_idx, mirror=mirror)
 
         return out
 
@@ -350,25 +491,26 @@ if __name__ == "__main__":
     M = 20000
     x = torch.randint(0, W, (M,), device=device)
     y = torch.randint(0, H, (M,), device=device)
-    rot = torch.randint(0, 4, (M,), device=device) * 90
 
     # build_placement vs build_candidate_features
-    scalar = geom.build_placement(x_bl=10, y_bl=5, rot=90)
+    scalar = geom.build_placement(x_bl=10, y_bl=5, orient=1)
     print(
-        "build_placement(x_bl=10,y_bl=5,rot=90) -> "
+        "build_placement(x_bl=10,y_bl=5,orient=1) -> "
         f"w={scalar.w}, h={scalar.h}, entries={len(scalar.entries)}, exits={len(scalar.exits)}"
     )
 
+    orient_vals = torch.randint(0, 2, (M,), device=device)
+
     t0 = time.perf_counter()
     for i in range(M):
-        _ = geom.build_placement(x_bl=int(x[i].item()), y_bl=int(y[i].item()), rot=int(rot[i].item()))
+        _ = geom.build_placement(x_bl=int(x[i].item()), y_bl=int(y[i].item()), orient=int(orient_vals[i].item()))
     if device.type == "cuda":
         torch.cuda.synchronize()
     t1 = time.perf_counter()
 
     needed = {"entries", "exits", "min_x"}
     t2 = time.perf_counter()
-    batch = geom.build_candidate_features(x_bl=x, y_bl=y, rot=rot, needed=needed)
+    batch = geom.build_candidate_features(x_bl=x, y_bl=y, orient=orient_vals, needed=needed)
     if device.type == "cuda":
         torch.cuda.synchronize()
     t3 = time.perf_counter()

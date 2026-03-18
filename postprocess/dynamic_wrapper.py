@@ -59,7 +59,7 @@ class DynamicStorageWrapper(gym.Env):
         self.observation_space = gym.spaces.Dict({})
         
         # 현재 후보들
-        self.action_xyrot: Optional[torch.Tensor] = None  # [k, 3] (x, y, rot)
+        self.action_poses: Optional[torch.Tensor] = None  # [k, 3] (x, y, rot)
         self.mask: Optional[torch.Tensor] = None  # [k] bool
         
         # inference.py 호환용
@@ -85,7 +85,7 @@ class DynamicStorageWrapper(gym.Env):
         
         if valid_indices.numel() == 0:
             # 유효한 action 없음
-            self.action_xyrot = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
+            self.action_poses = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
             return torch.zeros(self.k, dtype=torch.bool, device=self.device)
         
         # 각 유효 action의 world 좌표 수집
@@ -132,7 +132,7 @@ class DynamicStorageWrapper(gym.Env):
             xyrot[i, 2] = rot
             mask[i] = True
         
-        self.action_xyrot = xyrot
+        self.action_poses = xyrot
         return mask
     
     # ========== Observation ==========
@@ -142,17 +142,17 @@ class DynamicStorageWrapper(gym.Env):
         self.mask = self.create_mask()
         if not isinstance(self.mask, torch.Tensor):
             raise ValueError("create_mask() must return torch.Tensor")
-        if not isinstance(self.action_xyrot, torch.Tensor):
-            raise ValueError("action_xyrot must be torch.Tensor after create_mask()")
+        if not isinstance(self.action_poses, torch.Tensor):
+            raise ValueError("action_poses must be torch.Tensor after create_mask()")
         mask_t = self.mask.to(dtype=torch.bool, device=self.device).view(-1)
-        xyrot_t = self.action_xyrot.to(dtype=torch.long, device=self.device)
+        xyrot_t = self.action_poses.to(dtype=torch.long, device=self.device)
         if xyrot_t.ndim != 2 or int(xyrot_t.shape[1]) != 3:
-            raise ValueError(f"action_xyrot must have shape [N,3], got {tuple(xyrot_t.shape)}")
+            raise ValueError(f"action_poses must have shape [N,3], got {tuple(xyrot_t.shape)}")
         if int(xyrot_t.shape[0]) != int(mask_t.shape[0]):
             raise ValueError(
-                f"action-space size mismatch: xyrot={int(xyrot_t.shape[0])}, mask={int(mask_t.shape[0])}"
+                f"action-space size mismatch: poses={int(xyrot_t.shape[0])}, mask={int(mask_t.shape[0])}"
             )
-        return CandidateSet(xyrot=xyrot_t, mask=mask_t, gid=self.current_gid())
+        return CandidateSet(poses=xyrot_t, mask=mask_t, gid=self.current_gid())
     
     # ========== Action Decode ==========
     
@@ -168,10 +168,10 @@ class DynamicStorageWrapper(gym.Env):
         """
         del action_space
         a = int(action)
-        if self.action_xyrot is None or a < 0 or a >= self.k:
+        if self.action_poses is None or a < 0 or a >= self.k:
             return 0.0, 0.0, 0, 0, 0
         
-        xyz = self.action_xyrot[a]
+        xyz = self.action_poses[a]
         return float(xyz[0].item()), float(xyz[1].item()), int(xyz[2].item()), 0, a
     
     # ========== Gym API ==========
@@ -179,7 +179,7 @@ class DynamicStorageWrapper(gym.Env):
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
         """환경 리셋."""
         _obs, info = self.dynamic_env.reset(seed=seed, options=options)
-        self.action_xyrot = None
+        self.action_poses = None
         self.mask = None
         return self.build_observation(), info
 
@@ -187,7 +187,7 @@ class DynamicStorageWrapper(gym.Env):
         """Build policy observation only (no action-space fields)."""
         base_obs = dict(self.dynamic_env._build_obs())
         base_obs.pop("action_mask", None)
-        base_obs.pop("action_xyrot", None)
+        base_obs.pop("action_poses", None)
         return base_obs
     
     def step(self, action: int):
@@ -217,10 +217,10 @@ class DynamicStorageWrapper(gym.Env):
         """현재 상태 저장."""
         snap = self.dynamic_env.get_state_copy()
         snap["wrapper_rng_state"] = self._rng.getstate()
-        if self.action_xyrot is not None:
-            snap["action_xyrot"] = self.action_xyrot.clone()
+        if self.action_poses is not None:
+            snap["action_poses"] = self.action_poses.clone()
         else:
-            snap["action_xyrot"] = None
+            snap["action_poses"] = None
         if self.mask is not None:
             snap["mask"] = self.mask.clone()
         else:
@@ -238,11 +238,11 @@ class DynamicStorageWrapper(gym.Env):
             except Exception:
                 pass
         
-        ax = state.get("action_xyrot", None)
+        ax = state.get("action_poses", None)
         if isinstance(ax, torch.Tensor):
-            self.action_xyrot = ax.to(device=self.device, dtype=torch.long).clone()
+            self.action_poses = ax.to(device=self.device, dtype=torch.long).clone()
         else:
-            self.action_xyrot = None
+            self.action_poses = None
         
         m = state.get("mask", None)
         if isinstance(m, torch.Tensor):

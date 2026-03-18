@@ -7,7 +7,6 @@ from typing import ClassVar, Dict, List, Optional, Tuple
 import torch
 
 from ..action import EnvAction, GroupId
-from ..placement.static import StaticSpec
 from .flow import FlowGraph
 from .maps import GridMaps
 
@@ -208,24 +207,20 @@ class EnvState:
     def is_placeable(
         self,
         *,
-        action: EnvAction,
-        spec: StaticSpec,
+        gid: GroupId,
+        x_bl: int,
+        y_bl: int,
+        body_w: int,
+        body_h: int,
+        cL: int = 0,
+        cR: int = 0,
+        cB: int = 0,
+        cT: int = 0,
     ) -> bool:
-        if not isinstance(action, EnvAction):
-            raise TypeError(f"action must be EnvAction, got {type(action).__name__}")
-        gid = action.gid
-        x_bl = int(action.x)
-        y_bl = int(action.y)
-        r = spec._resolve_rot(int(action.rot))
-        w, h = spec._rotated_size(r)
-        cL, cR, cB, cT = spec._clearance_lrtb(r)
-
         x0 = int(x_bl)
         y0 = int(y_bl)
-        x1 = x0 + int(w)
-        y1 = y0 + int(h)
-        body_rect = (x0, y0, x1, y1)
-        pad_rect = (x0 - int(cL), y0 - int(cB), x1 + int(cR), y1 + int(cT))
+        body_rect = (x0, y0, x0 + int(body_w), y0 + int(body_h))
+        pad_rect = (x0 - int(cL), y0 - int(cB), x0 + int(body_w) + int(cR), y0 + int(body_h) + int(cT))
         return self.maps.is_placeable(
             gid=gid,
             body_rect=body_rect,
@@ -236,16 +231,17 @@ class EnvState:
         self,
         *,
         gid: GroupId,
-        spec: StaticSpec,
-        rot: int,
+        body_w: int,
+        body_h: int,
+        cL: int = 0,
+        cR: int = 0,
+        cB: int = 0,
+        cT: int = 0,
     ) -> torch.Tensor:
-        r = spec._resolve_rot(int(rot))
-        w, h = spec._rotated_size(r)
-        cL, cR, cB, cT = spec._clearance_lrtb(r)
         return self.maps.is_placeable_map(
             gid=gid,
-            body_w=int(w),
-            body_h=int(h),
+            body_w=int(body_w),
+            body_h=int(body_h),
             cL=int(cL),
             cR=int(cR),
             cB=int(cB),

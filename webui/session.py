@@ -136,9 +136,9 @@ class Session:
         next_gid = cur() if callable(cur) else (engine.get_state().remaining[0] if engine.get_state().remaining else None)
         
         if isinstance(self.obs, dict) and "action_mask" in self.obs:
-            if "action_xyrot" in self.obs:
+            if "action_poses" in self.obs:
                 self.candidates = CandidateSet(
-                    xyrot=self.obs["action_xyrot"],
+                    poses=self.obs["action_poses"],
                     mask=self.obs["action_mask"],
                     gid=next_gid,
                 )
@@ -171,40 +171,38 @@ class Session:
         placed = []
         for gid in engine.get_state().placed:
             p = engine.get_state().placements[gid]
-            x_bl, y_bl, rot = p.pose()
-            group = engine.group_specs[gid]
-            w, h = group._rotated_size(int(rot))
             placed.append(PlacedFacility(
                 gid=str(gid),
-                x=float(x_bl),
-                y=float(y_bl),
-                w=float(w),
-                h=float(h),
-                rot=int(rot),
+                x=float(p.x_bl),
+                y=float(p.y_bl),
+                w=float(p.w),
+                h=float(p.h),
+                rot=int(p.orient),
             ))
         
         # Candidates
         candidates = []
         if self.candidates is not None:
             mask = self.candidates.mask.detach().cpu().numpy()
-            xyrot = self.candidates.xyrot.detach().cpu().numpy()
-            scores = self.scores if self.scores is not None else np.zeros(len(xyrot))
-            
-            for i in range(len(xyrot)):
-                x_bl, y_bl, rot = xyrot[i]
+            poses = self.candidates.poses.detach().cpu().numpy()
+            scores = self.scores if self.scores is not None else np.zeros(len(poses))
+
+            for i in range(len(poses)):
+                x_bl, y_bl, orient = poses[i]
                 # Convert to center for display
                 if self.candidates.gid is not None:
-                    cx, cy = engine.group_specs[self.candidates.gid]._center_from_bl(
-                        int(x_bl), int(y_bl), int(rot)
-                    )
+                    spec = engine.group_specs[self.candidates.gid]
+                    w, h = spec.rotated_size(int(orient))
+                    cx = float(x_bl) + w / 2.0
+                    cy = float(y_bl) + h / 2.0
                 else:
                     cx, cy = float(x_bl), float(y_bl)
-                
+
                 candidates.append(CandidateInfo(
                     index=i,
                     x=float(cx),
                     y=float(cy),
-                    rot=int(rot),
+                    rot=int(orient),
                     score=float(scores[i]) if i < len(scores) else 0.0,
                     valid=bool(mask[i]),
                     visits=0,
@@ -372,12 +370,12 @@ class SessionManager:
         elif req.wrapper_mode == "alphachip":
             env = AlphaChipAdapter(
                 coarse_grid=wrapper_params.get('coarse_grid', 128),
-                rot=0,
+                orient=0,
             )
         elif req.wrapper_mode == "maskplace":
             env = MaskPlaceAdapter(
                 grid=wrapper_params.get('grid', 224),
-                rot=0,
+                orient=0,
                 soft_coefficient=wrapper_params.get('soft_coefficient', 1.0),
             )
         else:

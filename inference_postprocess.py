@@ -153,7 +153,7 @@ def main() -> None:
         for gid, x, y, rot in PRE_PLACEMENTS:
             if gid in base_env.get_state().remaining:
                 _obs, _reward, _terminated, _truncated, info = base_env.step_action(
-                    EnvAction(gid=gid, x=int(x), y=int(y), rot=int(rot))
+                    EnvAction(gid=gid, x=int(x), y=int(y), orient=int(rot) // 90 if int(rot) in (90, 270) else 0)
                 )
                 if info.get("reason") == "placed":
                     logger.info("Placed: %s at (%s, %s), rot=%s", gid, x, y, rot)

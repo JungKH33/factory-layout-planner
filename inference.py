@@ -21,7 +21,7 @@ from envs.action_space import ActionSpace as CandidateSet
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "envs/env_configs/basic_01.json"
+ENV_JSON: str = "envs/env_configs/clearance_03.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv3"  # "greedy" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
@@ -77,8 +77,8 @@ def main() -> None:
         "greedy": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
         "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
         "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5},
-        "alphachip": {"coarse_grid": int(ALPHACHIP_GRID), "rot": 0},
-        "maskplace": {"grid": 224, "rot": 0, "soft_coefficient": 1.0},
+        "alphachip": {"coarse_grid": int(ALPHACHIP_GRID), "orient": 0},
+        "maskplace": {"grid": 224, "orient": 0, "soft_coefficient": 1.0},
     }
     agent_kwargs: dict = {
         "greedy": {"prior_temperature": 1.0},
@@ -210,7 +210,7 @@ def main() -> None:
                 dbg.get("search", SEARCH_MODE),
                 int(action.x),
                 int(action.y),
-                int(action.rot),
+                int(action.orient),
             )
 
         if terminated or truncated:

@@ -76,13 +76,13 @@ class BaseAdapter(ABC):
         raise NotImplementedError
 
     def decode_action(self, action: int, action_space: ActionSpace) -> EnvAction:
-        """Decode action index to EnvAction using action-space xyrot table."""
+        """Decode action index to EnvAction using action-space poses table."""
         a = self.validate_action_index(action, action_space)
-        xyz = action_space.xyrot[a]
+        pose = action_space.poses[a]
         gid = action_space.gid
         if gid is None:
             raise ValueError("action_space.gid is required to decode EnvAction")
-        return EnvAction(gid=gid, x=int(xyz[0].item()), y=int(xyz[1].item()), rot=int(xyz[2].item()))
+        return EnvAction(gid=gid, x=int(pose[0].item()), y=int(pose[1].item()), orient=int(pose[2].item()))
 
     def num_valid_actions(self, action_space: ActionSpace) -> int:
         """Return number of valid actions in given action-space."""
@@ -120,10 +120,73 @@ class BaseAdapter(ABC):
             p = eng.get_state().placements.get(gid, None)
             if p is None:
                 continue
-            x_bl, y_bl, rot = p.pose()
-            parts.append(f"{gid}:{int(x_bl)}:{int(y_bl)}:{int(rot)}")
+            x_bl, y_bl, orient = p.pose()
+            parts.append(f"{gid}:{int(x_bl)}:{int(y_bl)}:{int(orient)}")
         raw = "|".join(parts).encode("utf-8", errors="ignore")
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
+
+    def _score_poses(self, gid: GroupId, poses: torch.Tensor) -> torch.Tensor:
+        """Score candidate poses by evaluating all (rotation, mirror) variants.
+
+        poses: [N, 3] tensor of (x_bl, y_bl, orient).
+        Returns: [N] float32 — per-position minimum delta cost across all
+        variants in each orient family.
+        """
+        spec = self.engine.group_specs[gid]
+        needed = self.engine.reward_required
+        N = int(poses.shape[0])
+        if N == 0:
+            return torch.zeros((0,), dtype=torch.float32, device=self.device)
+
+        best = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
+
+        for o in poses[:, 2].unique().tolist():
+            o_int = int(o)
+            o_mask = (poses[:, 2] == o_int)
+            sub = poses[o_mask]
+            M = int(sub.shape[0])
+            if M == 0:
+                continue
+
+            rotations = ((0, 180) if o_int == 0 else (90, 270)) if spec.rotatable else ((0,) if o_int == 0 else ())
+            mirrors = (False, True) if spec.mirrorable else (False,)
+
+            for rot in rotations:
+                for m in mirrors:
+                    features = spec.build_candidate_features(
+                        x_bl=sub[:, 0], y_bl=sub[:, 1],
+                        rotation=rot, mirror=m, needed=needed,
+                    )
+                    scores = self._features_to_delta(gid, sub, features)
+                    best[o_mask] = torch.min(best[o_mask], scores)
+
+        return best
+
+    def _features_to_delta(
+        self,
+        gid: GroupId,
+        poses: torch.Tensor,
+        features: dict,
+    ) -> torch.Tensor:
+        """Build ActionSpace from feature dict and return delta cost."""
+        entries = features.get("entries", None)
+        exits = features.get("exits", None)
+        entries_mask = None
+        exits_mask = None
+        if entries is not None:
+            entries_mask = torch.ones(entries.shape[:2], dtype=torch.bool, device=self.device)
+        if exits is not None:
+            exits_mask = torch.ones(exits.shape[:2], dtype=torch.bool, device=self.device)
+        aspace = ActionSpace(
+            poses=poses.to(dtype=torch.long, device=self.device),
+            mask=torch.ones(poses.shape[0], dtype=torch.bool, device=self.device),
+            gid=gid,
+            entries=entries, exits=exits,
+            entries_mask=entries_mask, exits_mask=exits_mask,
+            min_x=features.get("min_x"), max_x=features.get("max_x"),
+            min_y=features.get("min_y"), max_y=features.get("max_y"),
+        )
+        return self.engine.delta_cost(gid, aspace)
 
     def build_action_space(self) -> ActionSpace:
         """Generate action_space from current engine state.
@@ -141,13 +204,13 @@ class BaseAdapter(ABC):
         n_actions = int(mask.shape[0])
         gid = self.current_gid()
 
-        xyrot_raw = getattr(self, "action_xyrot", None)
-        if not isinstance(xyrot_raw, torch.Tensor):
-            raise ValueError("adapter must provide torch.Tensor action_xyrot from create_mask()")
-        xyrot = xyrot_raw.to(dtype=torch.long, device=self.device)
-        if xyrot.ndim != 2 or int(xyrot.shape[0]) != n_actions or int(xyrot.shape[1]) != 3:
+        poses_raw = getattr(self, "action_poses", None)
+        if not isinstance(poses_raw, torch.Tensor):
+            raise ValueError("adapter must provide torch.Tensor action_poses from create_mask()")
+        poses = poses_raw.to(dtype=torch.long, device=self.device)
+        if poses.ndim != 2 or int(poses.shape[0]) != n_actions or int(poses.shape[1]) != 3:
             raise ValueError(
-                f"action_xyrot must have shape [N,3], got {tuple(xyrot.shape)} for N={n_actions}"
+                f"action_poses must have shape [N,3], got {tuple(poses.shape)} for N={n_actions}"
             )
 
         meta: Dict[str, Any] = {}
@@ -157,7 +220,7 @@ class BaseAdapter(ABC):
             if int(delta.shape[0]) == n_actions:
                 meta["action_delta"] = delta
 
-        return ActionSpace(xyrot=xyrot, mask=mask, gid=gid, meta=(meta if meta else None))
+        return ActionSpace(poses=poses, mask=mask, gid=gid, meta=(meta if meta else None))
 
     @abstractmethod
     def build_observation(self) -> Dict[str, Any]:

@@ -139,6 +139,7 @@ class FactoryLayoutEnv(gym.Env):
                 clearance_bottom_rel=int(s.clearance_bottom_rel),
                 clearance_top_rel=int(s.clearance_top_rel),
                 rotatable=bool(s.rotatable),
+                mirrorable=bool(getattr(s, "mirrorable", False)),
                 zone_values=dict(getattr(s, "zone_values", {}) or {}),
             )
         return out
@@ -214,71 +215,97 @@ class FactoryLayoutEnv(gym.Env):
                 pairs[(src_gid, dst_gid)] = (exit_xy, entry_xy)
         self._state.set_flow_port_pairs(pairs)
 
-    def delta_cost(self, *, gid: GroupId, x: object, y: object, rot: object):
-        """배치 시 예상 Δcost (unscaled, raw).
+    def delta_cost(self, gid: GroupId, action_space: ActionSpace) -> torch.Tensor:
+        """Score candidates in a geometry-populated ActionSpace.
 
-        - scalar (int/float) 또는 batched torch.Tensor[M] 입력 지원 (정수 격자 좌표).
-        - is_placeable 체크 없이 빠른 계산.
-        - reward backend(Flow + Area)로 Δcost를 계산.
-
-        반환: raw cost 변화량 (낮을수록 좋은 배치)
+        Generic API — works with any placement type as long as
+        ActionSpace carries entries/exits/min/max geometry features.
+        Returns raw cost delta (lower = better).
         """
-        scalar_input = not (torch.is_tensor(x) or torch.is_tensor(y) or torch.is_tensor(rot))
-        if gid not in self.group_specs:
-            raise KeyError(f"delta_cost(batch): unknown gid={gid!r}")
+        return self._reward.delta(self._state, action_space, gid=gid).to(dtype=torch.float32)
 
-        x_bl = self._as_long_tensor(x, name="x")
-        y_bl = self._as_long_tensor(y, name="y")
-        r = self._as_long_tensor(rot, name="rot")
-        M = int(x_bl.numel())
-        if int(y_bl.numel()) != M or int(r.numel()) != M:
-            raise ValueError("delta_cost(batch): x,y,rot must have same length")
+    @property
+    def reward_required(self) -> set:
+        """Feature keys the reward backend needs (e.g. entries, exits, min_x, ...)."""
+        return set(self._reward.required())
 
-        # Normalize rotations to {0,90,180,270}
-        r = torch.remainder(r, 360)
-        if torch.any((r % 90) != 0):
-            raise ValueError("delta_cost(batch): rot must be multiples of 90")
+    def _delta_cost_from_placements(
+        self,
+        gid: GroupId,
+        placements: List[PlacementBase],
+    ) -> torch.Tensor:
+        """Score already-resolved placements via reward delta.
 
-        geom = self._group_spec(gid)
-        needed = set(self._reward.required())
-        feature_map = geom.build_candidate_features(
-            x_bl=x_bl,
-            y_bl=y_bl,
-            rot=r,
-            needed=needed,
+        Reads geometry (entries, exits, min/max) directly from PlacementBase —
+        no rotation/mirror or StaticPlacement-specific fields accessed.
+        """
+        M = len(placements)
+        if M == 0:
+            return torch.zeros((0,), dtype=torch.float32, device=self.device)
+
+        poses = torch.tensor(
+            [[p.x_bl, p.y_bl, p.orient] for p in placements],
+            dtype=torch.long, device=self.device,
         )
-        xyrot = torch.stack([x_bl, y_bl, r], dim=-1).to(dtype=torch.long, device=self.device)
-        entries = feature_map.get("entries", None)
-        exits = feature_map.get("exits", None)
+
+        # Build entries/exits tensors from placement geometry
+        max_ent = max((len(p.entries) for p in placements), default=0)
+        max_exi = max((len(p.exits) for p in placements), default=0)
+        entries = None
+        exits = None
         entries_mask = None
         exits_mask = None
-        if entries is not None:
-            entries = entries.to(device=self.device)
-            entries_mask = torch.ones(
-                entries.shape[:2], dtype=torch.bool, device=self.device,
-            )
-        if exits is not None:
-            exits = exits.to(device=self.device)
-            exits_mask = torch.ones(
-                exits.shape[:2], dtype=torch.bool, device=self.device,
-            )
+        if max_ent > 0:
+            entries = torch.zeros((M, max_ent, 2), dtype=torch.float32, device=self.device)
+            entries_mask = torch.zeros((M, max_ent), dtype=torch.bool, device=self.device)
+            for i, p in enumerate(placements):
+                for j, (ex, ey) in enumerate(p.entries):
+                    entries[i, j, 0] = float(ex)
+                    entries[i, j, 1] = float(ey)
+                    entries_mask[i, j] = True
+        if max_exi > 0:
+            exits = torch.zeros((M, max_exi, 2), dtype=torch.float32, device=self.device)
+            exits_mask = torch.zeros((M, max_exi), dtype=torch.bool, device=self.device)
+            for i, p in enumerate(placements):
+                for j, (ex, ey) in enumerate(p.exits):
+                    exits[i, j, 0] = float(ex)
+                    exits[i, j, 1] = float(ey)
+                    exits_mask[i, j] = True
+
+        min_x = torch.tensor([p.min_x for p in placements], dtype=torch.float32, device=self.device)
+        max_x = torch.tensor([p.max_x for p in placements], dtype=torch.float32, device=self.device)
+        min_y = torch.tensor([p.min_y for p in placements], dtype=torch.float32, device=self.device)
+        max_y = torch.tensor([p.max_y for p in placements], dtype=torch.float32, device=self.device)
+
         aspace = ActionSpace(
-            xyrot=xyrot,
+            poses=poses,
             mask=torch.ones((M,), dtype=torch.bool, device=self.device),
             gid=gid,
-            entries=entries,
-            exits=exits,
-            entries_mask=entries_mask,
-            exits_mask=exits_mask,
-            min_x=feature_map.get("min_x", None),
-            max_x=feature_map.get("max_x", None),
-            min_y=feature_map.get("min_y", None),
-            max_y=feature_map.get("max_y", None),
+            entries=entries, exits=exits,
+            entries_mask=entries_mask, exits_mask=exits_mask,
+            min_x=min_x, max_x=max_x,
+            min_y=min_y, max_y=max_y,
         )
-        delta = self._reward.delta(self._state, aspace, gid=gid).to(dtype=torch.float32)
-        if scalar_input:
-            return float(delta[0].item())
-        return delta
+        return self.delta_cost(gid, aspace)
+
+    def placeable_map(self, *, gid: GroupId, orient: int) -> torch.Tensor:
+        """Return placeable map (OR of all rotation/mirror variants) for the given orient."""
+        spec = self.group_specs[gid]
+        geometries = spec.variant_geometries(int(orient))
+        result = None
+        for body_w, body_h, cL, cR, cB, cT in geometries:
+            m = self._state.is_placeable_map(
+                gid=gid, body_w=body_w, body_h=body_h,
+                cL=cL, cR=cR, cB=cB, cT=cT,
+            )
+            if result is None:
+                result = m
+            else:
+                result = result | m
+        if result is None:
+            H, W = self.grid_height, self.grid_width
+            return torch.zeros((H, W), dtype=torch.bool, device=self.device)
+        return result
 
     def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, int, int, int]:
         if not isinstance(action, EnvAction):
@@ -286,15 +313,32 @@ class FactoryLayoutEnv(gym.Env):
         gid_eff: GroupId = action.gid
         if gid_eff not in self.group_specs:
             raise KeyError(f"unknown gid={gid_eff!r}")
-        return gid_eff, int(action.x), int(action.y), int(action.rot)
+        return gid_eff, int(action.x), int(action.y), int(action.orient)
+
+    def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'PlacementBase | None']:
+        """Resolve a coarse EnvAction to (gid, concrete StaticPlacement or None)."""
+        gid, x_bl, y_bl, orient = self._normalize_action(action)
+        geom = self._group_spec(gid)
+
+        def _check_placeable(body_w, body_h, cL, cR, cB, cT):
+            return self._state.is_placeable(
+                gid=gid, x_bl=int(x_bl), y_bl=int(y_bl),
+                body_w=int(body_w), body_h=int(body_h),
+                cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
+            )
+
+        placement = geom.resolve(
+            x_bl=int(x_bl),
+            y_bl=int(y_bl),
+            orient=int(orient),
+            is_placeable_fn=_check_placeable,
+            score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
+        )
+        return gid, placement
 
     def is_placeable(self, action: EnvAction) -> bool:
-        gid, x, y, rot = self._normalize_action(action)
-        geom = self._group_spec(gid)
-        return self._state.is_placeable(
-            action=EnvAction(gid=gid, x=int(x), y=int(y), rot=int(rot)),
-            spec=geom,
-        )
+        _gid, placement = self.resolve_action(action)
+        return placement is not None
 
     def _apply_resolved_placement(
         self,
@@ -368,7 +412,7 @@ class FactoryLayoutEnv(gym.Env):
                     "gid": gid,
                     "x": int(getattr(p, "x_bl")),
                     "y": int(getattr(p, "y_bl")),
-                    "rot": int(getattr(p, "rot")),
+                    "orient": int(getattr(p, "orient")),
                 })
         
         # 그룹 정보
@@ -439,34 +483,6 @@ class FactoryLayoutEnv(gym.Env):
 
         return {}, float(reward), False, True, info
 
-    def build_observation(self) -> Dict[str, torch.Tensor]:
-        """Return model-agnostic engine observation.
-
-        Policy-specific wrappers should attach their own extra observation fields
-        on top of this base dict.
-        """
-        N = int(len(self.node_ids))
-        placed_mask = torch.zeros((N,), dtype=torch.bool, device=self.device)
-        pos = torch.full((N, 3), -1, dtype=torch.long, device=self.device)  # (x_bl,y_bl,rot) or -1
-        for gid2 in self._state.placed:
-            idx = self.gid_to_idx.get(gid2, None)
-            if idx is None:
-                continue
-            placed_mask[int(idx)] = True
-            p = self._state.placements.get(gid2, None)
-            if p is None:
-                continue
-            pos[int(idx), 0] = int(getattr(p, "x_bl"))
-            pos[int(idx), 1] = int(getattr(p, "y_bl"))
-            pos[int(idx), 2] = int(getattr(p, "rot"))
-
-        obs: Dict[str, torch.Tensor] = {
-            "placed_mask": placed_mask,
-            "positions_bl": pos,
-            "step_count": torch.tensor([int(self._state.step_count)], dtype=torch.long, device=self.device),
-        }
-        return obs
-
     def step_action(
         self,
         action: EnvAction,
@@ -478,7 +494,7 @@ class FactoryLayoutEnv(gym.Env):
             return {}, 0.0, True, False, {"reason": "done"}
 
         try:
-            gid_eff, x_bl, y_bl, r = self._normalize_action(action)
+            gid_eff, x_bl, y_bl, orient = self._normalize_action(action)
         except TypeError:
             raise
         except Exception:
@@ -489,20 +505,18 @@ class FactoryLayoutEnv(gym.Env):
             return self._fail("gid_not_remaining")
 
         try:
-            placeable = bool(self.is_placeable(EnvAction(gid=gid_eff, x=x_bl, y=y_bl, rot=r)))
+            _gid, placement = self.resolve_action(action)
         except Exception:
-            placeable = False
-        if not placeable:
+            placement = None
+        if placement is None:
             self._state.step(apply=False)
             return self._fail("not_placeable")
 
-        # 4. 성공 배치 (delta_cost: placed 상태 변경 전 Δcost 계산 → apply)
-        delta = float(self.delta_cost(gid=gid_eff, x=x_bl, y=y_bl, rot=r))
-        placement = self._group_spec(gid_eff).build_placement(
-            x_bl=int(x_bl),
-            y_bl=int(y_bl),
-            rot=int(r),
-        )
+        # TODO(perf): resolve_action already evaluates delta_cost internally
+        # via score_fn to pick the best variant.  Here we re-compute it for
+        # the chosen concrete placement.  Refactor to carry the score through
+        # resolve() to avoid the double computation.
+        delta = float(self._delta_cost_from_placements(gid_eff, [placement])[0].item())
         self._state.step(
             apply=True,
             gid=gid_eff,
@@ -562,32 +576,43 @@ class FactoryLayoutEnv(gym.Env):
         # Apply validated initial placements (and sync caches).
         if initial_positions is not None:
             if not isinstance(initial_positions, dict):
-                raise ValueError("reset(options): initial_positions must be a dict {gid: (x,y,rot)}")
+                raise ValueError("reset(options): initial_positions must be a dict {gid: (x,y,orient)}")
             for gid, pose in initial_positions.items():
                 if gid not in self.group_specs:
                     raise ValueError(f"reset(options): initial_positions has unknown group id: {gid!r}")
                 if (not isinstance(pose, (tuple, list))) or len(pose) != 3:
-                    raise ValueError(f"reset(options): initial_positions[{gid!r}] must be (x,y,rot)")
+                    raise ValueError(f"reset(options): initial_positions[{gid!r}] must be (x,y,orient)")
                 x = int(pose[0])
                 y = int(pose[1])
-                rot = int(pose[2])
+                orient = int(pose[2])
                 if gid in self._state.placed:
                     raise ValueError(f"reset(options): initial_positions contains duplicate gid: {gid!r}")
                 geom = self._group_spec(gid)
-                try:
-                    placeable = bool(self.is_placeable(EnvAction(gid=gid, x=x, y=y, rot=rot)))
-                except Exception:
-                    placeable = False
-                if not placeable:
-                    warnings.warn(
-                        f"reset(options): invalid initial placement gid={gid!r} pose=({x},{y},{rot}) - placing anyway",
-                        stacklevel=2,
+
+                def _check_placeable_for_reset(body_w, body_h, cL, cR, cB, cT):
+                    return self._state.is_placeable(
+                        gid=gid, x_bl=int(x), y_bl=int(y),
+                        body_w=int(body_w), body_h=int(body_h),
+                        cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
                     )
-                placement = geom.build_placement(
+
+                placement = geom.resolve(
                     x_bl=int(x),
                     y_bl=int(y),
-                    rot=int(rot),
+                    orient=int(orient),
+                    is_placeable_fn=_check_placeable_for_reset,
+                    score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
                 )
+                if placement is None:
+                    warnings.warn(
+                        f"reset(options): invalid initial placement gid={gid!r} pose=({x},{y},{orient}) - placing anyway",
+                        stacklevel=2,
+                    )
+                    placement = geom.build_placement(
+                        x_bl=int(x),
+                        y_bl=int(y),
+                        orient=int(orient),
+                    )
                 self._apply_resolved_placement(gid, placement)
         return {}, {}
 
@@ -702,7 +727,7 @@ if __name__ == "__main__":
     # --- step: C 배치 ---
     t2 = time.perf_counter()
     obs2, reward, terminated, truncated, info = env.step_action(
-        EnvAction(gid="C", x=74, y=22, rot=0)
+        EnvAction(gid="C", x=74, y=22, orient=0)
     )
     step_ms = (time.perf_counter() - t2) * 1000.0
 

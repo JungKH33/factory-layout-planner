@@ -18,7 +18,7 @@ class GreedyAdapter(BaseAdapter):
     Notes:
     - Candidate coordinates are bottom-left integer coordinates (engine contract).
     - `action_mask` is torch.BoolTensor[K] (True means valid).
-    - `action_xyrot` is torch.LongTensor[K,3] of (x_bl, y_bl, rot).
+    - `action_poses` is torch.LongTensor[K,3] of (x_bl, y_bl, orient).
     """
 
     metadata = {"render_modes": []}
@@ -53,7 +53,7 @@ class GreedyAdapter(BaseAdapter):
         self.action_space = gym.spaces.Discrete(self.k)
         self.observation_space = gym.spaces.Dict({})
 
-        self.action_xyrot: Optional[torch.Tensor] = None  # long [K,3]
+        self.action_poses: Optional[torch.Tensor] = None  # long [K,3]
         self.action_delta: Optional[torch.Tensor] = None  # float [K]
 
     def build_observation(self) -> Dict[str, Any]:
@@ -65,7 +65,7 @@ class GreedyAdapter(BaseAdapter):
         self._rng = random.Random(self.action_space_seed())
         gid = self.current_gid()
         if gid is None:
-            self.action_xyrot = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
+            self.action_poses = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
             self.action_delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
             return torch.zeros((self.k,), dtype=torch.bool, device=self.device)
 
@@ -73,19 +73,17 @@ class GreedyAdapter(BaseAdapter):
 
         xyrot = torch.zeros((self.k, 3), dtype=torch.long, device=self.device)
         for i, c in enumerate(candidates[: self.k]):
-            _, x_bl, y_bl, rot = c
+            _, x_bl, y_bl, orient = c
             xyrot[i, 0] = int(x_bl)
             xyrot[i, 1] = int(y_bl)
-            xyrot[i, 2] = int(rot)
-        self.action_xyrot = xyrot
+            xyrot[i, 2] = int(orient)
+        self.action_poses = xyrot
         delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
         vmask = mask.to(dtype=torch.bool, device=self.device).view(-1)
         vidx = torch.where(vmask)[0]
         if int(vidx.numel()) > 0:
             vv = xyrot[vidx]
-            d = self.engine.delta_cost(gid=gid, x=vv[:, 0], y=vv[:, 1], rot=vv[:, 2]).to(
-                dtype=torch.float32, device=self.device
-            )
+            d = self._score_poses(gid, vv).to(dtype=torch.float32, device=self.device)
             delta[vidx] = d.view(-1)
         self.action_delta = delta
         return mask
@@ -94,10 +92,10 @@ class GreedyAdapter(BaseAdapter):
     def get_state_copy(self) -> Dict[str, object]:
         snap = dict(super().get_state_copy())
         snap["rng_state"] = self._rng.getstate()
-        if isinstance(self.action_xyrot, torch.Tensor):
-            snap["action_xyrot"] = self.action_xyrot.clone()
+        if isinstance(self.action_poses, torch.Tensor):
+            snap["action_poses"] = self.action_poses.clone()
         else:
-            snap["action_xyrot"] = None
+            snap["action_poses"] = None
         if isinstance(self.action_delta, torch.Tensor):
             snap["action_delta"] = self.action_delta.clone()
         else:
@@ -112,11 +110,11 @@ class GreedyAdapter(BaseAdapter):
                 self._rng.setstate(rs)
             except Exception:
                 pass
-        ax = state.get("action_xyrot", None)
+        ax = state.get("action_poses", None)
         if isinstance(ax, torch.Tensor):
-            self.action_xyrot = ax.to(device=self.device, dtype=torch.long).clone()
+            self.action_poses = ax.to(device=self.device, dtype=torch.long).clone()
         else:
-            self.action_xyrot = None
+            self.action_poses = None
         ad = state.get("action_delta", None)
         if isinstance(ad, torch.Tensor):
             self.action_delta = ad.to(device=self.device, dtype=torch.float32).clone()
@@ -133,10 +131,10 @@ class GreedyAdapter(BaseAdapter):
             n_rand = 0
         return int(n_high), int(n_near), int(n_coarse), int(n_rand)
 
-    def _wh_int(self, env: FactoryLayoutEnv, gid: GroupId, rot: int) -> Tuple[int, int]:
+    def _wh_int(self, env: FactoryLayoutEnv, gid: GroupId, orient: int) -> Tuple[int, int]:
         g = env.group_specs[gid]
-        w, h = g._rotated_size(int(rot))
-        return int(round(float(w))), int(round(float(h)))
+        w, h = g.rotated_size(int(orient))
+        return int(w), int(h)
 
     def _clamp_bl(self, env: FactoryLayoutEnv, x_bl: int, y_bl: int, w: int, h: int) -> Tuple[int, int]:
         max_x = int(env.grid_width) - int(w)
@@ -180,27 +178,27 @@ class GreedyAdapter(BaseAdapter):
     def _validate_with_maps(
         self,
         candidates: torch.Tensor,
-        valid_by_rot: Dict[int, torch.Tensor],
+        valid_by_orient: Dict[int, torch.Tensor],
     ) -> torch.Tensor:
         """Vectorized placement validation using pre-computed placeable maps."""
         N = int(candidates.shape[0])
         result = torch.zeros(N, dtype=torch.bool, device=self.device)
-        x, y, rot = candidates[:, 0], candidates[:, 1], candidates[:, 2]
-        for r, vmap in valid_by_rot.items():
+        x, y, orient = candidates[:, 0], candidates[:, 1], candidates[:, 2]
+        for o, vmap in valid_by_orient.items():
             H, W = int(vmap.shape[0]), int(vmap.shape[1])
-            rot_match = (rot == r)
-            if not rot_match.any():
+            orient_match = (orient == o)
+            if not orient_match.any():
                 continue
-            xi, yi = x[rot_match], y[rot_match]
+            xi, yi = x[orient_match], y[orient_match]
             in_bounds = (xi >= 0) & (xi < W) & (yi >= 0) & (yi < H)
             xc = xi.clamp(0, W - 1)
             yc = yi.clamp(0, H - 1)
-            result[rot_match] = vmap[yc, xc] & in_bounds
+            result[orient_match] = vmap[yc, xc] & in_bounds
         return result
 
-    def _build_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rot: int) -> torch.Tensor:
-        spec = env.group_specs[gid]
-        return env.get_state().is_placeable_map(gid=gid, spec=spec, rot=int(rot))
+    def _build_orient_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, orient: int) -> torch.Tensor:
+        """Placeable map (OR of all rotation/mirror variants) for the given orient."""
+        return env.placeable_map(gid=gid, orient=int(orient))
 
     def _score_sorted(
         self,
@@ -211,7 +209,7 @@ class GreedyAdapter(BaseAdapter):
         if not pool:
             return []
         xy = torch.tensor([[c[1], c[2], c[3]] for c in pool], dtype=torch.long, device=env.device)  # [M,3]
-        scores_t = env.delta_cost(gid=gid, x=xy[:, 0], y=xy[:, 1], rot=xy[:, 2])
+        scores_t = self._score_poses(gid, xy)
         scores = scores_t.detach().to(device="cpu", dtype=torch.float32).tolist()
         order = sorted(range(len(pool)), key=lambda i: scores[i])
         return [pool[i] for i in order]
@@ -227,19 +225,19 @@ class GreedyAdapter(BaseAdapter):
         if count <= 0:
             return []
         group = env.group_specs[gid]
-        rotations = (0, 90) if group.rotatable else (0,)
+        orients = (0, 1) if group.rotatable else (0,)
 
-        count_per_rot = max(1, count // len(rotations))
+        count_per_orient = max(1, count // len(orients))
         aspect_ratio = float(env.grid_width) / float(env.grid_height)
-        nx = max(1, round(math.sqrt(count_per_rot * aspect_ratio)))
-        ny = max(1, round(count_per_rot / nx))
+        nx = max(1, round(math.sqrt(count_per_orient * aspect_ratio)))
+        ny = max(1, round(count_per_orient / nx))
 
         dx = float(env.grid_width) / float(nx)
         dy = float(env.grid_height) / float(ny)
 
         candidates: List[Tuple[GroupId, int, int, int]] = []
-        for rot in rotations:
-            w, h = self._wh_int(env, gid, int(rot))
+        for orient in orients:
+            w, h = self._wh_int(env, gid, orient)
             if int(env.grid_width) - w < 0 or int(env.grid_height) - h < 0:
                 continue
             for i in range(nx):
@@ -247,12 +245,12 @@ class GreedyAdapter(BaseAdapter):
                     x_bl = int(round(i * dx))
                     y_bl = int(round(j * dy))
                     x_bl, y_bl = self._clamp_bl(env, x_bl, y_bl, w, h)
-                    candidates.append((gid, int(x_bl), int(y_bl), int(rot)))
+                    candidates.append((gid, int(x_bl), int(y_bl), int(orient)))
         return candidates
 
     def _source_high(self, env: FactoryLayoutEnv, gid: GroupId, count: int) -> List[Tuple[GroupId, int, int, int]]:
         group = env.group_specs[gid]
-        rotations = (0, 90) if group.rotatable else (0,)
+        orients = (0, 1) if group.rotatable else (0,)
         step = max(int(round(self.scan_step)), 1)
         max_scan = 50000
 
@@ -279,15 +277,15 @@ class GreedyAdapter(BaseAdapter):
             return best
 
         results: List[Tuple[GroupId, int, int, int]] = []
-        for rot in rotations:
-            w, h = self._wh_int(env, gid, int(rot))
+        for orient in orients:
+            w, h = self._wh_int(env, gid, orient)
             if int(env.grid_width) - w < 0 or int(env.grid_height) - h < 0:
                 continue
             x_bl = 0
             y_bl = 0
             for _ in range(max_scan):
                 x_bl, y_bl = self._clamp_bl(env, x_bl, y_bl, w, h)
-                results.append((gid, int(x_bl), int(y_bl), int(rot)))
+                results.append((gid, int(x_bl), int(y_bl), int(orient)))
 
                 if x_bl < (int(env.grid_width) - w):
                     jump = _jump_x_bl(x_bl, y_bl, w, h, 1)
@@ -309,10 +307,10 @@ class GreedyAdapter(BaseAdapter):
         if not env.get_state().placed:
             return []
         group = env.group_specs[gid]
-        rotations = (0, 90) if group.rotatable else (0,)
+        orients = (0, 1) if group.rotatable else (0,)
         candidates: List[Tuple[GroupId, int, int, int]] = []
-        for rot in rotations:
-            w, h = self._wh_int(env, gid, int(rot))
+        for orient in orients:
+            w, h = self._wh_int(env, gid, orient)
             if int(env.grid_width) - w < 0 or int(env.grid_height) - h < 0:
                 continue
             for pid in env.get_state().placed:
@@ -326,7 +324,7 @@ class GreedyAdapter(BaseAdapter):
                 for x_bl in x_events:
                     for y_bl in y_events:
                         x2, y2 = self._clamp_bl(env, int(x_bl), int(y_bl), w, h)
-                        candidates.append((gid, int(x2), int(y2), int(rot)))
+                        candidates.append((gid, int(x2), int(y2), int(orient)))
         return candidates
 
     def _source_coarse(self, env: FactoryLayoutEnv, gid: GroupId, count: int) -> List[Tuple[GroupId, int, int, int]]:
@@ -346,14 +344,14 @@ class GreedyAdapter(BaseAdapter):
         group = env.group_specs[gid]
         candidates: List[Tuple[GroupId, int, int, int]] = []
         for _ in range(count):
-            rot = 0 if not group.rotatable else self._rng.choice([0, 90])
-            w, h = self._wh_int(env, gid, int(rot))
+            orient = 0 if not group.rotatable else self._rng.choice([0, 1])
+            w, h = self._wh_int(env, gid, orient)
             if int(env.grid_width) - w < 0 or int(env.grid_height) - h < 0:
                 continue
             x_bl = int(round(self._rng.uniform(0.0, float(int(env.grid_width) - w))))
             y_bl = int(round(self._rng.uniform(0.0, float(int(env.grid_height) - h))))
             x_bl, y_bl = self._clamp_bl(env, x_bl, y_bl, w, h)
-            candidates.append((gid, int(x_bl), int(y_bl), int(rot)))
+            candidates.append((gid, int(x_bl), int(y_bl), int(orient)))
         return candidates
 
     def _generate_initial(
@@ -369,8 +367,8 @@ class GreedyAdapter(BaseAdapter):
         raw_tagged.extend((1, c) for c in self._source_random(env, gid, n_rand))
 
         group = env.group_specs[gid]
-        rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
-        valid_by_rot = {int(r): self._build_valid_map(env, gid=gid, rot=int(r)) for r in rotations}
+        orients = (0, 1) if getattr(group, "rotatable", False) else (0,)
+        valid_by_orient = {o: self._build_orient_valid_map(env, gid=gid, orient=o) for o in orients}
         unique_tagged = self._dedup_tagged(raw_tagged, quant_step, group)
         valid_candidates: List[Tuple[GroupId, int, int, int]] = []
         if unique_tagged:
@@ -379,7 +377,7 @@ class GreedyAdapter(BaseAdapter):
                 dtype=torch.long,
                 device=device,
             )
-            placeable = self._validate_with_maps(xyrot, valid_by_rot)
+            placeable = self._validate_with_maps(xyrot, valid_by_orient)
             for i, (_, c) in enumerate(unique_tagged):
                 if bool(placeable[i].item()):
                     valid_candidates.append(c)
@@ -403,8 +401,8 @@ class GreedyAdapter(BaseAdapter):
 
         n_high, n_near, n_coarse, n_rand = self._quota(self.k)
         group = env.group_specs[next_group_id]
-        rotations = (0, 90) if getattr(group, "rotatable", False) else (0,)
-        valid_by_rot = {int(r): self._build_valid_map(env, gid=next_group_id, rot=int(r)) for r in rotations}
+        orients = (0, 1) if getattr(group, "rotatable", False) else (0,)
+        valid_by_orient = {o: self._build_orient_valid_map(env, gid=next_group_id, orient=o) for o in orients}
 
         raw_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
         raw_tagged.extend((0, c) for c in self._source_high(env, next_group_id, n_high * self.oversample_factor))
@@ -420,7 +418,7 @@ class GreedyAdapter(BaseAdapter):
                 dtype=torch.long,
                 device=device,
             )
-            placeable = self._validate_with_maps(xyrot, valid_by_rot)
+            placeable = self._validate_with_maps(xyrot, valid_by_orient)
             for i, tagged in enumerate(unique_tagged):
                 if bool(placeable[i].item()):
                     valid_tagged.append(tagged)

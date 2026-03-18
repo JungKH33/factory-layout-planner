@@ -4,7 +4,34 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
+from envs.action_space import ActionSpace
 from envs.env_loader import load_env
+
+
+def _score_poses(env, gid, x, y, orient):
+    """Test helper: build ActionSpace from poses and score via engine."""
+    spec = env.group_specs[gid]
+    needed = env.reward_required
+    x_t = x if torch.is_tensor(x) else torch.tensor([int(x)], dtype=torch.long, device=env.device)
+    y_t = y if torch.is_tensor(y) else torch.tensor([int(y)], dtype=torch.long, device=env.device)
+    o_t = orient if torch.is_tensor(orient) else torch.tensor([int(orient)], dtype=torch.long, device=env.device)
+    x_t = x_t.to(dtype=torch.long, device=env.device).view(-1)
+    y_t = y_t.to(dtype=torch.long, device=env.device).view(-1)
+    o_t = o_t.to(dtype=torch.long, device=env.device).view(-1)
+    features = spec.build_candidate_features(x_bl=x_t, y_bl=y_t, orient=o_t, needed=needed)
+    entries = features.get("entries", None)
+    exits = features.get("exits", None)
+    aspace = ActionSpace(
+        poses=torch.stack([x_t, y_t, o_t], dim=-1),
+        mask=torch.ones(x_t.shape[0], dtype=torch.bool, device=env.device),
+        gid=gid,
+        entries=entries, exits=exits,
+        entries_mask=torch.ones(entries.shape[:2], dtype=torch.bool, device=env.device) if entries is not None else None,
+        exits_mask=torch.ones(exits.shape[:2], dtype=torch.bool, device=env.device) if exits is not None else None,
+        min_x=features.get("min_x"), max_x=features.get("max_x"),
+        min_y=features.get("min_y"), max_y=features.get("max_y"),
+    )
+    return env.delta_cost(gid, aspace)
 
 
 def visualize_placeable_map_small():
@@ -148,12 +175,12 @@ def test_estimate_batch(env, gid, n_calls=100):
     
     # 웜업
     for _ in range(5):
-        env.delta_cost(gid=gid, x=x, y=y, rot=rot)
+        _score_poses(env, gid, x, y, rot)
     if env.device.type == 'cuda':
         torch.cuda.synchronize()
     
     start = time.perf_counter()
-    env.delta_cost(gid=gid, x=x, y=y, rot=rot)
+    _score_poses(env, gid, x, y, rot)
     if env.device.type == 'cuda':
         torch.cuda.synchronize()
     elapsed = (time.perf_counter() - start) * 1000
@@ -171,13 +198,13 @@ def test_estimate_loop(env, gid, n_calls=100):
     
     # 웜업
     for _ in range(5):
-        env.delta_cost(gid=gid, x=coords[0][0], y=coords[0][1], rot=0)
+        _score_poses(env, gid, coords[0][0], coords[0][1], 0)
     if env.device.type == 'cuda':
         torch.cuda.synchronize()
     
     start = time.perf_counter()
     for x, y in coords:
-        env.delta_cost(gid=gid, x=x, y=y, rot=0)
+        _score_poses(env, gid, x, y, 0)
     if env.device.type == 'cuda':
         torch.cuda.synchronize()
     elapsed = (time.perf_counter() - start) * 1000

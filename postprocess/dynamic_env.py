@@ -460,14 +460,9 @@ class DynamicStorageEnv(gym.Env):
             placement = self.base_env.get_state().placements.get(p)
             if placement is None:
                 continue
-            px, py, p_rot = placement.pose()
-            g = self.base_env.group_specs[p]
-            if p_rot in (90, 270):
-                pw, ph = g.height, g.width
-            else:
-                pw, ph = g.width, g.height
-            pcx = px + pw / 2.0
-            pcy = py + ph / 2.0
+            pw, ph = float(placement.w), float(placement.h)
+            pcx = placement.x_bl + pw / 2.0
+            pcy = placement.y_bl + ph / 2.0
             centers_p.append((pcx, pcy))
             
             w_out.append(float(self.group_flow.get(self.gid, {}).get(p, 0.0)))
