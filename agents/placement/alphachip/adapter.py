@@ -88,9 +88,6 @@ class AlphaChipAdapter(BaseAdapter):
     def _next_gid(self) -> Optional[GroupId]:
         return self.current_gid()
 
-    def _valid_top_left_body(self, *, gid: GroupId, rotation: int) -> torch.Tensor:
-        return self.engine.placeable_map(gid=gid, rotation=int(rotation))
-
     def create_mask(self) -> torch.Tensor:
         gid = self._next_gid()
         if gid is None:
@@ -99,7 +96,8 @@ class AlphaChipAdapter(BaseAdapter):
             )
             return torch.zeros((self.coarse_grid * self.coarse_grid,), dtype=torch.bool, device=self.device)
 
-        group = self.engine.group_specs[gid]
+        spec = self.engine.group_specs[gid]
+        state = self.engine.get_state()
 
         g = int(self.coarse_grid)
         cell_w, cell_h = self.cell_wh()
@@ -111,21 +109,11 @@ class AlphaChipAdapter(BaseAdapter):
 
         self.action_poses = torch.stack([cx, cy], dim=-1).view(g * g, 2).to(dtype=torch.float32)
 
-        # Check validity across ALL rotations; a center is valid if any rotation fits.
-        rotations = (0, 90, 180, 270) if group.rotatable else (0,)
-        ok = torch.zeros((g, g), dtype=torch.bool, device=self.device)
-        for rot in rotations:
-            valid_map = self._valid_top_left_body(gid=gid, rotation=rot)
-            H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
-            w, h = group.rotated_size(rot)
-            w_i, h_i = int(w), int(h)
-            x_bl_o = torch.round(cx - (w_i / 2.0)).to(torch.long)
-            y_bl_o = torch.round(cy - (h_i / 2.0)).to(torch.long)
-            inside = (x_bl_o >= 0) & (y_bl_o >= 0) & (x_bl_o < W) & (y_bl_o < H)
-            ok_v = torch.zeros((g, g), dtype=torch.bool, device=self.device)
-            ok_v[inside] = valid_map[y_bl_o[inside], x_bl_o[inside]]
-            ok = ok | ok_v
-        return ok.reshape(-1)
+        ok = spec.placeable_batch(
+            state=state, gid=gid,
+            x_c=cx.reshape(-1), y_c=cy.reshape(-1),
+        )
+        return ok
 
     def build_observation(self) -> Dict[str, Any]:
         self.mask = None

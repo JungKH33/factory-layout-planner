@@ -203,7 +203,31 @@ class GreedyAdapter(BaseAdapter):
 
     def _build_rotation_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rotation: int) -> torch.Tensor:
         """Placeable map for the given rotation (0/90/180/270)."""
-        return env.placeable_map(gid=gid, rotation=int(rotation))
+        spec = env.group_specs[gid]
+        state = env.get_state()
+        rr = spec._resolve_rotation(rotation)
+        result = None
+        seen_pk: set = set()
+        for vi in spec._variants:
+            if vi.rotation != rr:
+                continue
+            pk = vi.placeable_key
+            if pk in seen_pk:
+                continue
+            seen_pk.add(pk)
+            body_w, body_h, cL, cR, cB, cT = pk
+            m = state.is_placeable_map(
+                gid=gid, body_w=body_w, body_h=body_h,
+                cL=cL, cR=cR, cB=cB, cT=cT,
+            )
+            if result is None:
+                result = m
+            else:
+                result = result | m
+        if result is None:
+            H, W = state.maps.shape
+            return torch.zeros((H, W), dtype=torch.bool, device=env.device)
+        return result
 
     def _score_sorted(
         self,

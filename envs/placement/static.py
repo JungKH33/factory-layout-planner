@@ -2,13 +2,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
 from .base import PlacementBase
 
+if TYPE_CHECKING:
+    from ..state.base import EnvState
+    from ..reward.core import RewardComposer
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VariantInfo:
+    """One unique (rotation, mirror) variant with precomputed geometry."""
+    rotation: int
+    mirror: bool
+    body_w: int
+    body_h: int
+    cL: int
+    cR: int
+    cB: int
+    cT: int
+    entry_offsets: Tuple[Tuple[float, float], ...]   # center-relative
+    exit_offsets: Tuple[Tuple[float, float], ...]     # center-relative
+    placeable_key: Tuple[int, int, int, int, int, int]  # (body_w, body_h, cL, cR, cB, cT)
+    cost_key: tuple  # (body_w, body_h, cL, cR, cB, cT, entry_offsets, exit_offsets)
 
 @dataclass
 class StaticPlacement(PlacementBase):
@@ -81,6 +102,100 @@ class StaticSpec:
                 f"StaticSpec {self.id!r} has ports outside local bounds {bounds}: "
                 + ", ".join(invalid_ports)
             )
+
+        # --- Variant precomputation ---
+        rotations = (0, 90, 180, 270) if self.rotatable else (0,)
+        mirrors = (False, True) if self.mirrorable else (False,)
+
+        half_w = self.width / 2.0
+        half_h = self.height / 2.0
+
+        seen_cost: set = set()
+        variants: List[VariantInfo] = []
+        unique_placeable: Dict[Tuple[int, int, int, int, int, int], List[VariantInfo]] = {}
+        raw_variant_count = 0
+
+        for rot in rotations:
+            rr = self._resolve_rotation(rot)
+            for m in mirrors:
+                raw_variant_count += 1
+                w, h = self._rotated_size(rr)
+                body_w, body_h = int(w), int(h)
+                cL, cR, cB, cT = self._clearance_lrtb(rr, mirror=m)
+
+                eo: List[Tuple[float, float]] = []
+                for dx_bl, dy_bl in self.entries_rel:
+                    dx = float(dx_bl) - half_w
+                    if bool(m):
+                        dx = -dx
+                    rdx, rdy = self._rotate_point(dx, float(dy_bl) - half_h, rr)
+                    eo.append((round(rdx, 6), round(rdy, 6)))
+
+                xo: List[Tuple[float, float]] = []
+                for dx_bl, dy_bl in self.exits_rel:
+                    dx = float(dx_bl) - half_w
+                    if bool(m):
+                        dx = -dx
+                    rdx, rdy = self._rotate_point(dx, float(dy_bl) - half_h, rr)
+                    xo.append((round(rdx, 6), round(rdy, 6)))
+
+                eo_t = tuple(eo)
+                xo_t = tuple(xo)
+                pk = (body_w, body_h, cL, cR, cB, cT)
+                ck = (body_w, body_h, cL, cR, cB, cT, eo_t, xo_t)
+
+                if ck in seen_cost:
+                    continue
+                seen_cost.add(ck)
+
+                vi = VariantInfo(
+                    rotation=rr, mirror=m,
+                    body_w=body_w, body_h=body_h,
+                    cL=cL, cR=cR, cB=cB, cT=cT,
+                    entry_offsets=eo_t, exit_offsets=xo_t,
+                    placeable_key=pk, cost_key=ck,
+                )
+                variants.append(vi)
+                if pk not in unique_placeable:
+                    unique_placeable[pk] = []
+                unique_placeable[pk].append(vi)
+
+        self._variants: List[VariantInfo] = variants
+        self._unique_placeable: Dict[Tuple[int, int, int, int, int, int], List[VariantInfo]] = unique_placeable
+
+        # Precompute offset tensors per variant
+        self._variant_entry_off_t: List[torch.Tensor] = []
+        self._variant_exit_off_t: List[torch.Tensor] = []
+        for vi in variants:
+            if vi.entry_offsets:
+                et = torch.tensor(list(vi.entry_offsets), dtype=torch.float32, device=self.device)
+            else:
+                et = torch.empty((0, 2), dtype=torch.float32, device=self.device)
+            if vi.exit_offsets:
+                xt = torch.tensor(list(vi.exit_offsets), dtype=torch.float32, device=self.device)
+            else:
+                xt = torch.empty((0, 2), dtype=torch.float32, device=self.device)
+            self._variant_entry_off_t.append(et)
+            self._variant_exit_off_t.append(xt)
+
+        logger.info(
+            "StaticSpec %r variant summary: raw=%d, unique_variants=%d, unique_placeable=%d",
+            self.id,
+            raw_variant_count,
+            len(self._variants),          # ck 기준 unique
+            len(self._unique_placeable),  # pk 기준 unique
+        )
+
+    def set_device(self, device: torch.device) -> None:
+        """Move precomputed tensors to *device* in-place."""
+        if self.device == device:
+            return
+        self.device = device
+        for i, t in enumerate(self._variant_entry_off_t):
+            self._variant_entry_off_t[i] = t.to(device)
+        for i, t in enumerate(self._variant_exit_off_t):
+            self._variant_exit_off_t[i] = t.to(device)
+
 
     @staticmethod
     def _norm_rotation(rotation: int) -> int:
@@ -167,24 +282,6 @@ class StaticSpec:
         if r == 270:
             return (cT, cB, cL, cR)
         return (cL, cR, cB, cT)
-
-    def variant_geometries(self, rotation: int) -> List[Tuple[int, int, int, int, int, int]]:
-        """Return unique (body_w, body_h, cL, cR, cB, cT) for the given rotation across mirrors.
-
-        Public API for env.placeable_map.
-        """
-        r = self._resolve_rotation(rotation)
-        mirrors = (False, True) if self.mirrorable else (False,)
-        seen: set = set()
-        result: List[Tuple[int, int, int, int, int, int]] = []
-        for m in mirrors:
-            w, h = self._rotated_size(r)
-            cL, cR, cB, cT = self._clearance_lrtb(r, mirror=m)
-            geom = (int(w), int(h), int(cL), int(cR), int(cB), int(cT))
-            if geom not in seen:
-                seen.add(geom)
-                result.append(geom)
-        return result
 
     def rotated_size(self, rotation: int) -> Tuple[int, int]:
         """Return (body_w, body_h) for the given concrete rotation (0/90/180/270)."""
@@ -319,46 +416,30 @@ class StaticSpec:
           score_fn(placements: List[StaticPlacement]) -> Tensor[N]
         If *score_fn* is None, picks the first feasible variant.
         """
-        rotations = (0, 90, 180, 270) if self.rotatable else (0,)
-        mirrors = (False, True) if self.mirrorable else (False,)
-
-        seen_sig: set = set()
         placeable: List[StaticPlacement] = []
-        for rot in rotations:
-            for m in mirrors:
-                rr = self._resolve_rotation(rot)
-                w, h = self._rotated_size(rr)
-                x_bl = int(round(x_c - w / 2.0))
-                y_bl = int(round(y_c - h / 2.0))
-                x_c_s = float(x_bl) + w / 2.0
-                y_c_s = float(y_bl) + h / 2.0
-                cL, cR, cB, cT = self._clearance_lrtb(rr, mirror=m)
+        for vi in self._variants:
+            w = float(vi.body_w)
+            h = float(vi.body_h)
+            x_bl = int(round(x_c - w / 2.0))
+            y_bl = int(round(y_c - h / 2.0))
+            x_c_s = float(x_bl) + w / 2.0
+            y_c_s = float(y_bl) + h / 2.0
 
-                entries = list(self._entries_from_center(x_c_s, y_c_s, rr, mirror=m))
-                exits = list(self._exits_from_center(x_c_s, y_c_s, rr, mirror=m))
-                sig = (
-                    (round(w, 6), round(h, 6)),
-                    (cL, cR, cB, cT),
-                    tuple((round(ex, 6), round(ey, 6)) for ex, ey in entries),
-                    tuple((round(ex, 6), round(ey, 6)) for ex, ey in exits),
-                )
-                if sig in seen_sig:
-                    continue
-                seen_sig.add(sig)
+            if not is_placeable_fn(x_bl, y_bl, vi.body_w, vi.body_h, vi.cL, vi.cR, vi.cB, vi.cT):
+                continue
 
-                if not is_placeable_fn(x_bl, y_bl, int(w), int(h), cL, cR, cB, cT):
-                    continue
-
-                placeable.append(StaticPlacement(
-                    entries=entries, exits=exits,
-                    min_x=float(x_bl), max_x=float(x_bl) + w,
-                    min_y=float(y_bl), max_y=float(y_bl) + h,
-                    x_bl=x_bl, y_bl=y_bl, rotation=int(rr),
-                    w=float(w), h=float(h), x_c=x_c_s, y_c=y_c_s,
-                    clearance_left=cL, clearance_right=cR,
-                    clearance_bottom=cB, clearance_top=cT,
-                    mirror=bool(m),
-                ))
+            entries = list(self._entries_from_center(x_c_s, y_c_s, vi.rotation, mirror=vi.mirror))
+            exits = list(self._exits_from_center(x_c_s, y_c_s, vi.rotation, mirror=vi.mirror))
+            placeable.append(StaticPlacement(
+                entries=entries, exits=exits,
+                min_x=float(x_bl), max_x=float(x_bl) + w,
+                min_y=float(y_bl), max_y=float(y_bl) + h,
+                x_bl=x_bl, y_bl=y_bl, rotation=vi.rotation,
+                w=w, h=h, x_c=x_c_s, y_c=y_c_s,
+                clearance_left=vi.cL, clearance_right=vi.cR,
+                clearance_bottom=vi.cB, clearance_top=vi.cT,
+                mirror=vi.mirror,
+            ))
 
         if not placeable:
             return None
@@ -368,77 +449,141 @@ class StaticSpec:
         scores = score_fn(placeable).to(dtype=torch.float32, device=self.device).view(-1)
         return placeable[int(torch.argmin(scores).item())]
 
-    def build_candidate_features(
+    # ------------------------------------------------------------------
+    # Unified placeable / cost API (variant-aware)
+    # ------------------------------------------------------------------
+
+    def placeable_map(self, state: "EnvState", gid: object) -> torch.Tensor:
+        """Return [H,W] bool BL-indexed placeable map, OR'd across all unique geometries."""
+        result = None
+        for pk in self._unique_placeable:
+            body_w, body_h, cL, cR, cB, cT = pk
+            m = state.is_placeable_map(
+                gid=gid, body_w=body_w, body_h=body_h,
+                cL=cL, cR=cR, cB=cB, cT=cT,
+            )
+            if result is None:
+                result = m
+            else:
+                result = result | m
+        if result is None:
+            H, W = state.maps.shape
+            return torch.zeros((H, W), dtype=torch.bool, device=self.device)
+        return result
+
+    def placeable_batch(
+        self,
+        state: "EnvState",
+        gid: object,
+        x_c: torch.Tensor,
+        y_c: torch.Tensor,
+    ) -> torch.Tensor:
+        """Check if center coordinates are placeable in ANY variant. Returns [N] bool."""
+        N = int(x_c.shape[0])
+        ok = torch.zeros(N, dtype=torch.bool, device=self.device)
+        for pk in self._unique_placeable:
+            body_w, body_h, cL, cR, cB, cT = pk
+            x_bl = torch.round(x_c - body_w / 2.0).to(torch.long)
+            y_bl = torch.round(y_c - body_h / 2.0).to(torch.long)
+            pk_ok = state.is_placeable_batch(
+                gid=gid, x_bl=x_bl, y_bl=y_bl,
+                body_w=body_w, body_h=body_h,
+                cL=cL, cR=cR, cB=cB, cT=cT,
+            )
+            ok = ok | pk_ok
+        return ok
+
+    def cost_batch(
         self,
         *,
-        x_c: object,
-        y_c: object,
-        rotation: object,
-        mirror: bool = False,
-        needed: set[str],
+        gid: object,
+        poses: torch.Tensor,
+        state: "EnvState",
+        reward: "RewardComposer",
+    ) -> torch.Tensor:
+        """[N] float — min delta_cost across PLACEABLE variants. inf if no variant fits."""
+        N = int(poses.shape[0])
+        if N == 0:
+            return torch.zeros((0,), dtype=torch.float32, device=self.device)
+
+        best = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
+        x_c = poses[:, 0]
+        y_c = poses[:, 1]
+        needed = reward.required()
+
+        for i, vi in enumerate(self._variants):
+            x_bl = torch.round(x_c - vi.body_w / 2.0).to(torch.long)
+            y_bl = torch.round(y_c - vi.body_h / 2.0).to(torch.long)
+            ok = state.is_placeable_batch(
+                gid=gid, x_bl=x_bl, y_bl=y_bl,
+                body_w=vi.body_w, body_h=vi.body_h,
+                cL=vi.cL, cR=vi.cR, cB=vi.cB, cT=vi.cT,
+            )
+            if not ok.any():
+                continue
+            idx = torch.where(ok)[0]
+            features = self._build_variant_features(vi, i, poses[idx], needed)
+            scores = reward.delta_batch(state, gid=gid, **features)
+            best[idx] = torch.min(best[idx], scores)
+
+        return best
+
+    def _build_variant_features(
+        self,
+        vi: VariantInfo,
+        vi_idx: int,
+        center: torch.Tensor,
+        needed: set,
     ) -> Dict[str, torch.Tensor]:
-        """Build candidate feature tensors for center-coordinate pose vectors.
-
-        ``x_c``/``y_c`` are center coordinates (float); ``rotation`` is
-        concrete 0/90/180/270 (int or tensor).
-        When ``mirror=True``, port dx offsets are flipped before rotation.
-        """
-        supported = {
-            "entries",
-            "exits",
-            "min_x",
-            "max_x",
-            "min_y",
-            "max_y",
-        }
-        unknown = set(needed) - supported
-        if unknown:
-            raise ValueError(f"build_candidate_features: unknown feature keys: {sorted(unknown)}")
-
-        scalar_input = not (torch.is_tensor(x_c) or torch.is_tensor(y_c))
-        if scalar_input:
-            x_c = torch.tensor([float(x_c)], dtype=torch.float32, device=self.device)
-            y_c = torch.tensor([float(y_c)], dtype=torch.float32, device=self.device)
-
-        x_c = x_c.to(device=self.device, dtype=torch.float32).view(-1)
-        y_c = y_c.to(device=self.device, dtype=torch.float32).view(-1)
-        M = int(x_c.numel())
-        if int(y_c.numel()) != M:
-            raise ValueError("build_candidate_features: x_c,y_c must have same length")
-
-        if not torch.is_tensor(rotation):
-            rotation = torch.full((M,), int(rotation), dtype=torch.long, device=self.device)
-        rot_idx = self._rotation_idx(rotation.to(device=self.device, dtype=torch.long).view(-1))
-
+        """Build feature dict for a single variant at given center positions."""
+        M = int(center.shape[0])
         out: Dict[str, torch.Tensor] = {}
 
-        # Snap center → BL (integer) → snapped center, matching actual grid placement.
-        w, h = self._wh_for_rotation(rot_idx)
-        x_bl = torch.round(x_c - w * 0.5).to(torch.long)
-        y_bl = torch.round(y_c - h * 0.5).to(torch.long)
-        x_c_s = x_bl.to(torch.float32) + w * 0.5
-        y_c_s = y_bl.to(torch.float32) + h * 0.5
+        x_c = center[:, 0]
+        y_c = center[:, 1]
 
-        if {"min_x", "max_x", "min_y", "max_y"} & needed:
-            min_x = x_bl.to(dtype=torch.float32)
-            min_y = y_bl.to(dtype=torch.float32)
-            if "min_x" in needed:
-                out["min_x"] = min_x
-            if "max_x" in needed:
-                out["max_x"] = min_x + w
-            if "min_y" in needed:
-                out["min_y"] = min_y
-            if "max_y" in needed:
-                out["max_y"] = min_y + h
+        # Snap center → BL (integer) → snapped center
+        x_bl = torch.round(x_c - vi.body_w / 2.0).to(torch.long)
+        y_bl = torch.round(y_c - vi.body_h / 2.0).to(torch.long)
+        x_c_s = x_bl.to(torch.float32) + vi.body_w / 2.0
+        y_c_s = y_bl.to(torch.float32) + vi.body_h / 2.0
 
-        if {"entries", "exits"} & needed:
-            center = torch.stack([x_c_s, y_c_s], dim=1)  # [M, 2]
-            if "entries" in needed:
-                out["entries"] = self._entries_batch(center, rot_idx, mirror=mirror)
-            if "exits" in needed:
-                out["exits"] = self._exits_batch(center, rot_idx, mirror=mirror)
+        if "min_x" in needed:
+            out["min_x"] = x_bl.to(torch.float32)
+        if "max_x" in needed:
+            out["max_x"] = x_bl.to(torch.float32) + float(vi.body_w)
+        if "min_y" in needed:
+            out["min_y"] = y_bl.to(torch.float32)
+        if "max_y" in needed:
+            out["max_y"] = y_bl.to(torch.float32) + float(vi.body_h)
+
+        if "entries" in needed:
+            eo = self._variant_entry_off_t[vi_idx]  # [E, 2]
+            if eo.shape[0] > 0:
+                c = torch.stack([x_c_s, y_c_s], dim=1)  # [M, 2]
+                out["entries"] = c[:, None, :] + eo[None, :, :]  # [M, E, 2]
+                out["entries_mask"] = torch.ones(
+                    (M, eo.shape[0]), dtype=torch.bool, device=self.device,
+                )
+            else:
+                out["entries"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
+                out["entries_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
+
+        if "exits" in needed:
+            xo = self._variant_exit_off_t[vi_idx]  # [X, 2]
+            if xo.shape[0] > 0:
+                c = torch.stack([x_c_s, y_c_s], dim=1)  # [M, 2]
+                out["exits"] = c[:, None, :] + xo[None, :, :]  # [M, X, 2]
+                out["exits_mask"] = torch.ones(
+                    (M, xo.shape[0]), dtype=torch.bool, device=self.device,
+                )
+            else:
+                out["exits"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
+                out["exits_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
 
         return out
+
+    # build_candidate_features removed — replaced by _build_variant_features + cost_batch
 
 
 if __name__ == "__main__":
@@ -453,53 +598,44 @@ if __name__ == "__main__":
         device=device,
         width=8,
         height=4,
-        entries_rel=[(0.0, 2.0), (8.0, 2.0)],  # BL-relative: 왼쪽 끝 / 오른쪽 끝 (height/2=2)
-        exits_rel=[(4.0, 4.0)],                # BL-relative: 윗면 중간 (width/2=4, height=4)
+        entries_rel=[(0.0, 2.0), (8.0, 2.0)],
+        exits_rel=[(4.0, 4.0)],
         clearance_left_rel=1,
         clearance_right_rel=1,
         clearance_bottom_rel=0,
         clearance_top_rel=0,
     )
 
-    invalid = (torch.rand((H, W), device=device) < 0.05)
-    clear_invalid = (torch.rand((H, W), device=device) < 0.02)
+    # --- Variant precomputation ---
+    print(f"variants={len(geom._variants)}, unique_placeable={len(geom._unique_placeable)}")
+    for vi in geom._variants:
+        print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
+              f"clear=({vi.cL},{vi.cR},{vi.cB},{vi.cT}) "
+              f"entries={len(vi.entry_offsets)} exits={len(vi.exit_offsets)}")
 
-    M = 20000
-    x = torch.randint(0, W, (M,), device=device)
-    y = torch.randint(0, H, (M,), device=device)
-
-    # build_placement vs build_candidate_features
+    # --- build_placement ---
     scalar = geom.build_placement(x_c=14.0, y_c=7.0, rotation=90)
     print(
-        "build_placement(x_c=14.0,y_c=7.0,rotation=90) -> "
+        f"\nbuild_placement(x_c=14.0,y_c=7.0,rotation=90) -> "
         f"w={scalar.w}, h={scalar.h}, entries={len(scalar.entries)}, exits={len(scalar.exits)}"
     )
 
-    rot_vals = torch.randint(0, 4, (M,), device=device) * 90  # 0/90/180/270
-
-    t0 = time.perf_counter()
-    for i in range(M):
-        _ = geom.build_placement(x_c=float(x[i].item()) + 4.0, y_c=float(y[i].item()) + 2.0, rotation=int(rot_vals[i].item()))
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    t1 = time.perf_counter()
-
-    needed = {"entries", "exits", "min_x"}
-    t2 = time.perf_counter()
-    x_c_batch = x.to(torch.float32) + 4.0
-    y_c_batch = y.to(torch.float32) + 2.0
-    batch = geom.build_candidate_features(x_c=x_c_batch, y_c=y_c_batch, rotation=rot_vals, needed=needed)
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    t3 = time.perf_counter()
-
-    scalar_ms = (t1 - t0) * 1000.0
-    batch_ms = (t3 - t2) * 1000.0
-    print(
-        f"build_candidate_features(M={M}) -> "
-        f"entries={tuple(batch['entries'].shape)}, "
-        f"exits={tuple(batch['exits'].shape)}, "
-        f"min_x={tuple(batch['min_x'].shape)}"
+    # --- Mirrorable spec ---
+    geom_m = StaticSpec(
+        id="mirror_demo",
+        device=device,
+        width=8,
+        height=4,
+        entries_rel=[(0.0, 2.0)],
+        exits_rel=[(8.0, 2.0)],
+        clearance_left_rel=2,
+        clearance_right_rel=1,
+        clearance_bottom_rel=0,
+        clearance_top_rel=0,
+        mirrorable=True,
     )
-    print(f"build_placement loop: {scalar_ms:.2f} ms total, {scalar_ms / M:.4f} ms/elem")
-    print(f"build_candidate_features: {batch_ms:.2f} ms total, {batch_ms / M:.6f} ms/elem")
+    print(f"\nmirrorable: variants={len(geom_m._variants)}, unique_placeable={len(geom_m._unique_placeable)}")
+    for vi in geom_m._variants:
+        print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
+              f"clear=({vi.cL},{vi.cR},{vi.cB},{vi.cT})")
+    print("OK")

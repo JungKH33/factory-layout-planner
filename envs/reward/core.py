@@ -151,19 +151,26 @@ class RewardComposer:
             )
         return total
 
-    def delta(
+    def delta_batch(
         self,
         state: "EnvState",
-        action_space: "ActionSpace",
         *,
         gid: Optional["GroupId"] = None,
+        entries: Optional[torch.Tensor] = None,
+        exits: Optional[torch.Tensor] = None,
+        entries_mask: Optional[torch.Tensor] = None,
+        exits_mask: Optional[torch.Tensor] = None,
+        min_x: Optional[torch.Tensor] = None,
+        max_x: Optional[torch.Tensor] = None,
+        min_y: Optional[torch.Tensor] = None,
+        max_y: Optional[torch.Tensor] = None,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Compute incremental cost for each candidate in *action_space*.
+        """Compute incremental cost from keyword feature tensors.
 
-        The ``ActionSpace`` must have its geometric feature fields populated
-        (entries, exits, min_x, …) before calling this method.
+        Same logic as ``delta()`` but reads features from kwargs
+        instead of an ActionSpace object.
         """
         (
             placed_nodes,
@@ -174,20 +181,17 @@ class RewardComposer:
         ) = state.io_tensors()
         placed_count = len(placed_nodes)
         cur_min_x, cur_max_x, cur_min_y, cur_max_y = state.placed_bbox()
-        gid_eff = gid
-        if gid_eff is None:
-            raise ValueError("RewardComposer.delta requires explicit gid")
-        w_out, w_in = state.build_delta_flow_weights_for(gid_eff)
+        if gid is None:
+            raise ValueError("RewardComposer.delta_batch requires explicit gid")
+        w_out, w_in = state.build_delta_flow_weights_for(gid)
 
         m = 0
         device = placed_entries.device
-        for name in ("entries", "exits", "min_x", "max_x", "min_y", "max_y"):
-            t = getattr(action_space, name, None)
-            if t is None:
-                continue
-            m = int(t.shape[0])
-            device = t.device
-            break
+        for t in (entries, exits, min_x, max_x, min_y, max_y):
+            if t is not None:
+                m = int(t.shape[0])
+                device = t.device
+                break
 
         total = torch.zeros((m,), dtype=torch.float32, device=device)
         flow = self.components.get("flow", None)
@@ -195,11 +199,9 @@ class RewardComposer:
         area = self.components.get("area", None)
         grid_occ = self.components.get("grid_occupancy", None)
 
-        entries = action_space.entries
-        exits = action_space.exits
         if flow is not None or flow_collision is not None:
-            entries = _require(entries, "action_space.entries")
-            exits = _require(exits, "action_space.exits")
+            entries = _require(entries, "entries")
+            exits = _require(exits, "exits")
 
         if flow is not None:
             w = float(self.weights.get("flow", 1.0))
@@ -212,8 +214,8 @@ class RewardComposer:
                 w_in=w_in,
                 candidate_entries=entries,
                 candidate_exits=exits,
-                candidate_entries_mask=action_space.entries_mask,
-                candidate_exits_mask=action_space.exits_mask,
+                candidate_entries_mask=entries_mask,
+                candidate_exits_mask=exits_mask,
             )
         if flow_collision is not None:
             w = float(self.weights.get("flow_collision", 1.0))
@@ -226,20 +228,16 @@ class RewardComposer:
                 w_in=w_in,
                 candidate_entries=entries,
                 candidate_exits=exits,
-                candidate_entries_mask=action_space.entries_mask,
-                candidate_exits_mask=action_space.exits_mask,
+                candidate_entries_mask=entries_mask,
+                candidate_exits_mask=exits_mask,
                 route_blocked=route_blocked,
             )
 
-        min_x = action_space.min_x
-        max_x = action_space.max_x
-        min_y = action_space.min_y
-        max_y = action_space.max_y
         if area is not None or grid_occ is not None:
-            min_x = _require(min_x, "action_space.min_x")
-            max_x = _require(max_x, "action_space.max_x")
-            min_y = _require(min_y, "action_space.min_y")
-            max_y = _require(max_y, "action_space.max_y")
+            min_x = _require(min_x, "min_x")
+            max_x = _require(max_x, "max_x")
+            min_y = _require(min_y, "min_y")
+            max_y = _require(max_y, "max_y")
 
         if area is not None:
             w = float(self.weights.get("area", 1.0))
@@ -264,3 +262,31 @@ class RewardComposer:
                 candidate_max_y=max_y,
             )
         return total
+
+    def delta(
+        self,
+        state: "EnvState",
+        action_space: "ActionSpace",
+        *,
+        gid: Optional["GroupId"] = None,
+        route_blocked: Optional[torch.Tensor] = None,
+        placed_cell_occupied: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compute incremental cost for each candidate in *action_space*.
+
+        Delegates to ``delta_batch`` using ActionSpace fields.
+        """
+        return self.delta_batch(
+            state,
+            gid=gid,
+            entries=action_space.entries,
+            exits=action_space.exits,
+            entries_mask=action_space.entries_mask,
+            exits_mask=action_space.exits_mask,
+            min_x=action_space.min_x,
+            max_x=action_space.max_x,
+            min_y=action_space.min_y,
+            max_y=action_space.max_y,
+            route_blocked=route_blocked,
+            placed_cell_occupied=placed_cell_occupied,
+        )

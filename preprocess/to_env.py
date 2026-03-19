@@ -693,13 +693,8 @@ def validate_and_adjust_groups(
         state = env.get_state()
         for gid in env.get_state().remaining:
             g = env.group_specs[gid]
-            if g.rotatable:
-                mask0 = env.placeable_map(gid=gid, rotation=0)
-                mask1 = env.placeable_map(gid=gid, rotation=90)
-                count = int(mask0.sum().item()) + int(mask1.sum().item())
-            else:
-                mask0 = env.placeable_map(gid=gid, rotation=0)
-                count = int(mask0.sum().item())
+            combined = g.placeable_map(state=state, gid=gid)
+            count = int(combined.sum().item())
             
             if count == 0:
                 problematic_groups.append(gid)

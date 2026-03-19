@@ -8,30 +8,19 @@ from envs.action_space import ActionSpace
 from envs.env_loader import load_env
 
 
-def _score_poses(env, gid, x, y, rotation):
-    """Test helper: build ActionSpace from poses and score via engine."""
+def _score_poses(env, gid, x, y, rotation=None):
+    """Test helper: score center poses via spec.cost_batch."""
     spec = env.group_specs[gid]
-    needed = env.reward_required
-    x_t = x if torch.is_tensor(x) else torch.tensor([int(x)], dtype=torch.long, device=env.device)
-    y_t = y if torch.is_tensor(y) else torch.tensor([int(y)], dtype=torch.long, device=env.device)
-    o_t = rotation if torch.is_tensor(rotation) else torch.tensor([int(rotation)], dtype=torch.long, device=env.device)
-    x_t = x_t.to(dtype=torch.long, device=env.device).view(-1)
-    y_t = y_t.to(dtype=torch.long, device=env.device).view(-1)
-    o_t = o_t.to(dtype=torch.long, device=env.device).view(-1)
-    features = spec.build_candidate_features(x_bl=x_t, y_bl=y_t, rotation=o_t, needed=needed)
-    entries = features.get("entries", None)
-    exits = features.get("exits", None)
-    aspace = ActionSpace(
-        poses=torch.stack([x_t, y_t, o_t], dim=-1),
-        mask=torch.ones(x_t.shape[0], dtype=torch.bool, device=env.device),
-        gid=gid,
-        entries=entries, exits=exits,
-        entries_mask=torch.ones(entries.shape[:2], dtype=torch.bool, device=env.device) if entries is not None else None,
-        exits_mask=torch.ones(exits.shape[:2], dtype=torch.bool, device=env.device) if exits is not None else None,
-        min_x=features.get("min_x"), max_x=features.get("max_x"),
-        min_y=features.get("min_y"), max_y=features.get("max_y"),
+    x_t = x if torch.is_tensor(x) else torch.tensor([float(x)], dtype=torch.float32, device=env.device)
+    y_t = y if torch.is_tensor(y) else torch.tensor([float(y)], dtype=torch.float32, device=env.device)
+    x_t = x_t.to(dtype=torch.float32, device=env.device).view(-1)
+    y_t = y_t.to(dtype=torch.float32, device=env.device).view(-1)
+    poses = torch.stack([x_t, y_t], dim=-1)
+    return spec.cost_batch(
+        gid=gid, poses=poses,
+        state=env.get_state(),
+        reward=env.reward_composer,
     )
-    return env.delta_cost(gid, aspace)
 
 
 def visualize_placeable_map_small():

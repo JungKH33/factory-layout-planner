@@ -16,7 +16,6 @@ from .reward import (
 )
 from .placement.static import StaticSpec
 from .action import GroupId, EnvAction
-from .action_space import ActionSpace
 from .state import EnvState, FlowGraph, GridMaps
 
 # PlacementBase is defined in envs/base.py and imported above.
@@ -127,21 +126,8 @@ class FactoryLayoutEnv(gym.Env):
             sid = getattr(s, "id", gid)
             if sid != gid:
                 raise ValueError(f"group_specs key/id mismatch: key={gid!r}, spec.id={sid!r}")
-            out[gid] = StaticSpec(
-                device=self.device,
-                id=gid,
-                width=int(s.width),
-                height=int(s.height),
-                entries_rel=[(float(p[0]), float(p[1])) for p in list(s.entries_rel)],
-                exits_rel=[(float(p[0]), float(p[1])) for p in list(s.exits_rel)],
-                clearance_left_rel=int(s.clearance_left_rel),
-                clearance_right_rel=int(s.clearance_right_rel),
-                clearance_bottom_rel=int(s.clearance_bottom_rel),
-                clearance_top_rel=int(s.clearance_top_rel),
-                rotatable=bool(s.rotatable),
-                mirrorable=bool(getattr(s, "mirrorable", False)),
-                zone_values=dict(getattr(s, "zone_values", {}) or {}),
-            )
+            s.set_device(self.device)
+            out[gid] = s
         return out
 
     def _group_spec(self, gid: GroupId) -> StaticSpec:
@@ -215,19 +201,10 @@ class FactoryLayoutEnv(gym.Env):
                 pairs[(src_gid, dst_gid)] = (exit_xy, entry_xy)
         self._state.set_flow_port_pairs(pairs)
 
-    def delta_cost(self, gid: GroupId, action_space: ActionSpace) -> torch.Tensor:
-        """Score candidates in a geometry-populated ActionSpace.
-
-        Generic API — works with any placement type as long as
-        ActionSpace carries entries/exits/min/max geometry features.
-        Returns raw cost delta (lower = better).
-        """
-        return self._reward.delta(self._state, action_space, gid=gid).to(dtype=torch.float32)
-
     @property
-    def reward_required(self) -> set:
-        """Feature keys the reward backend needs (e.g. entries, exits, min_x, ...)."""
-        return set(self._reward.required())
+    def reward_composer(self) -> RewardComposer:
+        """Public access to the RewardComposer for direct delta_batch calls."""
+        return self._reward
 
     def _delta_cost_from_placements(
         self,
@@ -277,35 +254,13 @@ class FactoryLayoutEnv(gym.Env):
         min_y = torch.tensor([p.min_y for p in placements], dtype=torch.float32, device=self.device)
         max_y = torch.tensor([p.max_y for p in placements], dtype=torch.float32, device=self.device)
 
-        aspace = ActionSpace(
-            poses=poses,
-            mask=torch.ones((M,), dtype=torch.bool, device=self.device),
-            gid=gid,
+        return self._reward.delta_batch(
+            self._state, gid=gid,
             entries=entries, exits=exits,
             entries_mask=entries_mask, exits_mask=exits_mask,
             min_x=min_x, max_x=max_x,
             min_y=min_y, max_y=max_y,
-        )
-        return self.delta_cost(gid, aspace)
-
-    def placeable_map(self, *, gid: GroupId, rotation: int) -> torch.Tensor:
-        """Return placeable map (OR of mirror variants) for the given concrete rotation."""
-        spec = self.group_specs[gid]
-        geometries = spec.variant_geometries(int(rotation))
-        result = None
-        for body_w, body_h, cL, cR, cB, cT in geometries:
-            m = self._state.is_placeable_map(
-                gid=gid, body_w=body_w, body_h=body_h,
-                cL=cL, cR=cR, cB=cB, cT=cT,
-            )
-            if result is None:
-                result = m
-            else:
-                result = result | m
-        if result is None:
-            H, W = self.grid_height, self.grid_width
-            return torch.zeros((H, W), dtype=torch.bool, device=self.device)
-        return result
+        ).to(dtype=torch.float32)
 
     def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, float, float]:
         if not isinstance(action, EnvAction):
@@ -338,10 +293,6 @@ class FactoryLayoutEnv(gym.Env):
             score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
         )
         return gid, placement
-
-    def is_placeable(self, action: EnvAction) -> bool:
-        _gid, placement = self.resolve_action(action)
-        return placement is not None
 
     def _apply_resolved_placement(
         self,

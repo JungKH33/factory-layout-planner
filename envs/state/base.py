@@ -227,6 +227,25 @@ class EnvState:
             pad_rect=pad_rect,
         )
 
+    def is_placeable_batch(
+        self,
+        *,
+        gid: GroupId,
+        x_bl: torch.Tensor,
+        y_bl: torch.Tensor,
+        body_w: int,
+        body_h: int,
+        cL: int = 0,
+        cR: int = 0,
+        cB: int = 0,
+        cT: int = 0,
+    ) -> torch.Tensor:
+        return self.maps.is_placeable_batch(
+            gid=gid, x_bl=x_bl, y_bl=y_bl,
+            body_w=int(body_w), body_h=int(body_h),
+            cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
+        )
+
     def is_placeable_map(
         self,
         *,

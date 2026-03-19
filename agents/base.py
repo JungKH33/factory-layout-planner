@@ -126,59 +126,20 @@ class BaseAdapter(ABC):
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 
     def _score_poses(self, gid: GroupId, poses: torch.Tensor) -> torch.Tensor:
-        """Score candidate center poses by evaluating all (rotation, mirror) variants.
+        """Score candidate center poses — min delta cost across PLACEABLE variants.
 
         poses: [N, 2] float tensor of (x_c, y_c).
         Returns: [N] float32 — per-position minimum delta cost across all
-        rotation/mirror variants.
+        placeable rotation/mirror variants.  Positions with no placeable
+        variant get inf.
         """
         spec = self.engine.group_specs[gid]
-        needed = self.engine.reward_required
-        N = int(poses.shape[0])
-        if N == 0:
-            return torch.zeros((0,), dtype=torch.float32, device=self.device)
-
-        best = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
-        rotations = (0, 90, 180, 270) if spec.rotatable else (0,)
-        mirrors = (False, True) if spec.mirrorable else (False,)
-
-        for rot in rotations:
-            for m in mirrors:
-                rr = spec._resolve_rotation(rot)
-                features = spec.build_candidate_features(
-                    x_c=poses[:, 0], y_c=poses[:, 1],
-                    rotation=rr, mirror=m, needed=needed,
-                )
-                scores = self._features_to_delta(gid, poses, features)
-                best = torch.min(best, scores)
-
-        return best
-
-    def _features_to_delta(
-        self,
-        gid: GroupId,
-        poses: torch.Tensor,
-        features: dict,
-    ) -> torch.Tensor:
-        """Build ActionSpace from feature dict and return delta cost."""
-        entries = features.get("entries", None)
-        exits = features.get("exits", None)
-        entries_mask = None
-        exits_mask = None
-        if entries is not None:
-            entries_mask = torch.ones(entries.shape[:2], dtype=torch.bool, device=self.device)
-        if exits is not None:
-            exits_mask = torch.ones(exits.shape[:2], dtype=torch.bool, device=self.device)
-        aspace = ActionSpace(
-            poses=poses.to(dtype=torch.float32, device=self.device).view(-1, 2),
-            mask=torch.ones(poses.shape[0], dtype=torch.bool, device=self.device),
+        return spec.cost_batch(
             gid=gid,
-            entries=entries, exits=exits,
-            entries_mask=entries_mask, exits_mask=exits_mask,
-            min_x=features.get("min_x"), max_x=features.get("max_x"),
-            min_y=features.get("min_y"), max_y=features.get("max_y"),
+            poses=poses,
+            state=self.engine.get_state(),
+            reward=self.engine.reward_composer,
         )
-        return self.engine.delta_cost(gid, aspace)
 
     def build_action_space(self) -> ActionSpace:
         """Generate action_space from current engine state.

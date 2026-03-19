@@ -312,6 +312,43 @@ class GridMaps:
         )
         return (pad_hit == 0) & (body_hit == 0)
 
+    def is_placeable_batch(
+        self,
+        *,
+        gid: GroupId,
+        x_bl: torch.Tensor,
+        y_bl: torch.Tensor,
+        body_w: int,
+        body_h: int,
+        cL: int = 0,
+        cR: int = 0,
+        cB: int = 0,
+        cT: int = 0,
+    ) -> torch.Tensor:
+        """Vectorized placeability check. Returns [N] bool.
+
+        Computes full is_placeable_map and indexes into it.
+        """
+        bw = int(body_w)
+        bh = int(body_h)
+        cl = int(cL)
+        cr = int(cR)
+        cb = int(cB)
+        ct = int(cT)
+        H, W = self.shape
+
+        m = self.is_placeable_map(
+            gid=gid, body_w=bw, body_h=bh,
+            cL=cl, cR=cr, cB=cb, cT=ct,
+        )
+        in_bounds = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
+        xc = x_bl.clamp(0, max(0, W - 1))
+        yc = y_bl.clamp(0, max(0, H - 1))
+        result = torch.zeros_like(x_bl, dtype=torch.bool)
+        if in_bounds.any():
+            result[in_bounds] = m[yc[in_bounds], xc[in_bounds]]
+        return result
+
     def is_placeable_map(
         self,
         *,

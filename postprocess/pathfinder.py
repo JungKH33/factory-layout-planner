@@ -299,7 +299,8 @@ if __name__ == "__main__":
                 _w0, _h0 = _spec.rotated_size(0)
                 _x_c = float(x) + float(_w0) / 2.0
                 _y_c = float(y) + float(_h0) / 2.0
-                if not env.is_placeable(EnvAction(gid=gid, x_c=_x_c, y_c=_y_c)):
+                _gid_r, _pl_r = env.resolve_action(EnvAction(gid=gid, x_c=_x_c, y_c=_y_c))
+                if _pl_r is None:
                     continue
                 _obs, _reward, _terminated, _truncated, info = env.step_action(
                     EnvAction(gid=gid, x_c=_x_c, y_c=_y_c)

@@ -80,15 +80,15 @@ class MaskPlaceAdapter(BaseAdapter):
     def _create_mask_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
         """Return torch.BoolTensor[G*G] valid-action mask for a specific gid.
 
-        Since rotation is no longer part of the action, we check ALL valid
-        rotations and OR the results: a center cell is valid if the
-        facility can be placed there in *any* rotation.
+        Uses spec.placeable_batch which checks ALL rotation/mirror variants
+        and ORs the results: a center cell is valid if the facility can be
+        placed there in *any* variant.
         """
         if gid is None:
             return torch.zeros((self.grid * self.grid,), dtype=torch.bool, device=self.device)
 
-        group = self.engine.group_specs[gid]
-        rotations = (0, 90, 180, 270) if group.rotatable else (0,)
+        spec = self.engine.group_specs[gid]
+        state = self.engine.get_state()
         g = int(self.grid)
         cell_w, cell_h = self.cell_wh()
         ii = torch.arange(g, device=self.device).view(-1, 1).expand(g, g)
@@ -96,19 +96,11 @@ class MaskPlaceAdapter(BaseAdapter):
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
 
-        ok = torch.zeros((g, g), dtype=torch.bool, device=self.device)
-        for rotation in rotations:
-            valid_map = self._valid_top_left_body(gid=gid, rotation=rotation)
-            H, W = int(valid_map.shape[0]), int(valid_map.shape[1])
-            w, h = group.rotated_size(rotation)
-            w_i, h_i = int(w), int(h)
-            x_bl = torch.round(cx - (w_i / 2.0)).to(torch.long)
-            y_bl = torch.round(cy - (h_i / 2.0)).to(torch.long)
-            inside = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
-            ok_v = torch.zeros((g, g), dtype=torch.bool, device=self.device)
-            ok_v[inside] = valid_map[y_bl[inside], x_bl[inside]]
-            ok = ok | ok_v
-        return ok.reshape(-1)
+        ok = spec.placeable_batch(
+            state=state, gid=gid,
+            x_c=cx.reshape(-1), y_c=cy.reshape(-1),
+        )
+        return ok
 
     def _score_map_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
         """Return score map [G,G] for a specific gid using batch delta_cost (lower is better)."""
@@ -125,9 +117,6 @@ class MaskPlaceAdapter(BaseAdapter):
         poses = torch.stack([cx.reshape(-1), cy.reshape(-1)], dim=-1)  # [G*G, 2] float
         scores = self._score_poses(gid, poses).to(dtype=torch.float32)
         return scores.view(g, g)
-
-    def _valid_top_left_body(self, *, gid: GroupId, rotation: int) -> torch.Tensor:
-        return self.engine.placeable_map(gid=gid, rotation=int(rotation))
 
     def create_mask(self) -> torch.Tensor:
         gid = self._next_gid()
