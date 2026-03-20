@@ -344,19 +344,30 @@ def _draw_layout_layers(
             mc2.set_visible(False)
             misc_artists["clearance_mask"].append(mc2)
 
-    # placed rects/labels
+    # placed facilities (polygon-aware)
     for gid in engine.get_state().placed:
         p = engine.get_state().placements[gid]
-        rect = patches.Rectangle(
-            (float(p.x_bl), float(p.y_bl)),
-            float(p.w),
-            float(p.h),
-            linewidth=1.2,
-            edgecolor="black",
-            facecolor="orange",
-            alpha=0.6,
-        )
-        ax.add_patch(rect)
+        bp_abs = getattr(p, "body_polygon_abs", None)
+        if bp_abs:
+            patch = patches.Polygon(
+                bp_abs, closed=True,
+                linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
+            )
+            cp_abs = getattr(p, "clearance_polygon_abs", None)
+            if cp_abs:
+                cl_patch = patches.Polygon(
+                    cp_abs, closed=True,
+                    linewidth=0.8, edgecolor="#ff6b6b", facecolor="none",
+                    linestyle="--", alpha=0.5,
+                )
+                ax.add_patch(cl_patch)
+        else:
+            patch = patches.Rectangle(
+                (float(p.x_bl), float(p.y_bl)),
+                float(p.w), float(p.h),
+                linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
+            )
+        ax.add_patch(patch)
         ax.text(p.x_c, p.y_c, str(gid), ha="center", va="center", fontsize=8)
 
     # action_space (optional; caller may render their own)
@@ -766,16 +777,27 @@ def save_layout(
 
     for gid in engine.get_state().placed:
         p = engine.get_state().placements[gid]
-        rect = patches.Rectangle(
-            (float(p.x_bl), float(p.y_bl)),
-            float(p.w),
-            float(p.h),
-            linewidth=1.2,
-            edgecolor="black",
-            facecolor="orange",
-            alpha=0.6,
-        )
-        ax.add_patch(rect)
+        bp_abs = getattr(p, "body_polygon_abs", None)
+        if bp_abs:
+            patch = patches.Polygon(
+                bp_abs, closed=True,
+                linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
+            )
+            cp_abs = getattr(p, "clearance_polygon_abs", None)
+            if cp_abs:
+                cl_patch = patches.Polygon(
+                    cp_abs, closed=True,
+                    linewidth=0.8, edgecolor="#ff6b6b", facecolor="none",
+                    linestyle="--", alpha=0.5,
+                )
+                ax.add_patch(cl_patch)
+        else:
+            patch = patches.Rectangle(
+                (float(p.x_bl), float(p.y_bl)),
+                float(p.w), float(p.h),
+                linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
+            )
+        ax.add_patch(patch)
         ax.text(p.x_c, p.y_c, str(gid), ha="center", va="center", fontsize=8)
 
     if action_space is not None:
@@ -1068,19 +1090,16 @@ if __name__ == "__main__":
         "A": StaticRectSpec(
             device=dev, id="A", width=20, height=10,
             entries_rel=[(10.0, 5.0)], exits_rel=[(10.0, 5.0)],
-            clearance_left_rel=0, clearance_right_rel=0, clearance_bottom_rel=0, clearance_top_rel=0,
             rotatable=True, zone_values={"weight": 3.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
         "B": StaticRectSpec(
             device=dev, id="B", width=16, height=16,
             entries_rel=[(8.0, 8.0)], exits_rel=[(8.0, 8.0)],
-            clearance_left_rel=0, clearance_right_rel=0, clearance_bottom_rel=0, clearance_top_rel=0,
             rotatable=True, zone_values={"weight": 4.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
         "C": StaticRectSpec(
             device=dev, id="C", width=18, height=12,
             entries_rel=[(9.0, 6.0)], exits_rel=[(9.0, 6.0)],
-            clearance_left_rel=0, clearance_right_rel=0, clearance_bottom_rel=0, clearance_top_rel=0,
             rotatable=True, zone_values={"weight": 12.0, "height": 10.0, "dry": 2.0, "placeable": 1},
         ),
     }

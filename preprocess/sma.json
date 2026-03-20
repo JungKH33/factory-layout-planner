@@ -19,10 +19,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.5,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_height": 1,
       "_facility_count": 1,
       "_n_cols": 1,
@@ -48,10 +44,6 @@
       "ent_rel_y": 21.8,
       "exi_rel_x": 3.26,
       "exi_rel_y": 21.8,
-      "facility_clearance_left": 25,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -72,7 +64,13 @@
         "UR": 0.0,
         "UB": 0.0,
         "UA": 0.0
-      }
+      },
+      "clearance_lrtb": [
+        25,
+        0,
+        0,
+        0
+      ]
     },
     "FAC001176835130024879": {
       "width": 59.18,
@@ -82,10 +80,6 @@
       "ent_rel_y": 60.46,
       "exi_rel_x": 29.59,
       "exi_rel_y": -60.45,
-      "facility_clearance_left": 5,
-      "facility_clearance_right": 25,
-      "facility_clearance_bottom": 5,
-      "facility_clearance_top": 5,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -108,7 +102,13 @@
         "UR": 25.22,
         "UB": 5.0,
         "UA": 5.0
-      }
+      },
+      "clearance_lrtb": [
+        5,
+        25,
+        5,
+        5
+      ]
     },
     "FAC001176835130560383": {
       "width": 211.99,
@@ -118,10 +118,6 @@
       "ent_rel_y": -31.02,
       "exi_rel_x": 105.995,
       "exi_rel_y": -31.27,
-      "facility_clearance_left": 25,
-      "facility_clearance_right": 25,
-      "facility_clearance_bottom": 5,
-      "facility_clearance_top": 5,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -142,7 +138,13 @@
         "UR": 25.22,
         "UB": 5.0,
         "UA": 5.0
-      }
+      },
+      "clearance_lrtb": [
+        25,
+        25,
+        5,
+        5
+      ]
     },
     "FAC0011768351318869133": {
       "width": 585.0,
@@ -152,10 +154,6 @@
       "ent_rel_y": 16.325,
       "exi_rel_x": -9.42,
       "exi_rel_y": 16.325,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 15,
-      "facility_clearance_top": 25,
       "facility_height": 5,
       "facility_weight": 3,
       "allowed_areas": [
@@ -176,7 +174,13 @@
         "UR": 0.0,
         "UB": 15.0,
         "UA": 25.22
-      }
+      },
+      "clearance_lrtb": [
+        0,
+        0,
+        15,
+        25
+      ]
     },
     "FAC001176835133020782": {
       "width": 120.36,
@@ -186,10 +190,6 @@
       "ent_rel_y": -1.17,
       "exi_rel_x": -23.785,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 25,
-      "facility_clearance_right": 25,
-      "facility_clearance_bottom": 5,
-      "facility_clearance_top": 5,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -210,7 +210,13 @@
         "UR": 25.22,
         "UB": 5.0,
         "UA": 5.0
-      }
+      },
+      "clearance_lrtb": [
+        25,
+        25,
+        5,
+        5
+      ]
     },
     "FAC00317683513359952": {
       "width": 1.0,
@@ -220,10 +226,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.5,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_height": 1,
       "_facility_count": 1,
       "_n_cols": 1,
@@ -249,10 +251,6 @@
       "ent_rel_y": 60.46,
       "exi_rel_x": 32.255,
       "exi_rel_y": -60.45,
-      "facility_clearance_left": 5,
-      "facility_clearance_right": 25,
-      "facility_clearance_bottom": 5,
-      "facility_clearance_top": 5,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -273,7 +271,13 @@
         "UR": 25.22,
         "UB": 5.0,
         "UA": 5.0
-      }
+      },
+      "clearance_lrtb": [
+        5,
+        25,
+        5,
+        5
+      ]
     }
   },
   "flow": [

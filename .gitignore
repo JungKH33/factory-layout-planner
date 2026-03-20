@@ -1,6 +1,7 @@
 # === Project artifacts ===
 results/
 pretrained/
+records/
 
 # === Python bytecode ===
 __pycache__/
@@ -16,3 +17,4 @@ __pycache__/
 
 # === Claude ===
 .claude/
+

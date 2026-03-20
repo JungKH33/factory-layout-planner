@@ -19,10 +19,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": -140.0,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 25,
-      "facility_clearance_right": 25,
-      "facility_clearance_bottom": 17,
-      "facility_clearance_top": 17,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -43,7 +39,13 @@
         "UR": 25.14,
         "UB": 16.75,
         "UA": 16.75
-      }
+      },
+      "clearance_lrtb": [
+        25,
+        25,
+        17,
+        17
+      ]
     },
     "FAC0011759108435699135": {
       "width": 750.0,
@@ -53,10 +55,6 @@
       "ent_rel_y": -22.5,
       "exi_rel_x": 30.2,
       "exi_rel_y": -22.5,
-      "facility_clearance_left": 15,
-      "facility_clearance_right": 15,
-      "facility_clearance_bottom": 20,
-      "facility_clearance_top": 15,
       "facility_height": 4.5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -77,7 +75,13 @@
         "UR": 15.0,
         "UB": 19.63,
         "UA": 15.0
-      }
+      },
+      "clearance_lrtb": [
+        15,
+        15,
+        20,
+        15
+      ]
     },
     "FAC0011759108437107114": {
       "width": 1894.83,
@@ -87,10 +91,6 @@
       "ent_rel_y": -14.97,
       "exi_rel_x": 468.8,
       "exi_rel_y": 19.74,
-      "facility_clearance_left": 20,
-      "facility_clearance_right": 20,
-      "facility_clearance_bottom": 9,
-      "facility_clearance_top": 9,
       "facility_height": 4.5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -111,7 +111,13 @@
         "UR": 19.63,
         "UB": 15.0,
         "UA": 15.0
-      }
+      },
+      "clearance_lrtb": [
+        20,
+        20,
+        9,
+        9
+      ]
     },
     "FAC0011759108449210138": {
       "width": 112.45,
@@ -121,10 +127,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 56.225,
       "exi_rel_y": 12.75,
-      "facility_clearance_left": 12,
-      "facility_clearance_right": 10,
-      "facility_clearance_bottom": 4,
-      "facility_clearance_top": 3,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -145,7 +147,13 @@
         "UR": 24.71,
         "UB": 3.57,
         "UA": 3.1
-      }
+      },
+      "clearance_lrtb": [
+        12,
+        10,
+        4,
+        3
+      ]
     },
     "FAC0011759108481211130": {
       "width": 28.07,
@@ -155,10 +163,6 @@
       "ent_rel_y": -20.42,
       "exi_rel_x": -0.005,
       "exi_rel_y": 20.42,
-      "facility_clearance_left": 9,
-      "facility_clearance_right": 9,
-      "facility_clearance_bottom": 20,
-      "facility_clearance_top": 20,
       "facility_height": 5,
       "facility_weight": 3,
       "facility_dry": 35,
@@ -179,7 +183,13 @@
         "UR": 9.0,
         "UB": 19.63,
         "UA": 19.63
-      }
+      },
+      "clearance_lrtb": [
+        9,
+        9,
+        20,
+        20
+      ]
     },
     "FAC002217591084738371": {
       "width": 45.6,
@@ -189,10 +199,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.0,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_weight": 0,
       "facility_dry": 35,
       "allowed_areas": [
@@ -222,10 +228,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.0,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_weight": 0,
       "facility_dry": 35,
       "allowed_areas": [
@@ -255,10 +257,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.5,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_height": 1,
       "_facility_count": 1,
       "_n_cols": 1,
@@ -284,10 +282,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.5,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_height": 1,
       "_facility_count": 1,
       "_n_cols": 1,
@@ -313,10 +307,6 @@
       "ent_rel_y": 0.0,
       "exi_rel_x": 0.5,
       "exi_rel_y": 0.0,
-      "facility_clearance_left": 0,
-      "facility_clearance_right": 0,
-      "facility_clearance_bottom": 0,
-      "facility_clearance_top": 0,
       "facility_height": 1,
       "_facility_count": 1,
       "_n_cols": 1,

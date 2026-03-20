@@ -83,6 +83,25 @@ def load_env(
         if not isinstance(zone_values_raw, dict):
             raise ValueError(f"groups.{gid}.zone_values must be an object")
 
+        # --- clearance: unified parsing (priority: polygon > lrtb > uniform) ---
+        clearance_kwargs: Dict[str, Any] = {}
+        irregular_kwargs: Dict[str, Any] = {}
+        cl_polygon_raw = g.get("clearance_polygon")
+        cl_lrtb_raw = g.get("clearance_lrtb")
+        cl_uniform_raw = g.get("clearance")
+        if cl_polygon_raw is not None:
+            irregular_kwargs["clearance_polygon"] = [
+                (float(p[0]), float(p[1])) for p in cl_polygon_raw
+            ]
+        if cl_lrtb_raw is not None:
+            clearance_kwargs["clearance_lrtb_rel"] = (
+                _to_int(cl_lrtb_raw[0]), _to_int(cl_lrtb_raw[1]),
+                _to_int(cl_lrtb_raw[2]), _to_int(cl_lrtb_raw[3]),
+            )
+        elif cl_uniform_raw is not None:
+            n = _to_int(cl_uniform_raw)
+            clearance_kwargs["clearance_lrtb_rel"] = (n, n, n, n)
+
         common_kwargs = dict(
             device=dev,
             id=gid,
@@ -95,33 +114,21 @@ def load_env(
             zone_values=dict(zone_values_raw),
             _entry_port_mode=str(g.get("entry_port_mode", "min")),
             _exit_port_mode=str(g.get("exit_port_mode", "min")),
+            **clearance_kwargs,
         )
 
         group_type = str(g.get("type", "rect")).lower()
         if group_type == "rect":
-            group_specs[gid] = StaticRectSpec(
-                **common_kwargs,
-                clearance_left_rel=_to_int(g.get("facility_clearance_left", 0)),
-                clearance_right_rel=_to_int(g.get("facility_clearance_right", 0)),
-                clearance_bottom_rel=_to_int(g.get("facility_clearance_bottom", 0)),
-                clearance_top_rel=_to_int(g.get("facility_clearance_top", 0)),
-            )
+            group_specs[gid] = StaticRectSpec(**common_kwargs)
         elif group_type == "irregular":
-            body_map_raw = g.get("body_map")
-            if body_map_raw is None:
-                raise ValueError(f"groups.{gid}: type='irregular' requires a 'body_map' field")
-            body_t = torch.as_tensor(body_map_raw, dtype=torch.bool, device=dev)
-            clearance_map_raw = g.get("clearance_map")
-            clearance_kwargs: Dict[str, Any] = dict(body_map_canonical=body_t)
-            if clearance_map_raw is not None:
-                clearance_kwargs["clearance_map_canonical"] = torch.as_tensor(
-                    clearance_map_raw, dtype=torch.bool, device=dev,
-                )
-                co_raw = g.get("clearance_origin", [0, 0])
-                clearance_kwargs["clearance_origin_canonical"] = (int(co_raw[0]), int(co_raw[1]))
+            body_polygon_raw = g.get("body_polygon")
+            if body_polygon_raw is None:
+                raise ValueError(f"groups.{gid}: type='irregular' requires a 'body_polygon' field")
+            body_polygon = [(float(p[0]), float(p[1])) for p in body_polygon_raw]
             group_specs[gid] = StaticIrregularSpec(
                 **common_kwargs,
-                **clearance_kwargs,
+                **irregular_kwargs,
+                body_polygon=body_polygon,
             )
         else:
             raise ValueError(f"groups.{gid}: unknown type {group_type!r} (expected 'rect' or 'irregular')")

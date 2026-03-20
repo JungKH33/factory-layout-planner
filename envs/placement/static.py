@@ -70,6 +70,8 @@ class StaticIrregularPlacement(GroupPlacement):
     w: float
     h: float
     mirror: bool = False
+    body_polygon_abs: Optional[List[Tuple[float, float]]] = None
+    clearance_polygon_abs: Optional[List[Tuple[float, float]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +106,7 @@ class StaticSpec(GroupSpec):
     zone_values: Dict[str, Any] = field(default_factory=dict)
     _entry_port_mode: str = "min"
     _exit_port_mode: str = "min"
+    clearance_lrtb_rel: Optional[Tuple[int, int, int, int]] = None
 
     # ----- variant storage (populated by _store_variants) -----
 
@@ -169,6 +172,60 @@ class StaticSpec(GroupSpec):
         r = self._resolve_rotation(rotation)
         w, h = self._rotated_size(r)
         return int(w), int(h)
+
+    # ----- clearance helpers -----
+
+    def _clearance_lrtb_for_variant(self, rotation: int, *, mirror: bool = False) -> Tuple[int, int, int, int]:
+        """Return (L, R, B, T) clearance for a given rotation/mirror of the canonical LRTB."""
+        r = self._resolve_rotation(rotation)
+        if self.clearance_lrtb_rel is not None:
+            cL, cR, cB, cT = (int(self.clearance_lrtb_rel[0]), int(self.clearance_lrtb_rel[1]),
+                               int(self.clearance_lrtb_rel[2]), int(self.clearance_lrtb_rel[3]))
+        else:
+            cL = cR = cB = cT = 0
+        if bool(mirror):
+            cL, cR = cR, cL
+        if r == 90:
+            return (cB, cT, cR, cL)
+        if r == 180:
+            return (cR, cL, cT, cB)
+        if r == 270:
+            return (cT, cB, cL, cR)
+        return (cL, cR, cB, cT)
+
+    @staticmethod
+    def _dilate_body_map(
+        body_map: torch.Tensor,
+        L: int, R: int, B: int, T: int,
+    ) -> Tuple[torch.Tensor, Tuple[int, int]]:
+        """Dilate body_map by (L, R, B, T) cells.
+
+        Returns ``(clearance_map, clearance_origin)`` where
+        *clearance_origin* = ``(L, B)`` is the offset of the body BL
+        inside the clearance_map.
+        """
+        if L == 0 and R == 0 and B == 0 and T == 0:
+            return body_map.clone(), (0, 0)
+        bH, bW = int(body_map.shape[0]), int(body_map.shape[1])
+        cH = bH + B + T
+        cW = bW + L + R
+        clearance = torch.zeros((cH, cW), dtype=torch.bool, device=body_map.device)
+        ys, xs = torch.nonzero(body_map, as_tuple=True)
+        for yv, xv in zip(ys.tolist(), xs.tolist()):
+            r0 = int(yv)
+            r1 = int(yv) + B + T + 1
+            c0 = int(xv)
+            c1 = int(xv) + L + R + 1
+            clearance[r0:r1, c0:c1] = True
+        return clearance, (L, B)
+
+    def _resolve_clearance(self, body_map: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
+        """Compute ``(clearance_map, clearance_origin)`` from clearance fields."""
+        if self.clearance_lrtb_rel is not None:
+            L, R, B, T = (int(self.clearance_lrtb_rel[0]), int(self.clearance_lrtb_rel[1]),
+                          int(self.clearance_lrtb_rel[2]), int(self.clearance_lrtb_rel[3]))
+            return self._dilate_body_map(body_map, L, R, B, T)
+        return body_map.clone(), (0, 0)
 
     # ----- port coordinate helpers -----
 
@@ -530,29 +587,6 @@ class StaticSpec(GroupSpec):
 class StaticRectSpec(StaticSpec):
     """Static rectangular facility spec."""
 
-    clearance_left_rel: int = 0
-    clearance_right_rel: int = 0
-    clearance_bottom_rel: int = 0
-    clearance_top_rel: int = 0
-
-    def _clearance_lrtb(self, rotation: int, *, mirror: bool = False) -> Tuple[int, int, int, int]:
-        r = self._resolve_rotation(rotation)
-        cL, cR, cB, cT = (
-            int(self.clearance_left_rel),
-            int(self.clearance_right_rel),
-            int(self.clearance_bottom_rel),
-            int(self.clearance_top_rel),
-        )
-        if bool(mirror):
-            cL, cR = cR, cL
-        if r == 90:
-            return (cB, cT, cR, cL)
-        if r == 180:
-            return (cR, cL, cT, cB)
-        if r == 270:
-            return (cT, cB, cL, cR)
-        return (cL, cR, cB, cT)
-
     def __post_init__(self) -> None:
         _valid_modes = ("min", "mean")
         if self._entry_port_mode not in _valid_modes:
@@ -594,7 +628,7 @@ class StaticRectSpec(StaticSpec):
                 raw_variant_count += 1
                 w, h = self._rotated_size(rr)
                 body_w, body_h = int(w), int(h)
-                cL, cR, cB, cT = self._clearance_lrtb(rr, mirror=m)
+                cL, cR, cB, cT = self._clearance_lrtb_for_variant(rr, mirror=m)
                 eo_t, xo_t = self._compute_port_offsets(rr, m)
 
                 body_map = torch.ones((body_h, body_w), dtype=torch.bool, device=self.device)
@@ -684,7 +718,7 @@ class StaticRectSpec(StaticSpec):
         y_c_s = float(y_bl) + h / 2.0
         entries = list(self._entries_from_center(x_c_s, y_c_s, r, mirror=mirror))
         exits = list(self._exits_from_center(x_c_s, y_c_s, r, mirror=mirror))
-        cL, cR, cB, cT = self._clearance_lrtb(r, mirror=mirror)
+        cL, cR, cB, cT = self._clearance_lrtb_for_variant(r, mirror=mirror)
         body_map = torch.ones((int(h), int(w)), dtype=torch.bool, device=self.device)
         clearance_map = torch.ones(
             (int(h) + int(cB) + int(cT), int(w) + int(cL) + int(cR)),
@@ -712,18 +746,21 @@ class StaticRectSpec(StaticSpec):
 
 @dataclass
 class StaticIrregularSpec(StaticSpec):
-    """Static irregular facility spec backed by a canonical occupancy mask.
+    """Static irregular facility spec backed by polygon definitions.
 
-    Clearance is defined directly via ``clearance_map_canonical`` (a 2-D boolean
-    tensor that is >= body_map in size).  ``clearance_origin_canonical`` is the
-    (x, y) offset where the body sits inside the clearance map.  If
-    ``clearance_map_canonical`` is *None*, clearance equals the body (no extra
-    clearance zone).
+    ``body_polygon`` is the list of (x, y) vertices in body-local BL coords.
+    ``clearance_polygon`` optionally defines the clearance outline in the
+    same coordinate system (may extend to negative coords).  When *None*,
+    ``clearance_lrtb_rel`` from the base class is used
+    to auto-generate the clearance map via dilation.
     """
 
-    body_map_canonical: Any = None
-    clearance_map_canonical: Any = None
-    clearance_origin_canonical: Tuple[int, int] = (0, 0)
+    body_polygon: List[Tuple[float, float]] = field(default_factory=list)
+    clearance_polygon: Optional[List[Tuple[float, float]]] = None
+
+    body_map_canonical: Any = field(init=False, default=None, repr=False)
+    clearance_map_canonical: Any = field(init=False, default=None, repr=False)
+    clearance_origin_canonical: Tuple[int, int] = field(init=False, default=(0, 0), repr=False)
 
     def __post_init__(self) -> None:
         _valid_modes = ("min", "mean")
@@ -731,46 +768,156 @@ class StaticIrregularSpec(StaticSpec):
             raise ValueError(f"entry_port_mode must be one of {_valid_modes}, got {self._entry_port_mode!r}")
         if self._exit_port_mode not in _valid_modes:
             raise ValueError(f"exit_port_mode must be one of {_valid_modes}, got {self._exit_port_mode!r}")
-        self.width = int(self.width)
-        self.height = int(self.height)
+
+        if not self.body_polygon:
+            raise ValueError(f"StaticIrregularSpec {self.id!r} requires a non-empty body_polygon")
+
+        canonical = self._rasterize_polygon(self.body_polygon, self.device)
+        self.body_map_canonical = canonical
+        self.height = int(canonical.shape[0])
+        self.width = int(canonical.shape[1])
         if self.width <= 0 or self.height <= 0:
             raise ValueError(
-                f"StaticIrregularSpec {self.id!r} must have positive width/height, "
-                f"got width={self.width}, height={self.height}"
+                f"StaticIrregularSpec {self.id!r} body_polygon rasterized to empty map "
+                f"({self.height}x{self.width})"
             )
 
-        canonical = self._coerce_body_map(self.body_map_canonical)
-        if int(canonical.shape[1]) != self.width or int(canonical.shape[0]) != self.height:
-            raise ValueError(
-                f"StaticIrregularSpec {self.id!r} body_map shape must match "
-                f"(height={self.height}, width={self.width}), got {tuple(canonical.shape)!r}"
-            )
-        self.body_map_canonical = canonical
-
-        if self.clearance_map_canonical is None:
-            self.clearance_map_canonical = canonical.clone()
-            self.clearance_origin_canonical = (0, 0)
-        else:
-            cm = self._coerce_body_map(self.clearance_map_canonical)
+        if self.clearance_polygon is not None:
+            cm, co = self._rasterize_clearance_polygon(
+                self.clearance_polygon, self.body_polygon, self.device)
             self.clearance_map_canonical = cm
-            ox, oy = int(self.clearance_origin_canonical[0]), int(self.clearance_origin_canonical[1])
-            self.clearance_origin_canonical = (ox, oy)
-            cH, cW = int(cm.shape[0]), int(cm.shape[1])
-            bH, bW = self.height, self.width
-            if cH < bH or cW < bW:
-                raise ValueError(
-                    f"StaticIrregularSpec {self.id!r} clearance_map ({cH}x{cW}) must be "
-                    f">= body_map ({bH}x{bW})"
-                )
-            if ox < 0 or oy < 0 or ox + bW > cW or oy + bH > cH:
-                raise ValueError(
-                    f"StaticIrregularSpec {self.id!r} body does not fit inside clearance_map "
-                    f"at origin ({ox},{oy})"
-                )
+            self.clearance_origin_canonical = co
+        else:
+            cm, co = self._resolve_clearance(canonical)
+            self.clearance_map_canonical = cm
+            self.clearance_origin_canonical = co
+
+        cH, cW = int(self.clearance_map_canonical.shape[0]), int(self.clearance_map_canonical.shape[1])
+        bH, bW = self.height, self.width
+        ox, oy = self.clearance_origin_canonical
+        if cH < bH or cW < bW:
+            raise ValueError(
+                f"StaticIrregularSpec {self.id!r} clearance_map ({cH}x{cW}) must be "
+                f">= body_map ({bH}x{bW})"
+            )
+        if ox < 0 or oy < 0 or ox + bW > cW or oy + bH > cH:
+            raise ValueError(
+                f"StaticIrregularSpec {self.id!r} body does not fit inside clearance_map "
+                f"at origin ({ox},{oy})"
+            )
 
         self._validate_body_bbox()
         self._validate_ports()
         self._build_variants()
+
+    # ----- rasterisation helpers -----
+
+    @staticmethod
+    def _rasterize_polygon(
+        vertices: List[Tuple[float, float]],
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Rasterize a closed polygon to a ``bool[H, W]`` tensor.
+
+        Vertices are in local BL coordinates.  The polygon's bounding box
+        (snapped to integer grid) determines the tensor dimensions.  Cell
+        ``(y, x)`` is ``True`` when its center ``(x+0.5, y+0.5)`` lies
+        inside the polygon.
+        """
+        import numpy as np
+        from matplotlib.path import Path as MplPath
+
+        verts = np.asarray(vertices, dtype=np.float64)
+        x_min, y_min = float(verts[:, 0].min()), float(verts[:, 1].min())
+        x_max, y_max = float(verts[:, 0].max()), float(verts[:, 1].max())
+
+        W = int(round(x_max - x_min))
+        H = int(round(y_max - y_min))
+        if W <= 0 or H <= 0:
+            raise ValueError(f"polygon bbox must have positive area, got W={W}, H={H}")
+
+        shifted = verts - np.array([x_min, y_min])
+        cx = np.arange(W, dtype=np.float64) + 0.5
+        cy = np.arange(H, dtype=np.float64) + 0.5
+        gx, gy = np.meshgrid(cx, cy)
+        pts = np.column_stack([gx.ravel(), gy.ravel()])
+        mask = MplPath(shifted).contains_points(pts).reshape(H, W)
+        return torch.as_tensor(mask, dtype=torch.bool, device=device).contiguous()
+
+    @staticmethod
+    def _rasterize_clearance_polygon(
+        clearance_vertices: List[Tuple[float, float]],
+        body_vertices: List[Tuple[float, float]],
+        device: torch.device,
+    ) -> Tuple[torch.Tensor, Tuple[int, int]]:
+        """Rasterize clearance polygon and compute clearance_origin.
+
+        Both polygons share the same body-local coordinate system.
+        ``clearance_origin`` is the offset of the body BL ``(0,0)``
+        inside the clearance_map.
+        """
+        import numpy as np
+        from matplotlib.path import Path as MplPath
+
+        cverts = np.asarray(clearance_vertices, dtype=np.float64)
+        bverts = np.asarray(body_vertices, dtype=np.float64)
+        cx_min, cy_min = float(cverts[:, 0].min()), float(cverts[:, 1].min())
+        cx_max, cy_max = float(cverts[:, 0].max()), float(cverts[:, 1].max())
+        bx_min, by_min = float(bverts[:, 0].min()), float(bverts[:, 1].min())
+
+        cW = int(round(cx_max - cx_min))
+        cH = int(round(cy_max - cy_min))
+        if cW <= 0 or cH <= 0:
+            raise ValueError(f"clearance polygon bbox must have positive area, got W={cW}, H={cH}")
+
+        shifted = cverts - np.array([cx_min, cy_min])
+        px = np.arange(cW, dtype=np.float64) + 0.5
+        py = np.arange(cH, dtype=np.float64) + 0.5
+        gx, gy = np.meshgrid(px, py)
+        pts = np.column_stack([gx.ravel(), gy.ravel()])
+        mask = MplPath(shifted).contains_points(pts).reshape(cH, cW)
+        clearance_map = torch.as_tensor(mask, dtype=torch.bool, device=device).contiguous()
+
+        ox = int(round(bx_min - cx_min))
+        oy = int(round(by_min - cy_min))
+        return clearance_map, (ox, oy)
+
+    @staticmethod
+    def _transform_polygon_to_world(
+        polygon: List[Tuple[float, float]],
+        x_bl: float,
+        y_bl: float,
+        rotation: int,
+        mirror: bool,
+        body_w: int,
+        body_h: int,
+    ) -> List[Tuple[float, float]]:
+        """Transform canonical polygon vertices to world coordinates."""
+        half_w = body_w / 2.0
+        half_h = body_h / 2.0
+        r = rotation % 360
+        if r in (90, 270):
+            rw, rh = float(body_h), float(body_w)
+        else:
+            rw, rh = float(body_w), float(body_h)
+        cx = x_bl + rw / 2.0
+        cy = y_bl + rh / 2.0
+        result: List[Tuple[float, float]] = []
+        for px, py in polygon:
+            dx = px - half_w
+            dy = py - half_h
+            if mirror:
+                dx = -dx
+            if r == 90:
+                dx, dy = dy, -dx
+            elif r == 180:
+                dx, dy = -dx, -dy
+            elif r == 270:
+                dx, dy = -dy, dx
+            result.append((cx + dx, cy + dy))
+        return result
+
+    # ----- properties / device migration -----
 
     @property
     def body_area(self) -> float:
@@ -783,6 +930,8 @@ class StaticIrregularSpec(StaticSpec):
         self.body_map_canonical = self.body_map_canonical.to(device=device, dtype=torch.bool)
         self.clearance_map_canonical = self.clearance_map_canonical.to(device=device, dtype=torch.bool)
         super().set_device(device)
+
+    # ----- placement builders -----
 
     def _make_placement(
         self,
@@ -800,6 +949,12 @@ class StaticIrregularSpec(StaticSpec):
         exits = list(self._exits_from_center(x_c_s, y_c_s, vi.rotation, mirror=vi.mirror))
         w = float(vi.body_w)
         h = float(vi.body_h)
+        bp_abs = (self._transform_polygon_to_world(
+            self.body_polygon, x_bl, y_bl, vi.rotation, vi.mirror,
+            self.width, self.height) if self.body_polygon else None)
+        cp_abs = (self._transform_polygon_to_world(
+            self.clearance_polygon, x_bl, y_bl, vi.rotation, vi.mirror,
+            self.width, self.height) if self.clearance_polygon else None)
         return StaticIrregularPlacement(
             x_c=x_c_s, y_c=y_c_s,
             entries=entries, exits=exits,
@@ -811,6 +966,8 @@ class StaticIrregularSpec(StaticSpec):
             x_bl=x_bl, y_bl=y_bl, rotation=vi.rotation,
             w=w, h=h,
             mirror=vi.mirror,
+            body_polygon_abs=bp_abs,
+            clearance_polygon_abs=cp_abs,
         )
 
     def build_placement(
@@ -830,6 +987,12 @@ class StaticIrregularSpec(StaticSpec):
         x_c_s = float(x_bl) + w / 2.0
         y_c_s = float(y_bl) + h / 2.0
         body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
+        bp_abs = (self._transform_polygon_to_world(
+            self.body_polygon, x_bl, y_bl, r, mirror,
+            self.width, self.height) if self.body_polygon else None)
+        cp_abs = (self._transform_polygon_to_world(
+            self.clearance_polygon, x_bl, y_bl, r, mirror,
+            self.width, self.height) if self.clearance_polygon else None)
         return StaticIrregularPlacement(
             x_c=x_c_s, y_c=y_c_s,
             entries=list(self._entries_from_center(x_c_s, y_c_s, r, mirror=mirror)),
@@ -842,6 +1005,8 @@ class StaticIrregularSpec(StaticSpec):
             x_bl=x_bl, y_bl=y_bl, rotation=int(r),
             w=w, h=h,
             mirror=bool(mirror),
+            body_polygon_abs=bp_abs,
+            clearance_polygon_abs=cp_abs,
         )
 
     def _variant_for_pose(self, rotation: int, *, mirror: bool) -> VariantInfo:
@@ -1024,10 +1189,7 @@ if __name__ == "__main__":
         height=4,
         entries_rel=[(0.0, 2.0), (8.0, 2.0)],
         exits_rel=[(4.0, 4.0)],
-        clearance_left_rel=1,
-        clearance_right_rel=1,
-        clearance_bottom_rel=0,
-        clearance_top_rel=0,
+        clearance_lrtb_rel=(1, 1, 0, 0),
     )
     print(f"variants={len(geom._variants)}, unique_shapes={len(geom._variants_by_shape)}")
     for vi in geom._variants:
@@ -1041,19 +1203,7 @@ if __name__ == "__main__":
         f"w={scalar.w}, h={scalar.h}, entries={len(scalar.entries)}, exits={len(scalar.exits)}"
     )
 
-    # --- Irregular demo ---
-    body = torch.zeros((4, 6), dtype=torch.bool, device=device)
-    body[0:2, :] = True
-    body[2:4, 0:2] = True
-    # Build clearance_map with 1-cell padding around each occupied cell
-    bH, bW = 4, 6
-    cL, cR, cB, cT = 1, 1, 1, 1
-    clear_h, clear_w = bH + cB + cT, bW + cL + cR
-    clearance = torch.zeros((clear_h, clear_w), dtype=torch.bool, device=device)
-    ys, xs = torch.nonzero(body, as_tuple=True)
-    for x, y in zip(xs.tolist(), ys.tolist()):
-        clearance[y : y + cB + cT + 1, x : x + cL + cR + 1] = True
-
+    # --- Irregular demo (L-shape via polygon + auto clearance) ---
     irr = StaticIrregularSpec(
         id="L_demo",
         device=device,
@@ -1061,9 +1211,8 @@ if __name__ == "__main__":
         height=4,
         entries_rel=[(0.0, 1.0)],
         exits_rel=[(6.0, 1.0)],
-        body_map_canonical=body,
-        clearance_map_canonical=clearance,
-        clearance_origin_canonical=(cL, cB),
+        body_polygon=[(0, 0), (6, 0), (6, 2), (2, 2), (2, 4), (0, 4)],
+        clearance_lrtb_rel=(1, 1, 1, 1),
     )
     print(f"\nirregular variants={len(irr._variants)}, unique_shapes={len(irr._variants_by_shape)}")
     for vi in irr._variants:
@@ -1071,4 +1220,5 @@ if __name__ == "__main__":
               f"rect={vi.is_rectangular} origin={vi.clearance_origin}")
     ip = irr.build_placement(x_c=20.0, y_c=10.0, rotation=0)
     print(f"  build_placement -> w={ip.w}, h={ip.h}, body_map={tuple(ip.body_map.shape)}")
+    print(f"  body_polygon_abs={ip.body_polygon_abs}")
     print("OK")

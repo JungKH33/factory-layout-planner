@@ -389,10 +389,12 @@ def build_groups(
             "exi_rel_x": exi_rel_x / scale,
             "exi_rel_y": exi_rel_y / scale,
             # Clearance (scaled, with buffer applied)
-            "facility_clearance_left": int(round(cluster_UL / scale)),
-            "facility_clearance_right": int(round(cluster_UR / scale)),
-            "facility_clearance_bottom": int(round(cluster_UB / scale)),
-            "facility_clearance_top": int(round(cluster_UA / scale)),
+            "clearance_lrtb": [
+                int(round(cluster_UL / scale)),
+                int(round(cluster_UR / scale)),
+                int(round(cluster_UB / scale)),
+                int(round(cluster_UA / scale)),
+            ],
         }
         
         # Generic zone values.
@@ -640,10 +642,12 @@ def recalculate_group_size(
     group["height"] = new_height / scale
     group["_n_cols"] = n_cols
     group["_n_rows"] = n_rows
-    group["facility_clearance_left"] = int(round(cluster_UL / scale))
-    group["facility_clearance_right"] = int(round(cluster_UR / scale))
-    group["facility_clearance_bottom"] = int(round(cluster_UB / scale))
-    group["facility_clearance_top"] = int(round(cluster_UA / scale))
+    group["clearance_lrtb"] = [
+        int(round(cluster_UL / scale)),
+        int(round(cluster_UR / scale)),
+        int(round(cluster_UB / scale)),
+        int(round(cluster_UA / scale)),
+    ]
     
     return old_size, new_size
 

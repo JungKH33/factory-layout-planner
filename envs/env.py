@@ -404,10 +404,10 @@ class FactoryLayoutEnv(gym.Env):
                 "width": float(s.width),
                 "height": float(s.height),
                 "rotatable": bool(s.rotatable),
-                "clearance_left": float(getattr(s, "clearance_left_rel", 0)),
-                "clearance_right": float(getattr(s, "clearance_right_rel", 0)),
-                "clearance_bottom": float(getattr(s, "clearance_bottom_rel", 0)),
-                "clearance_top": float(getattr(s, "clearance_top_rel", 0)),
+                "clearance_left": float(s.clearance_lrtb_rel[0]) if s.clearance_lrtb_rel else 0.0,
+                "clearance_right": float(s.clearance_lrtb_rel[1]) if s.clearance_lrtb_rel else 0.0,
+                "clearance_bottom": float(s.clearance_lrtb_rel[2]) if s.clearance_lrtb_rel else 0.0,
+                "clearance_top": float(s.clearance_lrtb_rel[3]) if s.clearance_lrtb_rel else 0.0,
                 "ent_rel_x": float(ent0[0]),
                 "ent_rel_y": float(ent0[1]),
                 "exi_rel_x": float(ex0[0]),
@@ -623,8 +623,7 @@ if __name__ == "__main__":
             device=dev, id="A", width=20, height=10,
             entries_rel=[(0.0, 3.0), (0.0, 7.0)],      # 왼쪽 끝 상·하
             exits_rel=[(20.0, 5.0), (10.0, 10.0)],     # 오른쪽 끝 중간, 위쪽 끝 중간
-            clearance_left_rel=1, clearance_right_rel=1,
-            clearance_bottom_rel=0, clearance_top_rel=0,
+            clearance_lrtb_rel=(1, 1, 0, 0),
             rotatable=True,
             zone_values={"weight": 3.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
@@ -632,8 +631,7 @@ if __name__ == "__main__":
             device=dev, id="B", width=15, height=15,
             entries_rel=[(0.0, 5.0), (0.0, 10.0)],     # 왼쪽 끝 하·상
             exits_rel=[(15.0, 7.5), (7.5, 0.0)],       # 오른쪽 끝 중간, 아래쪽 끝 중간
-            clearance_left_rel=1, clearance_right_rel=1,
-            clearance_bottom_rel=0, clearance_top_rel=0,
+            clearance_lrtb_rel=(1, 1, 0, 0),
             rotatable=True,
             zone_values={"weight": 4.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
@@ -641,8 +639,6 @@ if __name__ == "__main__":
             device=dev, id="C", width=18, height=12,
             entries_rel=[(0.0, 4.0), (0.0, 8.0), (9.0, 12.0)],  # 왼쪽 끝 하·상, 위쪽 끝 중간
             exits_rel=[(18.0, 4.0), (18.0, 8.0)],                # 오른쪽 끝 하·상
-            clearance_left_rel=0, clearance_right_rel=0,
-            clearance_bottom_rel=0, clearance_top_rel=0,
             rotatable=True,
             zone_values={"weight": 12.0, "height": 10.0, "dry": 2.0, "placeable": 1},
         ),

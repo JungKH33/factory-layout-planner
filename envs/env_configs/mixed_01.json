@@ -1,0 +1,380 @@
+{
+  "grid": {
+    "width": 400,
+    "height": 400,
+    "grid_size": 1.0
+  },
+  "env": {
+    "log": true
+  },
+  "groups": {
+    "A": {
+      "type": "rect",
+      "width": 60,
+      "height": 40,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          0,
+          20
+        ]
+      ],
+      "exits_rel": [
+        [
+          60,
+          20
+        ]
+      ],
+      "clearance_lrtb": [
+        20,
+        20,
+        10,
+        10
+      ]
+    },
+    "B": {
+      "type": "rect",
+      "width": 50,
+      "height": 50,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          25,
+          0
+        ]
+      ],
+      "exits_rel": [
+        [
+          25,
+          50
+        ]
+      ],
+      "clearance": 10
+    },
+    "C": {
+      "type": "irregular",
+      "width": 60,
+      "height": 40,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          0,
+          20
+        ]
+      ],
+      "exits_rel": [
+        [
+          60,
+          20
+        ]
+      ],
+      "body_polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          60,
+          0
+        ],
+        [
+          60,
+          20
+        ],
+        [
+          20,
+          20
+        ],
+        [
+          20,
+          40
+        ],
+        [
+          0,
+          40
+        ]
+      ],
+      "clearance": 10
+    },
+    "D": {
+      "type": "irregular",
+      "width": 50,
+      "height": 40,
+      "rotatable": false,
+      "entries_rel": [
+        [
+          0,
+          20
+        ]
+      ],
+      "exits_rel": [
+        [
+          50,
+          20
+        ]
+      ],
+      "body_polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          10,
+          0
+        ],
+        [
+          10,
+          20
+        ],
+        [
+          20,
+          20
+        ],
+        [
+          20,
+          0
+        ],
+        [
+          30,
+          0
+        ],
+        [
+          30,
+          20
+        ],
+        [
+          40,
+          20
+        ],
+        [
+          40,
+          0
+        ],
+        [
+          50,
+          0
+        ],
+        [
+          50,
+          40
+        ],
+        [
+          0,
+          40
+        ]
+      ],
+      "clearance": 10
+    },
+    "E": {
+      "type": "rect",
+      "width": 45,
+      "height": 35,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          22,
+          0
+        ]
+      ],
+      "exits_rel": [
+        [
+          22,
+          35
+        ]
+      ],
+      "clearance": 10
+    },
+    "F": {
+      "type": "rect",
+      "width": 55,
+      "height": 45,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          0,
+          22
+        ]
+      ],
+      "exits_rel": [
+        [
+          55,
+          22
+        ]
+      ],
+      "clearance": 10
+    },
+    "G": {
+      "type": "irregular",
+      "width": 50,
+      "height": 50,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          25,
+          0
+        ]
+      ],
+      "exits_rel": [
+        [
+          25,
+          50
+        ]
+      ],
+      "body_polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          50,
+          0
+        ],
+        [
+          50,
+          20
+        ],
+        [
+          30,
+          20
+        ],
+        [
+          30,
+          50
+        ],
+        [
+          20,
+          50
+        ],
+        [
+          20,
+          20
+        ],
+        [
+          0,
+          20
+        ]
+      ],
+      "clearance": 10
+    },
+    "H": {
+      "type": "irregular",
+      "width": 45,
+      "height": 45,
+      "rotatable": true,
+      "entries_rel": [
+        [
+          0,
+          22
+        ]
+      ],
+      "exits_rel": [
+        [
+          45,
+          22
+        ]
+      ],
+      "body_polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          45,
+          0
+        ],
+        [
+          45,
+          15
+        ],
+        [
+          15,
+          15
+        ],
+        [
+          15,
+          45
+        ],
+        [
+          0,
+          45
+        ]
+      ],
+      "clearance": 10
+    }
+  },
+  "flow": [
+    [
+      "A",
+      "B",
+      1.0
+    ],
+    [
+      "A",
+      "C",
+      0.8
+    ],
+    [
+      "B",
+      "D",
+      1.0
+    ],
+    [
+      "C",
+      "D",
+      0.7
+    ],
+    [
+      "A",
+      "E",
+      0.5
+    ],
+    [
+      "B",
+      "F",
+      0.6
+    ],
+    [
+      "E",
+      "G",
+      1.0
+    ],
+    [
+      "F",
+      "H",
+      1.0
+    ],
+    [
+      "G",
+      "D",
+      0.5
+    ],
+    [
+      "H",
+      "D",
+      0.5
+    ],
+    [
+      "C",
+      "G",
+      0.4
+    ],
+    [
+      "E",
+      "H",
+      0.4
+    ]
+  ],
+  "zones": {
+    "forbidden_areas": [
+      {
+        "rect": [
+          0,
+          0,
+          80,
+          80
+        ]
+      }
+    ]
+  },
+  "reset": {}
+}
