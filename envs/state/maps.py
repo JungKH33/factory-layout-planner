@@ -155,6 +155,25 @@ class GridMaps:
         idx11 = y1 * stride + x1
         return flat[idx11] - flat[idx01] - flat[idx10] + flat[idx00]
 
+    @staticmethod
+    def _rect_sum(
+        prefix: torch.Tensor,
+        *,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+    ) -> int:
+        if prefix.dim() != 2:
+            raise ValueError(f"prefix must be [H+1,W+1], got {tuple(prefix.shape)}")
+        stride = int(prefix.shape[1])
+        flat = prefix.reshape(-1)
+        idx00 = int(y0) * stride + int(x0)
+        idx01 = int(y0) * stride + int(x1)
+        idx10 = int(y1) * stride + int(x0)
+        idx11 = int(y1) * stride + int(x1)
+        return int((flat[idx11] - flat[idx01] - flat[idx10] + flat[idx00]).item())
+
     def _get_mask_linear_offsets(
         self,
         *,
@@ -268,18 +287,152 @@ class GridMaps:
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> bool:
-        x_t = torch.tensor([int(x_bl)], dtype=torch.long, device=self._device)
-        y_t = torch.tensor([int(y_bl)], dtype=torch.long, device=self._device)
-        out = self.is_placeable_batch(
-            gid=gid,
-            x_bl=x_t,
-            y_bl=y_t,
+        body_map = body_map.to(device=self._device, dtype=torch.bool)
+        clearance_map = clearance_map.to(device=self._device, dtype=torch.bool)
+        backend = self._select_batch_backend(is_rectangular=is_rectangular)
+        if backend == "prefixsum":
+            result = self._is_placeable_prefixsum(
+                gid=gid,
+                x_bl=int(x_bl),
+                y_bl=int(y_bl),
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+            )
+        else:
+            result = self._is_placeable_gather(
+                gid=gid,
+                x_bl=int(x_bl),
+                y_bl=int(y_bl),
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+            )
+        return result
+
+    def _is_placeable_prefixsum(
+        self,
+        *,
+        gid: GroupId,
+        x_bl: int,
+        y_bl: int,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+    ) -> bool:
+        bw = int(body_map.shape[1])
+        bh = int(body_map.shape[0])
+        kw = int(clearance_map.shape[1])
+        kh = int(clearance_map.shape[0])
+        pad_left = int(clearance_origin[0])
+        pad_bottom = int(clearance_origin[1])
+        if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
+            return False
+
+        body_x0 = int(x_bl)
+        body_y0 = int(y_bl)
+        body_x1 = body_x0 + bw
+        body_y1 = body_y0 + bh
+        pad_x0 = body_x0 - pad_left
+        pad_y0 = body_y0 - pad_bottom
+        pad_x1 = pad_x0 + kw
+        pad_y1 = pad_y0 + kh
+
+        if (
+            body_x0 < 0
+            or body_y0 < 0
+            or body_x1 > self._W
+            or body_y1 > self._H
+            or pad_x0 < 0
+            or pad_y0 < 0
+            or pad_x1 > self._W
+            or pad_y1 > self._H
+        ):
+            return False
+
+        static_ps = self._ensure_static_prefix_cache()
+        occ_ps, clear_ps = self._ensure_runtime_prefix_cache()
+        zone_ps = self._get_zone_invalid_ps(gid)
+
+        body_hit = (
+            self._rect_sum(static_ps, x0=body_x0, y0=body_y0, x1=body_x1, y1=body_y1)
+            + self._rect_sum(occ_ps, x0=body_x0, y0=body_y0, x1=body_x1, y1=body_y1)
+            + self._rect_sum(zone_ps, x0=body_x0, y0=body_y0, x1=body_x1, y1=body_y1)
+        )
+        if body_hit != 0:
+            return False
+        body_clear_hit = self._rect_sum(clear_ps, x0=body_x0, y0=body_y0, x1=body_x1, y1=body_y1)
+        if body_clear_hit != 0:
+            return False
+        pad_hit = (
+            self._rect_sum(static_ps, x0=pad_x0, y0=pad_y0, x1=pad_x1, y1=pad_y1)
+            + self._rect_sum(occ_ps, x0=pad_x0, y0=pad_y0, x1=pad_x1, y1=pad_y1)
+            + self._rect_sum(zone_ps, x0=pad_x0, y0=pad_y0, x1=pad_x1, y1=pad_y1)
+        )
+        return pad_hit == 0
+
+    def _is_placeable_gather(
+        self,
+        *,
+        gid: GroupId,
+        x_bl: int,
+        y_bl: int,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+    ) -> bool:
+        bw = int(body_map.shape[1])
+        bh = int(body_map.shape[0])
+        kw = int(clearance_map.shape[1])
+        kh = int(clearance_map.shape[0])
+        pad_left = int(clearance_origin[0])
+        pad_bottom = int(clearance_origin[1])
+        if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
+            return False
+
+        body_x0 = int(x_bl)
+        body_y0 = int(y_bl)
+        body_x1 = body_x0 + bw
+        body_y1 = body_y0 + bh
+        pad_x0 = body_x0 - pad_left
+        pad_y0 = body_y0 - pad_bottom
+        pad_x1 = pad_x0 + kw
+        pad_y1 = pad_y0 + kh
+
+        if (
+            body_x0 < 0
+            or body_y0 < 0
+            or body_x1 > self._W
+            or body_y1 > self._H
+            or pad_x0 < 0
+            or pad_y0 < 0
+            or pad_x1 > self._W
+            or pad_y1 > self._H
+        ):
+            return False
+
+        base_body = int(body_y0) * int(self._W) + int(body_x0)
+        base_clear = int(pad_y0) * int(self._W) + int(pad_x0)
+        body_offsets, pad_offsets = self._get_mask_linear_offsets(
             body_map=body_map,
             clearance_map=clearance_map,
             clearance_origin=clearance_origin,
-            is_rectangular=is_rectangular,
         )
-        return bool(out.view(-1)[0].item())
+        body_idx = base_body + body_offsets
+        pad_idx = base_clear + pad_offsets
+
+        static_f = self._static_invalid.reshape(-1)
+        occ_f = self.occ_invalid.reshape(-1)
+        zone_f = self._get_zone_invalid(gid).reshape(-1)
+        clear_f = self.clear_invalid.reshape(-1)
+
+        if bool(static_f[body_idx].any().item()) or bool(occ_f[body_idx].any().item()) or bool(zone_f[body_idx].any().item()):
+            return False
+        if bool(clear_f[body_idx].any().item()):
+            return False
+        if bool(static_f[pad_idx].any().item()) or bool(occ_f[pad_idx].any().item()) or bool(zone_f[pad_idx].any().item()):
+            return False
+        return True
 
     def _is_placeable_map_conv(
         self,
@@ -566,8 +719,8 @@ class GridMaps:
     ) -> torch.Tensor:
         """Vectorized placeability check. Returns [N] bool."""
         backend = self._select_batch_backend(is_rectangular=is_rectangular)
-        if backend == "gather":
-            return self._is_placeable_batch_gather(
+        if backend == "prefixsum":
+            result = self._is_placeable_batch_prefixsum(
                 gid=gid,
                 x_bl=x_bl,
                 y_bl=y_bl,
@@ -575,14 +728,16 @@ class GridMaps:
                 clearance_map=clearance_map,
                 clearance_origin=clearance_origin,
             )
-        return self._is_placeable_batch_prefixsum(
-            gid=gid,
-            x_bl=x_bl,
-            y_bl=y_bl,
-            body_map=body_map,
-            clearance_map=clearance_map,
-            clearance_origin=clearance_origin,
-        )
+        else:
+            result = self._is_placeable_batch_gather(
+                gid=gid,
+                x_bl=x_bl,
+                y_bl=y_bl,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+            )
+        return result
 
     def is_placeable_map(
         self,
