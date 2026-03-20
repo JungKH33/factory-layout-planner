@@ -48,8 +48,11 @@ class GreedyV3Adapter(BaseAdapter):
         self.action_delta: Optional[torch.Tensor] = None  # float [K]
 
     def build_observation(self) -> Dict[str, Any]:
-        self.mask = None
-        return {}
+        self.mask = self.create_mask()
+        obs: Dict[str, Any] = {}
+        if isinstance(self.action_delta, torch.Tensor):
+            obs["action_delta"] = self.action_delta
+        return obs
 
     def create_mask(self) -> torch.Tensor:
         # Keep candidate sampling deterministic from engine state.

@@ -167,22 +167,15 @@ class BaseAdapter(ABC):
                 f"action_poses must have shape [N,2], got {tuple(poses.shape)} for N={n_actions}"
             )
 
-        meta: Dict[str, Any] = {}
-        delta_raw = getattr(self, "action_delta", None)
-        if isinstance(delta_raw, torch.Tensor):
-            delta = delta_raw.to(dtype=torch.float32, device=self.device).view(-1)
-            if int(delta.shape[0]) == n_actions:
-                meta["action_delta"] = delta
-
-        return ActionSpace(poses=poses, mask=mask, gid=gid, meta=(meta if meta else None))
+        return ActionSpace(poses=poses, mask=mask, gid=gid)
 
     @abstractmethod
     def build_observation(self) -> Dict[str, Any]:
         """Build policy observation from current engine state.
 
         Each adapter defines its own observation format tailored to the
-        model/agent it serves.  Greedy adapters may return ``{}`` since
-        the greedy agent only uses ``action_space.meta["action_delta"]``.
+        model/agent it serves.  Greedy adapters return
+        ``{"action_delta": Tensor[N]}`` for the greedy agent.
         """
         raise NotImplementedError
 

@@ -27,11 +27,9 @@ class GreedyAgent:
         if int(valid_idx.numel()) == 0:
             return priors
 
-        # Preferred: adapter-precomputed per-action delta cost [N] from action-space meta.
-        meta = action_space.meta if isinstance(action_space.meta, dict) else {}
-        scores_meta = meta.get("action_delta", None)
-        if isinstance(scores_meta, torch.Tensor) and int(scores_meta.numel()) == N:
-            scores = scores_meta.to(dtype=torch.float32, device=device).view(-1)[valid_idx]
+        scores_obs = obs.get("action_delta", None)
+        if isinstance(scores_obs, torch.Tensor) and int(scores_obs.numel()) == N:
+            scores = scores_obs.to(dtype=torch.float32, device=device).view(-1)[valid_idx]
         else:
             # Fallback: uniform over valid actions.
             priors[valid_idx] = 1.0 / float(max(1, int(valid_idx.numel())))
@@ -60,11 +58,10 @@ class GreedyAgent:
         if int(valid_idx.numel()) == 0:
             return 0
 
-        meta = action_space.meta if isinstance(action_space.meta, dict) else {}
-        scores_meta = meta.get("action_delta", None)
-        if not (isinstance(scores_meta, torch.Tensor) and int(scores_meta.numel()) == N):
+        scores_obs = obs.get("action_delta", None)
+        if not (isinstance(scores_obs, torch.Tensor) and int(scores_obs.numel()) == N):
             return int(valid_idx[0].item())
-        scores = scores_meta.to(dtype=torch.float32, device=action_space.poses.device).view(-1)[valid_idx]
+        scores = scores_obs.to(dtype=torch.float32, device=action_space.poses.device).view(-1)[valid_idx]
         best_k = int(torch.argmin(scores).item()) if scores.numel() > 0 else 0
         return int(valid_idx[best_k].item()) if int(valid_idx.numel()) > 0 else 0
 

@@ -311,7 +311,6 @@ if __name__ == "__main__":
         poses=xy,
         mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
         gid=candidates.gid,
-        meta={"g": g},
     )
     plot_layout(engine, action_space=cand0)
 
@@ -332,7 +331,6 @@ if __name__ == "__main__":
             poses=xy2,
             mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
             gid=candidates2.gid,
-            meta={"g": g},
         )
         plot_layout(engine, action_space=cand1)
     else:

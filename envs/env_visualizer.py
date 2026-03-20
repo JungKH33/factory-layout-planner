@@ -361,10 +361,7 @@ def _draw_layout_layers(
 
     # action_space (optional; caller may render their own)
     if action_space is not None:
-        meta = action_space.meta or {}
         gid = getattr(action_space, "gid", None)
-        if gid is None:
-            gid = meta.get("gid", None)
         poses = action_space.poses[action_space.mask]
         if int(poses.shape[0]) > 0:
             xs: list[float] = []
@@ -782,10 +779,7 @@ def save_layout(
         ax.text(p.x_c, p.y_c, str(gid), ha="center", va="center", fontsize=8)
 
     if action_space is not None:
-        meta = action_space.meta or {}
         gid = getattr(action_space, "gid", None)
-        if gid is None:
-            gid = meta.get("gid", None)
         poses = action_space.poses[action_space.mask]
         if int(poses.shape[0]) > 0:
             xs: list[float] = []

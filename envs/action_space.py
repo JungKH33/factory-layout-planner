@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import torch
 
@@ -21,9 +21,6 @@ class ActionSpace:
       - entries / exits:             [N, Emax/Xmax, 2] IO 포트 절대 좌표
       - entries_mask / exits_mask:   [N, Emax] / [N, Xmax]
       - min_x / max_x / min_y / max_y: [N] 바운딩 박스
-
-    Adapter/policy 전용:
-      - meta: Dict for additional adapter-specific data (action_delta 등)
     """
 
     # -- core (필수) --
@@ -40,9 +37,6 @@ class ActionSpace:
     max_x: Optional[torch.Tensor] = None         # [N]
     min_y: Optional[torch.Tensor] = None         # [N]
     max_y: Optional[torch.Tensor] = None         # [N]
-
-    # -- adapter/policy 전용 --
-    meta: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.poses, torch.Tensor) or not isinstance(self.mask, torch.Tensor):

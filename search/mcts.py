@@ -415,7 +415,6 @@ class MCTSSearch(BaseSearch):
                     next_action_space = CandidateSet(
                         poses=torch.zeros((0, 2), dtype=torch.float32, device=adapter.device),
                         mask=torch.zeros((0,), dtype=torch.bool, device=adapter.device),
-                        meta={"terminal": True},
                     )
                     priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
                 else:

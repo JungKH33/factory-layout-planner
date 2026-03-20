@@ -33,12 +33,9 @@ class MaskPlaceAgent:
 
     @torch.no_grad()
     def policy(self, *, obs: dict, action_space: CandidateSet) -> torch.Tensor:
-        meta = action_space.meta if isinstance(action_space.meta, dict) else {}
-        state = meta.get("state", None)
+        state = obs.get("state", None)
         if not isinstance(state, torch.Tensor):
-            state = obs.get("state", None)
-        if not isinstance(state, torch.Tensor):
-            raise ValueError("MaskPlaceAgent requires action-space meta['state'] (or obs['state']).")
+            raise ValueError("MaskPlaceAgent requires obs['state'].")
         st = state.to(device=self.device, dtype=torch.float32)
         if st.dim() == 1:
             st = st.view(1, -1)
@@ -67,10 +64,7 @@ class MaskPlaceAgent:
 
     @torch.no_grad()
     def value(self, *, obs: dict, action_space: CandidateSet) -> float:
-        meta = action_space.meta if isinstance(action_space.meta, dict) else {}
-        state = meta.get("state", None)
-        if not isinstance(state, torch.Tensor):
-            state = obs.get("state", None)
+        state = obs.get("state", None)
         if not isinstance(state, torch.Tensor):
             return 0.0
         st = state.to(device=self.device, dtype=torch.float32)
