@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import gymnasium as gym
 import torch
 
-from .placement.base import PlacementBase
+from .placement.base import GroupPlacement
 from .reward import (
     AreaReward,
     FlowReward,
@@ -15,13 +15,13 @@ from .reward import (
     TerminalReward,
 )
 from .placement.base import GroupSpec
-from .placement.static_rect import StaticRectSpec
+from .placement.static import StaticRectSpec
 from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
 
-# PlacementBase is defined in envs/placement/base.py and imported above.
-# Re-exported here so external code can do: from envs.env import PlacementBase, GridMaps
-__all__ = ["PlacementBase", "GridMaps", "FactoryLayoutEnv"]
+# GroupPlacement is defined in envs/placement/base.py and imported above.
+# Re-exported here so external code can do: from envs.env import GroupPlacement, GridMaps
+__all__ = ["GroupPlacement", "GridMaps", "FactoryLayoutEnv"]
 
 logger = logging.getLogger(__name__)
 
@@ -232,11 +232,11 @@ class FactoryLayoutEnv(gym.Env):
     def _delta_cost_from_placements(
         self,
         gid: GroupId,
-        placements: List[PlacementBase],
+        placements: List[GroupPlacement],
     ) -> torch.Tensor:
         """Score already-resolved placements via reward delta.
 
-        Reads center/geometry directly from PlacementBase.
+        Reads center/geometry directly from GroupPlacement.
         """
         M = len(placements)
         if M == 0:
@@ -292,7 +292,7 @@ class FactoryLayoutEnv(gym.Env):
             raise KeyError(f"unknown gid={gid_eff!r}")
         return gid_eff, float(action.x_c), float(action.y_c)
 
-    def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'PlacementBase | None']:
+    def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'GroupPlacement | None']:
         """Resolve a center-based EnvAction to (gid, concrete placement or None).
 
         Tries all (rotation, mirror) variants at the given center and picks the
@@ -323,7 +323,7 @@ class FactoryLayoutEnv(gym.Env):
     def _apply_resolved_placement(
         self,
         gid: GroupId,
-        placement: PlacementBase,
+        placement: GroupPlacement,
     ) -> None:
         self._state.place(gid=gid, placement=placement)
         self._rebuild_flow_port_pairs()
@@ -404,10 +404,10 @@ class FactoryLayoutEnv(gym.Env):
                 "width": float(s.width),
                 "height": float(s.height),
                 "rotatable": bool(s.rotatable),
-                "clearance_left": float(s.clearance_left_rel),
-                "clearance_right": float(s.clearance_right_rel),
-                "clearance_bottom": float(s.clearance_bottom_rel),
-                "clearance_top": float(s.clearance_top_rel),
+                "clearance_left": float(getattr(s, "clearance_left_rel", 0)),
+                "clearance_right": float(getattr(s, "clearance_right_rel", 0)),
+                "clearance_bottom": float(getattr(s, "clearance_bottom_rel", 0)),
+                "clearance_top": float(getattr(s, "clearance_top_rel", 0)),
                 "ent_rel_x": float(ent0[0]),
                 "ent_rel_y": float(ent0[1]),
                 "exi_rel_x": float(ex0[0]),

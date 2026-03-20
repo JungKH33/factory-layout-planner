@@ -50,7 +50,7 @@ class GroupSpec:
 
 
 @dataclass
-class PlacementBase:
+class GroupPlacement:
     """env가 placement 객체에서 읽는 최소 계약.
 
     Center-based placement geometry shared by resolved placement objects.

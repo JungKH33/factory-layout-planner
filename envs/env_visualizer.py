@@ -1059,7 +1059,7 @@ if __name__ == "__main__":
     from agents.placement.alphachip import AlphaChipAdapter
     from agents.placement.greedy import GreedyAdapter
     from envs.env import FactoryLayoutEnv
-    from envs.placement.static_rect import StaticRectSpec
+    from envs.placement.static import StaticRectSpec
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 

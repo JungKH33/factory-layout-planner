@@ -95,7 +95,7 @@ For RL training, `AdapterGymEnv` (`gym_env.py`) wraps engine + adapter into a `g
 | `invalid` | `static \| occ \| zone` — what `is_placeable` checks |
 
 - **`FlowGraph`** (`envs/state/flow.py`): IO port caches, flow weight matrix (incrementally updated)
-- **`PlacementBase`** (`envs/placement/base.py`): placed facility geometry (x_bl, y_bl, rot, ports, clearances)
+- **`GroupPlacement`** (`envs/placement/base.py`): placed facility geometry (x_bl, y_bl, rot, ports, clearances)
 
 State copy/restore: `engine.get_state().copy()` / `engine.set_state(state)`. Static tensors are shared by reference on copy (cheap for MCTS snapshots); only runtime tensors (occ, clear, zone, invalid) are cloned.
 
