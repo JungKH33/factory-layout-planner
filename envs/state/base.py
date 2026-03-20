@@ -204,11 +204,11 @@ class EnvState:
     def clear_flow_port_pairs(self) -> None:
         self.flow.clear_flow_port_pairs()
 
-    def set_flow_port_pairs(self, pairs: Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]]) -> None:
+    def set_flow_port_pairs(self, pairs: Dict[Tuple[GroupId, GroupId], list]) -> None:
         self.flow.set_flow_port_pairs(pairs)
 
     @property
-    def flow_port_pairs(self) -> Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]]:
+    def flow_port_pairs(self) -> Dict[Tuple[GroupId, GroupId], list]:
         return self.flow.flow_port_pairs
 
     def is_placeable(

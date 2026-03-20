@@ -68,6 +68,7 @@ class RewardComposer:
     components: Dict[str, object]
     weights: Dict[str, float]
     reward_scale: float = 100.0
+    group_specs: Optional[Dict["GroupId", object]] = None
 
     def __post_init__(self) -> None:
         if float(self.reward_scale) <= 0.0:
@@ -84,6 +85,37 @@ class RewardComposer:
             if comp is not None and hasattr(comp, "required"):
                 needed |= set(comp.required())
         return needed
+
+    def _port_mode_tensors(
+        self,
+        gids: list,
+        device: torch.device,
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Build (exit_modes, entry_modes) bool tensors from group_specs.
+
+        Returns (None, None) when all facilities use "min" (fast-path).
+        """
+        if self.group_specs is None:
+            return None, None
+        n = len(gids)
+        if n == 0:
+            return None, None
+        exit_modes = torch.zeros((n,), dtype=torch.bool, device=device)
+        entry_modes = torch.zeros((n,), dtype=torch.bool, device=device)
+        any_mean = False
+        for i, gid in enumerate(gids):
+            spec = self.group_specs.get(gid)
+            if spec is None:
+                continue
+            if getattr(spec, "exit_port_mode", "min") == "mean":
+                exit_modes[i] = True
+                any_mean = True
+            if getattr(spec, "entry_port_mode", "min") == "mean":
+                entry_modes[i] = True
+                any_mean = True
+        if not any_mean:
+            return None, None
+        return exit_modes, entry_modes
 
     def score(
         self,
@@ -105,6 +137,8 @@ class RewardComposer:
         device = placed_entries.device
         total = torch.tensor(0.0, dtype=torch.float32, device=device)
 
+        exit_modes, entry_modes = self._port_mode_tensors(placed_nodes, device)
+
         flow = self.components.get("flow", None)
         if flow is not None:
             w = float(self.weights.get("flow", 1.0))
@@ -114,6 +148,8 @@ class RewardComposer:
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
+                exit_modes=exit_modes,
+                entry_modes=entry_modes,
             )
 
         flow_collision = self.components.get("flow_collision", None)
@@ -126,6 +162,8 @@ class RewardComposer:
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
                 route_blocked=route_blocked,
+                exit_modes=exit_modes,
+                entry_modes=entry_modes,
             )
 
         area = self.components.get("area", None)
@@ -203,6 +241,16 @@ class RewardComposer:
             entries = _require(entries, "entries")
             exits = _require(exits, "exits")
 
+        # Build port mode tensors for candidate and placed facilities
+        t_exit_modes, t_entry_modes = self._port_mode_tensors(placed_nodes, device)
+        c_exit_mode = "min"
+        c_entry_mode = "min"
+        if self.group_specs is not None and gid is not None:
+            c_spec = self.group_specs.get(gid)
+            if c_spec is not None:
+                c_exit_mode = getattr(c_spec, "exit_port_mode", "min")
+                c_entry_mode = getattr(c_spec, "entry_port_mode", "min")
+
         if flow is not None:
             w = float(self.weights.get("flow", 1.0))
             total = total + w * flow.delta(
@@ -216,6 +264,10 @@ class RewardComposer:
                 candidate_exits=exits,
                 candidate_entries_mask=entries_mask,
                 candidate_exits_mask=exits_mask,
+                c_exit_mode=c_exit_mode,
+                c_entry_mode=c_entry_mode,
+                t_entry_modes=t_entry_modes,
+                t_exit_modes=t_exit_modes,
             )
         if flow_collision is not None:
             w = float(self.weights.get("flow_collision", 1.0))
@@ -231,6 +283,10 @@ class RewardComposer:
                 candidate_entries_mask=entries_mask,
                 candidate_exits_mask=exits_mask,
                 route_blocked=route_blocked,
+                c_exit_mode=c_exit_mode,
+                c_entry_mode=c_entry_mode,
+                t_entry_modes=t_entry_modes,
+                t_exit_modes=t_exit_modes,
             )
 
         if area is not None or grid_occ is not None:

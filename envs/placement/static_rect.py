@@ -81,9 +81,15 @@ class StaticRectSpec(GroupSpec):
     rotatable: bool = True
     mirrorable: bool = False
     zone_values: Dict[str, Any] = field(default_factory=dict)
+    _entry_port_mode: str = "min"
+    _exit_port_mode: str = "min"
 
     def __post_init__(self) -> None:
-        # Validate spec dimensions and flag ports outside the local pre-rotation box.
+        _valid_modes = ("min", "mean")
+        if self._entry_port_mode not in _valid_modes:
+            raise ValueError(f"entry_port_mode must be one of {_valid_modes}, got {self._entry_port_mode!r}")
+        if self._exit_port_mode not in _valid_modes:
+            raise ValueError(f"exit_port_mode must be one of {_valid_modes}, got {self._exit_port_mode!r}")
         self.width = int(self.width)
         self.height = int(self.height)
         if self.width <= 0 or self.height <= 0:

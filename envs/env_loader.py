@@ -62,12 +62,23 @@ def load_env(
         w = _to_int(g["width"])
         h = _to_int(g["height"])
         # IO offsets: JSON stores BL-relative coords directly.
-        # Default to center (w/2, h/2) so that facilities without explicit port
-        # definitions use the facility centroid, not the BL corner (0,0).
-        ent_x = float(g.get("ent_rel_x", w / 2.0))
-        ent_y = float(g.get("ent_rel_y", h / 2.0))
-        exi_x = float(g.get("exi_rel_x", w / 2.0))
-        exi_y = float(g.get("exi_rel_y", h / 2.0))
+        # Multi-port: "entries_rel": [[x,y], ...], "exits_rel": [[x,y], ...]
+        # Single-port (legacy): "ent_rel_x"/"ent_rel_y", "exi_rel_x"/"exi_rel_y"
+        # Default to center (w/2, h/2) when no port definition is given.
+        entries_raw = g.get("entries_rel")
+        exits_raw = g.get("exits_rel")
+        if entries_raw is not None:
+            entries_rel = [(float(p[0]), float(p[1])) for p in entries_raw]
+        else:
+            ent_x = float(g.get("ent_rel_x", w / 2.0))
+            ent_y = float(g.get("ent_rel_y", h / 2.0))
+            entries_rel = [(ent_x, ent_y)]
+        if exits_raw is not None:
+            exits_rel = [(float(p[0]), float(p[1])) for p in exits_raw]
+        else:
+            exi_x = float(g.get("exi_rel_x", w / 2.0))
+            exi_y = float(g.get("exi_rel_y", h / 2.0))
+            exits_rel = [(exi_x, exi_y)]
         zone_values_raw = g.get("zone_values", {})
         if not isinstance(zone_values_raw, dict):
             raise ValueError(f"groups.{gid}.zone_values must be an object")
@@ -76,8 +87,8 @@ def load_env(
             id=gid,
             width=w,
             height=h,
-            entries_rel=[(ent_x, ent_y)],
-            exits_rel=[(exi_x, exi_y)],
+            entries_rel=entries_rel,
+            exits_rel=exits_rel,
             clearance_left_rel=_to_int(g.get("facility_clearance_left", 0)),
             clearance_right_rel=_to_int(g.get("facility_clearance_right", 0)),
             clearance_bottom_rel=_to_int(g.get("facility_clearance_bottom", 0)),
@@ -85,6 +96,8 @@ def load_env(
             rotatable=bool(g.get("rotatable", True)),
             mirrorable=bool(g.get("mirrorable", True)),
             zone_values=dict(zone_values_raw),
+            _entry_port_mode=str(g.get("entry_port_mode", "min")),
+            _exit_port_mode=str(g.get("exit_port_mode", "min")),
         )
 
     flow_raw = data.get("flow", {})

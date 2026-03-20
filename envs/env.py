@@ -104,6 +104,7 @@ class FactoryLayoutEnv(gym.Env):
                 "area": 1.0,
             },
             reward_scale=float(self.reward_scale),
+            group_specs=self.group_specs,
         )
         group_areas = {
             gid: float(spec.body_area)
@@ -163,10 +164,10 @@ class FactoryLayoutEnv(gym.Env):
         return torch.tensor([int(v)], dtype=torch.long, device=self.device)
 
     def _rebuild_flow_port_pairs(self) -> None:
-        """FlowReward.score(return_argmin=True)로 flow edge별 최적 port pair 캐시 재구성.
+        """Rebuild per-edge port pair cache for visualization.
 
-        self._state.flow_port_pairs[(src_gid, dst_gid)] = ((exit_x, exit_y), (entry_x, entry_y))
-        flow weight가 0인 엣지는 포함하지 않음.
+        For min-mode ports: store the single argmin pair.
+        For mean-mode ports: store all valid ports (cartesian product).
         """
         flow_comp = self._reward.components.get("flow")
         if flow_comp is None:
@@ -176,27 +177,51 @@ class FactoryLayoutEnv(gym.Env):
             self._state.clear_flow_port_pairs()
             return
         flow_w = self._state.build_flow_w()
+        exit_modes, entry_modes = self._reward._port_mode_tensors(
+            placed_nodes, placed_entries.device,
+        )
         _, c_idx, p_idx = flow_comp.score(
             placed_entries=placed_entries,
             placed_exits=placed_exits,
             placed_entries_mask=placed_entries_mask,
             placed_exits_mask=placed_exits_mask,
             flow_w=flow_w,
+            exit_modes=exit_modes,
+            entry_modes=entry_modes,
             return_argmin=True,
         )
         if c_idx is None or p_idx is None:
             self._state.clear_flow_port_pairs()
             return
-        pairs: Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+
+        pairs: Dict[Tuple[GroupId, GroupId], list] = {}
         for m, src_gid in enumerate(placed_nodes):
+            src_exit_mean = exit_modes is not None and bool(exit_modes[m].item())
             for t, dst_gid in enumerate(placed_nodes):
                 if float(flow_w[m, t].item()) <= 0.0:
                     continue
-                ci = int(c_idx[m, t].item())
-                pi = int(p_idx[m, t].item())
-                exit_xy = (float(placed_exits[m, ci, 0].item()), float(placed_exits[m, ci, 1].item()))
-                entry_xy = (float(placed_entries[t, pi, 0].item()), float(placed_entries[t, pi, 1].item()))
-                pairs[(src_gid, dst_gid)] = (exit_xy, entry_xy)
+                dst_entry_mean = entry_modes is not None and bool(entry_modes[t].item())
+
+                if src_exit_mean:
+                    e_idxs = [int(j) for j in range(int(placed_exits_mask.shape[1]))
+                              if bool(placed_exits_mask[m, j].item())]
+                else:
+                    e_idxs = [int(c_idx[m, t].item())]
+
+                if dst_entry_mean:
+                    n_idxs = [int(j) for j in range(int(placed_entries_mask.shape[1]))
+                              if bool(placed_entries_mask[t, j].item())]
+                else:
+                    n_idxs = [int(p_idx[m, t].item())]
+
+                pair_list = []
+                for ei in e_idxs:
+                    ex = (float(placed_exits[m, ei, 0].item()), float(placed_exits[m, ei, 1].item()))
+                    for ni in n_idxs:
+                        en = (float(placed_entries[t, ni, 0].item()), float(placed_entries[t, ni, 1].item()))
+                        pair_list.append((ex, en))
+                pairs[(src_gid, dst_gid)] = pair_list
+
         self._state.set_flow_port_pairs(pairs)
 
     @property

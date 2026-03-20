@@ -61,31 +61,77 @@ class FlowReward:
         raise ValueError(f"weight must be [T] or [M,T], got dim={w.dim()}")
 
     @staticmethod
-    def _masked_pair_min(
+    def _mode_tensor(mode: str, n: int, device: torch.device) -> Optional[torch.Tensor]:
+        """Convert ``"min"``/``"mean"`` to bool tensor. Returns None for ``"min"`` (fast-path)."""
+        if mode == "mean":
+            return torch.ones((n,), dtype=torch.bool, device=device)
+        return None
+
+    @staticmethod
+    def _masked_pair_reduce(
         cost: torch.Tensor,
         valid: torch.Tensor,
+        c_modes: Optional[torch.Tensor] = None,
+        t_modes: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Reduce [M,T,C,P] cost to [M,T] with invalid pairs mapped to zero.
+        """Reduce [M,T,C,P] cost to [M,T] using per-facility port aggregation.
 
-        Always returns (values [M,T], c_idx [M,T], p_idx [M,T]).
-        c_idx: best candidate port index (C dim), p_idx: best target port index (P dim).
-        Indices are meaningful only where has_valid[m,t] is True.
-        PyTorch min() already computes indices in the same kernel pass - gather is the only extra op.
+        c_modes: [M] bool (True=mean, False=min). None → all min.
+        t_modes: [T] bool (True=mean, False=min). None → all min.
+
+        Returns (values [M,T], c_idx [M,T], p_idx [M,T]).
+        c_idx/p_idx are argmin indices from the min path; for mean-mode
+        facilities they serve as placeholders (callers use the valid mask
+        to enumerate all ports instead).
         """
         if cost.dim() != 4 or valid.dim() != 4:
             raise ValueError("cost/valid must be rank-4 tensors [M,T,C,P]")
         if tuple(cost.shape) != tuple(valid.shape):
             raise ValueError(f"cost and valid shape mismatch: {tuple(cost.shape)} vs {tuple(valid.shape)}")
+
         has_valid = valid.any(dim=3).any(dim=2)  # [M,T]
-        masked = cost.masked_fill(~valid, float("inf"))
-        min_p = masked.min(dim=3)               # values [M,T,C], indices [M,T,C]
-        min_cp = min_p.values.min(dim=2)        # values [M,T],   indices [M,T]
-        result = torch.where(has_valid, min_cp.values, torch.zeros_like(min_cp.values))
-        c_idx = min_cp.indices                  # [M,T]: best candidate port
-        p_idx = min_p.indices.gather(2, c_idx.unsqueeze(2)).squeeze(2)  # [M,T]: best target port
+
+        # Always compute min over P for argmin indices
+        masked_inf = cost.masked_fill(~valid, float("inf"))
+        min_p = masked_inf.min(dim=3)  # values [M,T,C], indices [M,T,C]
+
+        # --- P-dim reduction (target ports) ---
+        t_all_min = t_modes is None or not t_modes.any().item()
+        if t_all_min:
+            reduced_p = min_p.values
+        else:
+            zero_filled = cost.masked_fill(~valid, 0.0)
+            count_p = valid.sum(dim=3).clamp(min=1).to(torch.float32)
+            mean_p = zero_filled.sum(dim=3) / count_p  # [M,T,C]
+            if t_modes.all().item():
+                reduced_p = mean_p
+            else:
+                reduced_p = torch.where(t_modes.view(1, -1, 1), mean_p, min_p.values)
+
+        # C-dim validity after P reduction
+        c_valid = valid.any(dim=3)  # [M,T,C]
+        reduced_p_inf = reduced_p.masked_fill(~c_valid, float("inf"))
+        min_c = reduced_p_inf.min(dim=2)  # values [M,T], indices [M,T]
+
+        # --- C-dim reduction (candidate ports) ---
+        c_all_min = c_modes is None or not c_modes.any().item()
+        if c_all_min:
+            result = torch.where(has_valid, min_c.values, torch.zeros_like(min_c.values))
+        else:
+            reduced_p_zero = reduced_p.masked_fill(~c_valid, 0.0)
+            count_c = c_valid.sum(dim=2).clamp(min=1).to(torch.float32)
+            mean_c = reduced_p_zero.sum(dim=2) / count_c  # [M,T]
+            if c_modes.all().item():
+                raw = mean_c
+            else:
+                raw = torch.where(c_modes.view(-1, 1), mean_c, min_c.values)
+            result = torch.where(has_valid, raw, torch.zeros_like(raw))
+
+        c_idx = min_c.indices
+        p_idx = min_p.indices.gather(2, c_idx.unsqueeze(2)).squeeze(2)
         return result, c_idx, p_idx
 
-    def _min_distance(
+    def _reduce_distance(
         self,
         *,
         candidate_ports: torch.Tensor,          # [M,C,2]
@@ -93,6 +139,8 @@ class FlowReward:
         target_ports: torch.Tensor,             # [T,P,2]
         target_mask: Optional[torch.Tensor],    # [T,P]
         target_weight: torch.Tensor,            # [T] or [M,T]
+        c_modes: Optional[torch.Tensor] = None, # [M] bool (True=mean)
+        t_modes: Optional[torch.Tensor] = None, # [T] bool (True=mean)
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Returns ([M], c_idx [M,T], p_idx [M,T]).
 
@@ -121,8 +169,8 @@ class FlowReward:
         cand_mask = self._port_mask(candidate_ports, candidate_mask, name="candidate_mask")
         tgt_mask = self._port_mask(target_ports, target_mask, name="target_mask")
         valid = cand_mask[:, None, :, None] & tgt_mask[None, :, None, :]  # [M,T,C,P]
-        dist_min, c_idx, p_idx = self._masked_pair_min(dist, valid)
-        return (dist_min * weight_mt).sum(dim=1), c_idx, p_idx
+        dist_reduced, c_idx, p_idx = self._masked_pair_reduce(dist, valid, c_modes, t_modes)
+        return (dist_reduced * weight_mt).sum(dim=1), c_idx, p_idx
 
     def score(
         self,
@@ -132,14 +180,16 @@ class FlowReward:
         placed_entries_mask: Optional[torch.Tensor],
         placed_exits_mask: Optional[torch.Tensor],
         flow_w: torch.Tensor,
+        exit_modes: Optional[torch.Tensor] = None,
+        entry_modes: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
     ):
         """Compute absolute flow score for the placed state (tensor-only).
 
-        If return_argmin=True, returns (scalar, c_idx [P,P], p_idx [P,P]) where:
-          c_idx[m,t] = exit port index of placed facility m toward facility t
-          p_idx[m,t] = entry port index of placed facility t from facility m
-        Indices are valid only for (m,t) pairs with nonzero flow_w.
+        exit_modes / entry_modes: [P] bool (True=mean) per placed facility.
+        None → all min (backward compatible).
+
+        If return_argmin=True, returns (scalar, c_idx [P,P], p_idx [P,P]).
         """
         placed_en = self._to_port_tensor(placed_entries, name="placed_entries", allow_2d=True)
         placed_ex = self._to_port_tensor(placed_exits, name="placed_exits", allow_2d=True)
@@ -148,12 +198,14 @@ class FlowReward:
             return (zero, None, None) if return_argmin else zero
         if placed_en.shape[1] == 0 or placed_ex.shape[1] == 0:
             return (zero, None, None) if return_argmin else zero
-        per_src, c_idx, p_idx = self._min_distance(
+        per_src, c_idx, p_idx = self._reduce_distance(
             candidate_ports=placed_ex,
             candidate_mask=placed_exits_mask,
             target_ports=placed_en,
             target_mask=placed_entries_mask,
             target_weight=flow_w,
+            c_modes=exit_modes,
+            t_modes=entry_modes,
         )
         total = per_src.sum()
         return (total, c_idx, p_idx) if return_argmin else total
@@ -171,17 +223,22 @@ class FlowReward:
         candidate_exits: torch.Tensor,
         candidate_entries_mask: Optional[torch.Tensor],
         candidate_exits_mask: Optional[torch.Tensor],
+        c_exit_mode: str = "min",
+        c_entry_mode: str = "min",
+        t_entry_modes: Optional[torch.Tensor] = None,
+        t_exit_modes: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
     ):
         """Compute incremental flow cost for M candidate placements.
+
+        Port aggregation modes:
+          c_exit_mode / c_entry_mode: candidate facility's mode (uniform for all M).
+          t_entry_modes / t_exit_modes: [T] bool per placed facility. None → all min.
 
         If return_argmin=True, returns a tuple:
           (delta [M],
            out_argmin: (c_idx [M,T_out], p_idx [M,T_out], out_idx BoolTensor),
            in_argmin:  (c_idx [M,T_in],  p_idx [M,T_in],  in_idx BoolTensor))
-        out_idx / in_idx are the boolean masks over placed facilities used to
-        filter w_out / w_in; they allow the caller to recover which placed
-        facility each column corresponds to.  None if the respective term is absent.
         """
         cand_entries = self._to_port_tensor(candidate_entries, name="candidate_entries", allow_2d=True)
         cand_exits = self._to_port_tensor(candidate_exits, name="candidate_exits", allow_2d=True)
@@ -190,8 +247,8 @@ class FlowReward:
         w_out_t = w_out.view(-1)
         w_in_t = w_in.view(-1)
         m = int(cand_entries.shape[0])
+        device = cand_entries.device
 
-        # Keep only placed facilities that are actual flow targets for this candidate.
         out_idx = (w_out_t != 0)
         in_idx = (w_in_t != 0)
         if placed_entries_mask is not None:
@@ -202,39 +259,41 @@ class FlowReward:
         has_in = bool(in_idx.any().item())
         if not (has_out or has_in):
             if return_argmin:
-                return torch.zeros((m,), dtype=torch.float32, device=cand_entries.device), None, None
-            return torch.zeros((m,), dtype=torch.float32, device=cand_entries.device)
+                return torch.zeros((m,), dtype=torch.float32, device=device), None, None
+            return torch.zeros((m,), dtype=torch.float32, device=device)
 
-        out_term = torch.zeros((m,), dtype=torch.float32, device=cand_entries.device)
-        in_term = torch.zeros((m,), dtype=torch.float32, device=cand_entries.device)
+        out_term = torch.zeros((m,), dtype=torch.float32, device=device)
+        in_term = torch.zeros((m,), dtype=torch.float32, device=device)
         out_am = None
         in_am = None
 
         if has_out:
-            # OUT term: candidate exit -> placed entry (weighted).
             out_entries = placed_en[out_idx]
             out_entries_mask = placed_entries_mask[out_idx] if placed_entries_mask is not None else None
             out_w = w_out_t[out_idx]
-            out_term, oc_idx, op_idx = self._min_distance(
+            out_term, oc_idx, op_idx = self._reduce_distance(
                 candidate_ports=cand_exits,
                 candidate_mask=candidate_exits_mask,
                 target_ports=out_entries,
                 target_mask=out_entries_mask,
                 target_weight=out_w,
+                c_modes=self._mode_tensor(c_exit_mode, m, device),
+                t_modes=t_entry_modes[out_idx] if t_entry_modes is not None else None,
             )
             if return_argmin:
                 out_am = (oc_idx, op_idx, out_idx)
         if has_in:
-            # IN term: placed exit -> candidate entry (weighted).
             in_exits = placed_ex[in_idx]
             in_exits_mask = placed_exits_mask[in_idx] if placed_exits_mask is not None else None
             in_w = w_in_t[in_idx]
-            in_term, ic_idx, ip_idx = self._min_distance(
+            in_term, ic_idx, ip_idx = self._reduce_distance(
                 candidate_ports=cand_entries,
                 candidate_mask=candidate_entries_mask,
                 target_ports=in_exits,
                 target_mask=in_exits_mask,
                 target_weight=in_w,
+                c_modes=self._mode_tensor(c_entry_mode, m, device),
+                t_modes=t_exit_modes[in_idx] if t_exit_modes is not None else None,
             )
             if return_argmin:
                 in_am = (ic_idx, ip_idx, in_idx)
@@ -309,7 +368,7 @@ class FlowCollisionReward:
         bad = torch.full_like(c, float(H + W))
         return torch.where(oob, bad, c)
 
-    def _min_cost_with_collision(
+    def _reduce_cost_with_collision(
         self,
         *,
         candidate_ports: torch.Tensor,          # [M,C,2]
@@ -320,6 +379,8 @@ class FlowCollisionReward:
         blocked: torch.Tensor,
         row_ps: torch.Tensor,
         col_ps: torch.Tensor,
+        c_modes: Optional[torch.Tensor] = None,
+        t_modes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         m = int(candidate_ports.shape[0])
         if m == 0:
@@ -354,8 +415,8 @@ class FlowCollisionReward:
         cand_valid = FlowReward._port_mask(candidate_ports, candidate_mask, name="candidate_mask")
         tgt_valid = FlowReward._port_mask(target_ports, target_mask, name="target_mask")
         valid = cand_valid[:, None, :, None] & tgt_valid[None, :, None, :]
-        cost_min, _, _ = FlowReward._masked_pair_min(cost, valid)
-        return (cost_min * weight_mt).sum(dim=1)
+        cost_reduced, _, _ = FlowReward._masked_pair_reduce(cost, valid, c_modes, t_modes)
+        return (cost_reduced * weight_mt).sum(dim=1)
 
     def score(
         self,
@@ -366,8 +427,9 @@ class FlowCollisionReward:
         placed_exits_mask: Optional[torch.Tensor],
         flow_w: torch.Tensor,
         route_blocked: Optional[torch.Tensor],
+        exit_modes: Optional[torch.Tensor] = None,
+        entry_modes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Fallback to pure flow when blocked map is absent.
         if route_blocked is None:
             return FlowReward().score(
                 placed_entries=placed_entries,
@@ -375,6 +437,8 @@ class FlowCollisionReward:
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
+                exit_modes=exit_modes,
+                entry_modes=entry_modes,
             )
         placed_en = FlowReward._to_port_tensor(placed_entries, name="placed_entries", allow_2d=True)
         placed_ex = FlowReward._to_port_tensor(placed_exits, name="placed_exits", allow_2d=True)
@@ -385,7 +449,7 @@ class FlowCollisionReward:
 
         blocked = route_blocked.to(dtype=torch.bool, device=placed_en.device)
         row_ps, col_ps = self._prefix(blocked)
-        per_src = self._min_cost_with_collision(
+        per_src = self._reduce_cost_with_collision(
             candidate_ports=placed_ex,
             candidate_mask=placed_exits_mask,
             target_ports=placed_en,
@@ -394,6 +458,8 @@ class FlowCollisionReward:
             blocked=blocked,
             row_ps=row_ps,
             col_ps=col_ps,
+            c_modes=exit_modes,
+            t_modes=entry_modes,
         )
         return per_src.sum()
 
@@ -411,8 +477,11 @@ class FlowCollisionReward:
         candidate_entries_mask: Optional[torch.Tensor],
         candidate_exits_mask: Optional[torch.Tensor],
         route_blocked: Optional[torch.Tensor],
+        c_exit_mode: str = "min",
+        c_entry_mode: str = "min",
+        t_entry_modes: Optional[torch.Tensor] = None,
+        t_exit_modes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Fallback to pure flow when blocked map is absent.
         if route_blocked is None:
             return FlowReward().delta(
                 placed_entries=placed_entries,
@@ -425,18 +494,22 @@ class FlowCollisionReward:
                 candidate_exits=candidate_exits,
                 candidate_entries_mask=candidate_entries_mask,
                 candidate_exits_mask=candidate_exits_mask,
+                c_exit_mode=c_exit_mode,
+                c_entry_mode=c_entry_mode,
+                t_entry_modes=t_entry_modes,
+                t_exit_modes=t_exit_modes,
             )
         cand_entries = FlowReward._to_port_tensor(candidate_entries, name="candidate_entries", allow_2d=True)
         cand_exits = FlowReward._to_port_tensor(candidate_exits, name="candidate_exits", allow_2d=True)
         placed_en = FlowReward._to_port_tensor(placed_entries, name="placed_entries", allow_2d=True)
         placed_ex = FlowReward._to_port_tensor(placed_exits, name="placed_exits", allow_2d=True)
         m = int(cand_entries.shape[0])
+        device = cand_entries.device
         if m == 0:
-            return torch.zeros((0,), dtype=torch.float32, device=cand_entries.device)
+            return torch.zeros((0,), dtype=torch.float32, device=device)
 
         w_out_t = w_out.view(-1)
         w_in_t = w_in.view(-1)
-        # Keep only placed facilities that have a non-zero flow relation.
         out_idx = (w_out_t != 0)
         in_idx = (w_in_t != 0)
         if placed_entries_mask is not None:
@@ -446,20 +519,19 @@ class FlowCollisionReward:
         has_out = bool(out_idx.any().item())
         has_in = bool(in_idx.any().item())
         if not (has_out or has_in):
-            return torch.zeros((m,), dtype=torch.float32, device=cand_entries.device)
+            return torch.zeros((m,), dtype=torch.float32, device=device)
 
-        blocked = route_blocked.to(dtype=torch.bool, device=cand_entries.device)
+        blocked = route_blocked.to(dtype=torch.bool, device=device)
         row_ps, col_ps = self._prefix(blocked)
 
-        out_term = torch.zeros((m,), dtype=torch.float32, device=cand_entries.device)
-        in_term = torch.zeros((m,), dtype=torch.float32, device=cand_entries.device)
+        out_term = torch.zeros((m,), dtype=torch.float32, device=device)
+        in_term = torch.zeros((m,), dtype=torch.float32, device=device)
 
         if has_out:
-            # OUT term with collision-aware L-shape routing cost.
             out_entries = placed_en[out_idx]
             out_entries_mask = placed_entries_mask[out_idx] if placed_entries_mask is not None else None
             out_w = w_out_t[out_idx]
-            out_term = self._min_cost_with_collision(
+            out_term = self._reduce_cost_with_collision(
                 candidate_ports=cand_exits,
                 candidate_mask=candidate_exits_mask,
                 target_ports=out_entries,
@@ -468,14 +540,15 @@ class FlowCollisionReward:
                 blocked=blocked,
                 row_ps=row_ps,
                 col_ps=col_ps,
+                c_modes=FlowReward._mode_tensor(c_exit_mode, m, device),
+                t_modes=t_entry_modes[out_idx] if t_entry_modes is not None else None,
             )
 
         if has_in:
-            # IN term with collision-aware L-shape routing cost.
             in_exits = placed_ex[in_idx]
             in_exits_mask = placed_exits_mask[in_idx] if placed_exits_mask is not None else None
             in_w = w_in_t[in_idx]
-            in_term = self._min_cost_with_collision(
+            in_term = self._reduce_cost_with_collision(
                 candidate_ports=cand_entries,
                 candidate_mask=candidate_entries_mask,
                 target_ports=in_exits,
@@ -484,6 +557,8 @@ class FlowCollisionReward:
                 blocked=blocked,
                 row_ps=row_ps,
                 col_ps=col_ps,
+                c_modes=FlowReward._mode_tensor(c_entry_mode, m, device),
+                t_modes=t_exit_modes[in_idx] if t_exit_modes is not None else None,
             )
 
         return out_term + in_term

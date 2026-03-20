@@ -14,6 +14,16 @@ class GroupSpec:
     zone_values: Dict[str, Any]
 
     @property
+    def entry_port_mode(self) -> str:
+        """How this facility's entry ports are aggregated: ``"min"`` or ``"mean"``."""
+        return str(getattr(self, "_entry_port_mode", "min"))
+
+    @property
+    def exit_port_mode(self) -> str:
+        """How this facility's exit ports are aggregated: ``"min"`` or ``"mean"``."""
+        return str(getattr(self, "_exit_port_mode", "min"))
+
+    @property
     def body_area(self) -> float:
         raise NotImplementedError(f"{type(self).__name__}.body_area is not implemented")
 

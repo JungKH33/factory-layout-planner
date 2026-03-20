@@ -6,7 +6,8 @@ import torch
 
 from ..action import GroupId
 
-FlowPortPairs = Dict[Tuple[GroupId, GroupId], Tuple[Tuple[float, float], Tuple[float, float]]]
+FlowPortPair = Tuple[Tuple[float, float], Tuple[float, float]]
+FlowPortPairs = Dict[Tuple[GroupId, GroupId], List[FlowPortPair]]
 
 
 class FlowGraph:

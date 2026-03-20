@@ -857,18 +857,18 @@ def _plot_flow_overlay(ax: plt.Axes, env) -> list[Any]:
                 continue
             dst_p = env.get_state().placements[dst]
             cached = port_pairs.get((src, dst))
-            if cached is not None:
-                (sx, sy), (dx, dy) = cached
+            if cached:
+                draw_pairs = cached
             else:
-                sx, sy = src_p.x_c, src_p.y_c
-                dx, dy = dst_p.x_c, dst_p.y_c
-            ann = ax.annotate(
-                "",
-                xy=(dx, dy),
-                xytext=(sx, sy),
-                arrowprops=dict(arrowstyle="-|>", color="blue", lw=0.8, alpha=0.3),
-            )
-            arts.append(ann)
+                draw_pairs = [((src_p.x_c, src_p.y_c), (dst_p.x_c, dst_p.y_c))]
+            for (sx, sy), (dx, dy) in draw_pairs:
+                ann = ax.annotate(
+                    "",
+                    xy=(dx, dy),
+                    xytext=(sx, sy),
+                    arrowprops=dict(arrowstyle="-|>", color="blue", lw=0.8, alpha=0.3),
+                )
+                arts.append(ann)
     arts.extend(_plot_port_overlay(ax, env, port_pairs=port_pairs))
     return arts
 
@@ -881,7 +881,7 @@ def _plot_port_overlay(
     ax: plt.Axes,
     env,
     *,
-    port_pairs: Optional[dict[Any, tuple[tuple[float, float], tuple[float, float]]]] = None,
+    port_pairs: Optional[dict] = None,
 ) -> list[Any]:
     """Draw all placed ports as fixed-size circles.
 
@@ -896,11 +896,14 @@ def _plot_port_overlay(
     active_entries: set[tuple[float, float]] = set()
     active_exits: set[tuple[float, float]] = set()
     for cached in pairs.values():
-        if not isinstance(cached, tuple) or len(cached) != 2:
+        if not isinstance(cached, list):
             continue
-        exit_xy, entry_xy = cached
-        active_exits.add(_coord_key(exit_xy[0], exit_xy[1]))
-        active_entries.add(_coord_key(entry_xy[0], entry_xy[1]))
+        for pair in cached:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                continue
+            exit_xy, entry_xy = pair
+            active_exits.add(_coord_key(exit_xy[0], exit_xy[1]))
+            active_entries.add(_coord_key(entry_xy[0], entry_xy[1]))
 
     inactive_entry_xs: list[float] = []
     inactive_entry_ys: list[float] = []
