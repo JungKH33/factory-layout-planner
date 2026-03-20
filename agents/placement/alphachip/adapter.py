@@ -152,16 +152,17 @@ class AlphaChipAdapter(BaseAdapter):
             gg = self.engine.group_specs[gid]
             x[int(i), 0] = float(gg.width) / float(self.engine.grid_width)
             x[int(i), 1] = float(gg.height) / float(self.engine.grid_height)
-        # dynamic features (placed + center + rotation)
+        # dynamic features (placed + center)
         for gid in self.engine.get_state().placed:
             idx = self.engine.gid_to_idx.get(gid, None)
             if idx is None:
                 continue
             p = self.engine.get_state().placements[gid]
+            x_c = float(getattr(p, "x_c", (float(getattr(p, "min_x", 0.0)) + float(getattr(p, "max_x", 0.0))) / 2.0))
+            y_c = float(getattr(p, "y_c", (float(getattr(p, "min_y", 0.0)) + float(getattr(p, "max_y", 0.0))) / 2.0))
             x[int(idx), 2] = 1.0
-            x[int(idx), 3] = float(p.x_c) / float(self.engine.grid_width)
-            x[int(idx), 4] = float(p.y_c) / float(self.engine.grid_height)
-            x[int(idx), 5] = float(int(p.rotation)) / 1.0
+            x[int(idx), 3] = x_c / float(self.engine.grid_width)
+            x[int(idx), 4] = y_c / float(self.engine.grid_height)
         return x
 
     def _build_netlist_metadata(self) -> torch.Tensor:

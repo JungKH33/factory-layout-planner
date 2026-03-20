@@ -8,14 +8,15 @@ import torch
 import torch.nn.functional as F
 
 from ..reward import FlowReward
+from .base import GroupSpec
 
 GridXY = Tuple[int, int]
 StrideBBox = Tuple[int, int, int, int]  # (min_sx, min_sy, max_sx, max_sy), inclusive
 
 
 @dataclass(frozen=True)
-class DynamicGeom:
-    """Resolved dynamic geometry in placed orientation."""
+class DynamicSpec(GroupSpec):
+    """Resolved dynamic placement spec in placed orientation."""
 
     rotation: int
     unit_w: int
@@ -30,6 +31,8 @@ class DynamicGeom:
     clearance_bottom: int
     clearance_top: int
     device: torch.device
+    id: object | None = None
+    zone_values: Dict[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
         if int(self.unit_w) <= 0 or int(self.unit_h) <= 0:
@@ -42,6 +45,13 @@ class DynamicGeom:
             raise ValueError("max_capacity must be > 0")
         if int(self.stride_w) <= 0 or int(self.stride_h) <= 0:
             raise ValueError("stride_w/stride_h must be > 0")
+
+    @property
+    def body_area(self) -> float:
+        return float(self.unit_w) * float(self.unit_h)
+
+    def set_device(self, device: torch.device) -> None:
+        object.__setattr__(self, "device", torch.device(device))
 
 
 @dataclass
@@ -64,10 +74,6 @@ class DynamicPlacement:
     max_y: Optional[float] = None
     entries: List[Tuple[float, float]] = field(default_factory=list)
     exits: List[Tuple[float, float]] = field(default_factory=list)
-
-    def pose(self) -> Tuple[int, int, int]:
-        """Return bottom-left pose tuple (x_bl, y_bl, rotation)."""
-        return int(self.x_bl), int(self.y_bl), int(self.rotation)
 
 
 class DynamicPlanner:
@@ -222,7 +228,7 @@ class DynamicPlanner:
     @staticmethod
     def _build_capacity_grid(
         *,
-        geom: DynamicGeom,
+        geom: DynamicSpec,
         height_map: torch.Tensor,
         xs: torch.Tensor,
         ys: torch.Tensor,
@@ -296,7 +302,7 @@ class DynamicPlanner:
     @staticmethod
     def _build_placeable_grid(
         *,
-        geom: DynamicGeom,
+        geom: DynamicSpec,
         height_map: torch.Tensor,
         xs: torch.Tensor,
         ys: torch.Tensor,
@@ -388,7 +394,7 @@ class DynamicPlanner:
     def _build_flow_penalty_grid(
         self,
         *,
-        geom: DynamicGeom,
+        geom: DynamicSpec,
         xs: torch.Tensor,
         ys: torch.Tensor,
         flow_out_target_entries_xy: Optional[torch.Tensor],
@@ -449,7 +455,7 @@ class DynamicPlanner:
         *,
         x_bl: int,
         y_bl: int,
-        geom: DynamicGeom,
+        geom: DynamicSpec,
         height_map: torch.Tensor,
         invalid: Optional[torch.Tensor] = None,
         clear_invalid: Optional[torch.Tensor] = None,
@@ -501,7 +507,7 @@ class DynamicPlanner:
             if int(w_t.shape[0]) != int(xy_t.shape[0]):
                 raise ValueError(f"{w_name} length must match {xy_name}")
 
-        # Normalize all tensors onto geom.device (StaticSpec-style device ownership).
+        # Normalize all tensors onto geom.device (group spec-style device ownership).
         height_map = height_map.to(device=device)
         if invalid is not None:
             invalid = invalid.to(device=device)

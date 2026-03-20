@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from ..action import GroupId
-from ..placement.static import StaticSpec
+from ..placement.base import GroupSpec
 
 
 class GridMaps:
@@ -57,7 +57,7 @@ class GridMaps:
         self.bbox_max_y = 0.0
 
         # Static caches.
-        self._group_specs: Dict[GroupId, StaticSpec] = {}
+        self._group_specs: Dict[GroupId, GroupSpec] = {}
         self._zone_invalid_by_gid: Dict[GroupId, torch.Tensor] = {}
         self._static_invalid_ps: torch.Tensor = self._build_prefix(self._static_invalid)
         self._zone_invalid_ps_by_gid: Dict[GroupId, torch.Tensor] = {}
@@ -792,7 +792,7 @@ class GridMaps:
         result[pad_bottom:pad_bottom + valid_h, pad_left:pad_left + valid_w] = valid_mask
         return result
 
-    def bind_group_specs(self, group_specs: Dict[GroupId, StaticSpec]) -> None:
+    def bind_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> None:
         self._group_specs = group_specs
         self._build_zone_invalid_cache()
 

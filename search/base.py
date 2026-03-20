@@ -79,7 +79,7 @@ class SearchResult:
     """하나의 완료된 배치 결과"""
     cost: float                                   # cost() 값 (낮을수록 좋음)
     cum_reward: float                             # 누적 reward
-    positions: Dict[str, Tuple[int, int, int]]    # {gid: (x, y, rot)}
+    positions: Dict[str, Tuple[float, float]]     # {gid: (x_c, y_c)}
     engine_state: EnvState                        # env 복원용
 
 

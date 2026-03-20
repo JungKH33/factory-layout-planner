@@ -1062,25 +1062,25 @@ if __name__ == "__main__":
     from agents.placement.alphachip import AlphaChipAdapter
     from agents.placement.greedy import GreedyAdapter
     from envs.env import FactoryLayoutEnv
-    from envs.placement.static import StaticSpec
+    from envs.placement.static_rect import StaticRectSpec
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     # --- groups (footprint width/height + zone_values) ---
     groups = {
-        "A": StaticSpec(
+        "A": StaticRectSpec(
             device=dev, id="A", width=20, height=10,
             entries_rel=[(10.0, 5.0)], exits_rel=[(10.0, 5.0)],
             clearance_left_rel=0, clearance_right_rel=0, clearance_bottom_rel=0, clearance_top_rel=0,
             rotatable=True, zone_values={"weight": 3.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
-        "B": StaticSpec(
+        "B": StaticRectSpec(
             device=dev, id="B", width=16, height=16,
             entries_rel=[(8.0, 8.0)], exits_rel=[(8.0, 8.0)],
             clearance_left_rel=0, clearance_right_rel=0, clearance_bottom_rel=0, clearance_top_rel=0,
             rotatable=True, zone_values={"weight": 4.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
-        "C": StaticSpec(
+        "C": StaticRectSpec(
             device=dev, id="C", width=18, height=12,
             entries_rel=[(9.0, 6.0)], exits_rel=[(9.0, 6.0)],
             clearance_left_rel=0, clearance_right_rel=0, clearance_bottom_rel=0, clearance_top_rel=0,

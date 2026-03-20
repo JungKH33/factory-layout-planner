@@ -14,7 +14,8 @@ from .reward import (
     RewardComposer,
     TerminalReward,
 )
-from .placement.static import StaticSpec
+from .placement.base import GroupSpec
+from .placement.static_rect import StaticRectSpec
 from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
 
@@ -41,7 +42,7 @@ class FactoryLayoutEnv(gym.Env):
         *,
         grid_width: int,
         grid_height: int,
-        group_specs: Dict[GroupId, StaticSpec],
+        group_specs: Dict[GroupId, GroupSpec],
         group_flow: Optional[Dict[GroupId, Dict[GroupId, float]]] = None,
         # Forbidden areas: [{"rect": [x0, y0, x1, y1]}, ...]
         forbidden_areas: Optional[List[Dict[str, Any]]] = None,
@@ -105,7 +106,7 @@ class FactoryLayoutEnv(gym.Env):
             reward_scale=float(self.reward_scale),
         )
         group_areas = {
-            gid: float(spec.width) * float(spec.height)
+            gid: float(spec.body_area)
             for gid, spec in self.group_specs.items()
         }
         self._terminal = TerminalReward(
@@ -114,12 +115,12 @@ class FactoryLayoutEnv(gym.Env):
             group_areas=group_areas,
         )
 
-    def _normalize_group_specs(self, group_specs: Dict[GroupId, StaticSpec]) -> Dict[GroupId, StaticSpec]:
+    def _normalize_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> Dict[GroupId, GroupSpec]:
         """Normalize group specs onto env device and validate id/key consistency."""
-        out: Dict[GroupId, StaticSpec] = {}
+        out: Dict[GroupId, GroupSpec] = {}
         for gid, s in dict(group_specs).items():
-            if not isinstance(s, StaticSpec):
-                raise TypeError(f"group_specs[{gid!r}] must be StaticSpec, got {type(s).__name__}")
+            if not isinstance(s, GroupSpec):
+                raise TypeError(f"group_specs[{gid!r}] must be GroupSpec, got {type(s).__name__}")
             sid = getattr(s, "id", gid)
             if sid != gid:
                 raise ValueError(f"group_specs key/id mismatch: key={gid!r}, spec.id={sid!r}")
@@ -127,7 +128,7 @@ class FactoryLayoutEnv(gym.Env):
             out[gid] = s
         return out
 
-    def _group_spec(self, gid: GroupId) -> StaticSpec:
+    def _group_spec(self, gid: GroupId) -> GroupSpec:
         geom = self.group_specs.get(gid, None)
         if geom is None:
             raise KeyError(f"unknown gid={gid!r}")
@@ -210,8 +211,7 @@ class FactoryLayoutEnv(gym.Env):
     ) -> torch.Tensor:
         """Score already-resolved placements via reward delta.
 
-        Reads geometry (entries, exits, min/max) directly from PlacementBase —
-        no rotation/mirror or StaticPlacement-specific fields accessed.
+        Reads center/geometry directly from PlacementBase.
         """
         M = len(placements)
         if M == 0:
@@ -268,7 +268,7 @@ class FactoryLayoutEnv(gym.Env):
         return gid_eff, float(action.x_c), float(action.y_c)
 
     def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'PlacementBase | None']:
-        """Resolve a center-based EnvAction to (gid, concrete StaticPlacement or None).
+        """Resolve a center-based EnvAction to (gid, concrete placement or None).
 
         Tries all (rotation, mirror) variants at the given center and picks the
         cheapest placeable one.
@@ -365,9 +365,8 @@ class FactoryLayoutEnv(gym.Env):
             if p is not None:
                 placements.append({
                     "gid": gid,
-                    "x": int(getattr(p, "x_bl")),
-                    "y": int(getattr(p, "y_bl")),
-                    "rotation": int(p.rotation),
+                    "x": int(float(getattr(p, "min_x", 0.0))),
+                    "y": int(float(getattr(p, "min_y", 0.0))),
                 })
         
         # 그룹 정보
@@ -595,7 +594,7 @@ if __name__ == "__main__":
     # C (18×12): 왼쪽·위 각 2개 entry (weight=12 → x>=60 영역 필수)
     # ---------------------------------------------------------------
     group_specs = {
-        "A": StaticSpec(
+        "A": StaticRectSpec(
             device=dev, id="A", width=20, height=10,
             entries_rel=[(0.0, 3.0), (0.0, 7.0)],      # 왼쪽 끝 상·하
             exits_rel=[(20.0, 5.0), (10.0, 10.0)],     # 오른쪽 끝 중간, 위쪽 끝 중간
@@ -604,7 +603,7 @@ if __name__ == "__main__":
             rotatable=True,
             zone_values={"weight": 3.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
-        "B": StaticSpec(
+        "B": StaticRectSpec(
             device=dev, id="B", width=15, height=15,
             entries_rel=[(0.0, 5.0), (0.0, 10.0)],     # 왼쪽 끝 하·상
             exits_rel=[(15.0, 7.5), (7.5, 0.0)],       # 오른쪽 끝 중간, 아래쪽 끝 중간
@@ -613,7 +612,7 @@ if __name__ == "__main__":
             rotatable=True,
             zone_values={"weight": 4.0, "height": 2.0, "dry": 0.0, "placeable": 1},
         ),
-        "C": StaticSpec(
+        "C": StaticRectSpec(
             device=dev, id="C", width=18, height=12,
             entries_rel=[(0.0, 4.0), (0.0, 8.0), (9.0, 12.0)],  # 왼쪽 끝 하·상, 위쪽 끝 중간
             exits_rel=[(18.0, 4.0), (18.0, 8.0)],                # 오른쪽 끝 하·상

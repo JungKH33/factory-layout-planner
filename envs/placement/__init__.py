@@ -1,12 +1,16 @@
-from .base import PlacementBase
-from .static import StaticSpec, StaticPlacement
-from .dynamic import DynamicGeom, DynamicPlacement, DynamicPlanner
+from .base import GroupSpec, PlacementBase
+from .static_rect import StaticRectPlacement, StaticRectSpec
+from .static_irregular import StaticIrregularPlacement, StaticIrregularSpec
+from .dynamic import DynamicSpec, DynamicPlacement, DynamicPlanner
 
 __all__ = [
     "PlacementBase",
-    "StaticSpec",
-    "StaticPlacement",
-    "DynamicGeom",
+    "GroupSpec",
+    "StaticRectSpec",
+    "StaticRectPlacement",
+    "StaticIrregularSpec",
+    "StaticIrregularPlacement",
+    "DynamicSpec",
     "DynamicPlacement",
     "DynamicPlanner",
 ]

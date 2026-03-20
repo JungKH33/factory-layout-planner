@@ -25,7 +25,7 @@ class DifficultyOrderingAgent:
             inv = static_only | env.get_maps().zone_for_geom(spec)
             invalid_area = int(inv.to(torch.int64).sum().item())
             free_area = max(1, int(total_area) - int(invalid_area))
-            facility_area = float(spec.width) * float(spec.height)
+            facility_area = float(spec.body_area)
             difficulty = float(facility_area) / float(free_area)
             ordering.append((difficulty, facility_area, gid))
 

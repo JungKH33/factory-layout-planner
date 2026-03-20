@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
-from .base import PlacementBase
+from .base import GroupSpec, PlacementBase
 
 if TYPE_CHECKING:
     from ..state.base import EnvState
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class VariantInfo:
     """One unique (rotation, mirror) variant with precomputed geometry."""
+
     rotation: int
     mirror: bool
     body_w: int
@@ -29,33 +30,32 @@ class VariantInfo:
     cT: int
     clearance_origin: Tuple[int, int]
     is_rectangular: bool
-    entry_offsets: Tuple[Tuple[float, float], ...]   # center-relative
-    exit_offsets: Tuple[Tuple[float, float], ...]     # center-relative
+    entry_offsets: Tuple[Tuple[float, float], ...]
+    exit_offsets: Tuple[Tuple[float, float], ...]
     shape_key: tuple
-    cost_key: tuple  # (body_w, body_h, cL, cR, cB, cT, entry_offsets, exit_offsets)
+    cost_key: tuple
+
 
 @dataclass
-class StaticPlacement(PlacementBase):
-    """Resolved absolute placement for a placed static group (world/placed orientation).
+class StaticRectPlacement(PlacementBase):
+    """Resolved absolute placement for a rectangular static group."""
 
-    Inherits the common placement contract from PlacementBase and adds
-    geometry fields (w, h, x_c, y_c) that are specific to static (fixed-size) facilities.
-    ``rotation`` is the concrete rotation (0/90/180/270) and ``mirror`` indicates
-    whether a local x-axis flip was applied before rotation.
-
-    Center coordinates use ``x_c``/``y_c`` naming, matching ``EnvAction``.
-    """
-    # TODO(modularization): move single-port selection (including empty -> center fallback)
-    # from env into placement-level API so env does not handle entries/exits shape branching.
+    x_bl: int
+    y_bl: int
+    rotation: int
     w: float
     h: float
-    x_c: float
-    y_c: float
+    # TODO(placement-contract): remove duplicated clearance scalars after
+    # all placement consumers rely on clearance_map/clearance_origin only.
+    clearance_left: int
+    clearance_right: int
+    clearance_bottom: int
+    clearance_top: int
     mirror: bool = False
 
 
 @dataclass
-class StaticSpec:
+class StaticRectSpec(GroupSpec):
     """Static facility spec and placement helper for grid-aligned groups.
 
     All fields are defined in the local frame before rotation:
@@ -88,7 +88,7 @@ class StaticSpec:
         self.height = int(self.height)
         if self.width <= 0 or self.height <= 0:
             raise ValueError(
-                f"StaticSpec {self.id!r} must have positive width/height, "
+                f"StaticRectSpec {self.id!r} must have positive width/height, "
                 f"got width={self.width}, height={self.height}"
             )
 
@@ -102,7 +102,7 @@ class StaticSpec:
 
         if invalid_ports:
             logger.warning(
-                f"StaticSpec {self.id!r} has ports outside local bounds {bounds}: "
+                f"StaticRectSpec {self.id!r} has ports outside local bounds {bounds}: "
                 + ", ".join(invalid_ports)
             )
 
@@ -200,12 +200,16 @@ class StaticSpec:
             self._variant_exit_off_t.append(xt)
 
         logger.info(
-            "StaticSpec %r variant summary: raw=%d, unique_variants=%d, unique_shapes=%d",
+            "StaticRectSpec %r variant summary: raw=%d, unique_variants=%d, unique_shapes=%d",
             self.id,
             raw_variant_count,
             len(self._variants),          # ck 기준 unique
             len(self._variants_by_shape),  # shape 기준 unique
         )
+
+    @property
+    def body_area(self) -> float:
+        return float(self.width) * float(self.height)
 
     def set_device(self, device: torch.device) -> None:
         """Move precomputed tensors to *device* in-place."""
@@ -291,7 +295,7 @@ class StaticSpec:
     @staticmethod
     def _rotate_point(dx: float, dy: float, rotation: int) -> Tuple[float, float]:
         """Rotate a local point (dx,dy) CCW by multiples of 90 degrees."""
-        r = StaticSpec._norm_rotation(rotation)
+        r = StaticRectSpec._norm_rotation(rotation)
         if r == 0:
             return (float(dx), float(dy))
         if r == 90:
@@ -432,8 +436,8 @@ class StaticSpec:
         y_c: float,
         rotation: int = 0,
         mirror: bool = False,
-    ) -> StaticPlacement:
-        """Build a StaticPlacement from center coords + concrete rotation.
+    ) -> StaticRectPlacement:
+        """Build a StaticRectPlacement from center coords + concrete rotation.
 
         Used as a force-place fallback when resolve() returns None.
         """
@@ -453,7 +457,9 @@ class StaticSpec:
             device=self.device,
         )
         clearance_origin = (int(cL), int(cB))
-        return StaticPlacement(
+        return StaticRectPlacement(
+            x_c=x_c_s,
+            y_c=y_c_s,
             entries=entries,
             exits=exits,
             min_x=float(x_bl),
@@ -469,8 +475,6 @@ class StaticSpec:
             rotation=int(r),
             w=float(w),
             h=float(h),
-            x_c=x_c_s,
-            y_c=y_c_s,
             clearance_left=int(cL),
             clearance_right=int(cR),
             clearance_bottom=int(cB),
@@ -485,7 +489,7 @@ class StaticSpec:
         y_c: float,
         is_placeable_fn: Callable[..., bool],
         score_fn: Optional[Callable] = None,
-    ) -> 'StaticPlacement | None':
+    ) -> 'StaticRectPlacement | None':
         """Resolve center coordinates to the best concrete placement, or None.
 
         Tries all (rotation, mirror) variants, derives BL from center per variant,
@@ -494,10 +498,10 @@ class StaticSpec:
 
         Callbacks:
           is_placeable_fn(x_bl, y_bl, body_map, clearance_map, clearance_origin, is_rectangular) -> bool
-          score_fn(placements: List[StaticPlacement]) -> Tensor[N]
+          score_fn(placements: List[StaticRectPlacement]) -> Tensor[N]
         If *score_fn* is None, picks the first feasible variant.
         """
-        placeable: List[StaticPlacement] = []
+        placeable: List[StaticRectPlacement] = []
         for vi in self._variants:
             w = float(vi.body_w)
             h = float(vi.body_h)
@@ -519,7 +523,9 @@ class StaticSpec:
 
             entries = list(self._entries_from_center(x_c_s, y_c_s, vi.rotation, mirror=vi.mirror))
             exits = list(self._exits_from_center(x_c_s, y_c_s, vi.rotation, mirror=vi.mirror))
-            placeable.append(StaticPlacement(
+            placeable.append(StaticRectPlacement(
+                x_c=x_c_s,
+                y_c=y_c_s,
                 entries=entries, exits=exits,
                 min_x=float(x_bl), max_x=float(x_bl) + w,
                 min_y=float(y_bl), max_y=float(y_bl) + h,
@@ -528,7 +534,7 @@ class StaticSpec:
                 clearance_origin=clearance_origin,
                 is_rectangular=bool(is_rectangular),
                 x_bl=x_bl, y_bl=y_bl, rotation=vi.rotation,
-                w=w, h=h, x_c=x_c_s, y_c=y_c_s,
+                w=w, h=h,
                 clearance_left=vi.cL, clearance_right=vi.cR,
                 clearance_bottom=vi.cB, clearance_top=vi.cT,
                 mirror=vi.mirror,
@@ -699,7 +705,7 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     H, W = 64, 64
-    geom = StaticSpec(
+    geom = StaticRectSpec(
         id="demo",
         device=device,
         width=8,
@@ -727,7 +733,7 @@ if __name__ == "__main__":
     )
 
     # --- Mirrorable spec ---
-    geom_m = StaticSpec(
+    geom_m = StaticRectSpec(
         id="mirror_demo",
         device=device,
         width=8,

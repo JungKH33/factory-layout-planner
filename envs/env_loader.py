@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 
 from envs.env import FactoryLayoutEnv
-from envs.placement.static import StaticSpec
+from envs.placement.base import GroupSpec
+from envs.placement.static_rect import StaticRectSpec
 
 GroupId = Union[int, str]
 RectI = Tuple[int, int, int, int]  # (x0, y0, x1, y1) half-open
@@ -56,7 +57,7 @@ def load_env(
         except Exception as e:
             raise ValueError(f"expected number, got {v!r}") from e
 
-    group_specs: Dict[GroupId, StaticSpec] = {}
+    group_specs: Dict[GroupId, GroupSpec] = {}
     for gid, g in groups_cfg.items():
         w = _to_int(g["width"])
         h = _to_int(g["height"])
@@ -70,7 +71,7 @@ def load_env(
         zone_values_raw = g.get("zone_values", {})
         if not isinstance(zone_values_raw, dict):
             raise ValueError(f"groups.{gid}.zone_values must be an object")
-        group_specs[gid] = StaticSpec(
+        group_specs[gid] = StaticRectSpec(
             device=dev,
             id=gid,
             width=w,

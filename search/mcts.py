@@ -299,7 +299,7 @@ class MCTSSearch(BaseSearch):
         if self.top_tracker is None:
             return
         cost = engine.total_cost()
-        positions = {str(gid): p.pose() for gid, p in engine.get_state().placements.items()}
+        positions = {str(gid): p.position() for gid, p in engine.get_state().placements.items()}
         self.top_tracker.add(SearchResult(
             cost=cost,
             cum_reward=cum_reward,

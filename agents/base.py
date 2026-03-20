@@ -120,8 +120,9 @@ class BaseAdapter(ABC):
             p = eng.get_state().placements.get(gid, None)
             if p is None:
                 continue
-            x_bl, y_bl, rotation = p.pose()
-            parts.append(f"{gid}:{int(x_bl)}:{int(y_bl)}:{int(rotation)}")
+            x_c = float(getattr(p, "x_c", (float(getattr(p, "min_x", 0.0)) + float(getattr(p, "max_x", 0.0))) / 2.0))
+            y_c = float(getattr(p, "y_c", (float(getattr(p, "min_y", 0.0)) + float(getattr(p, "max_y", 0.0))) / 2.0))
+            parts.append(f"{gid}:{x_c:.4f}:{y_c:.4f}")
         raw = "|".join(parts).encode("utf-8", errors="ignore")
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 

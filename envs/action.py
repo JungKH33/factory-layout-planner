@@ -13,7 +13,7 @@ class EnvAction:
     - gid is required.
     - x_c/y_c are center coordinates (float, orient-independent).
     - The engine resolves to concrete rotation/mirror via
-      StaticSpec.resolve().
+      GroupSpec.resolve().
     """
 
     gid: GroupId
