@@ -69,6 +69,10 @@ class GridMaps:
         self._zone_invalid_by_gid: Dict[GroupId, torch.Tensor] = {}
         self._static_invalid_ps: Optional[torch.Tensor] = None
         self._zone_invalid_ps_by_gid: Dict[GroupId, torch.Tensor] = {}
+        self._rect_linear_offsets_cache: Dict[
+            Tuple[int, int, int, int, int, int],
+            Tuple[torch.Tensor, torch.Tensor],
+        ] = {}
 
         # Runtime prefix caches (prefixsum backend only).
         self._occ_invalid_ps: Optional[torch.Tensor] = None
@@ -163,6 +167,76 @@ class GridMaps:
         if h <= 0 or w <= 0:
             raise ValueError(f"window size must be positive, got ({h},{w})")
         return prefix[h:, w:] - prefix[:-h, w:] - prefix[h:, :-w] + prefix[:-h, :-w]
+
+    @staticmethod
+    def _rect_sum_batch(
+        prefix: torch.Tensor,
+        *,
+        x0: torch.Tensor,
+        y0: torch.Tensor,
+        x1: torch.Tensor,
+        y1: torch.Tensor,
+    ) -> torch.Tensor:
+        if prefix.dim() != 2:
+            raise ValueError(f"prefix must be [H+1,W+1], got {tuple(prefix.shape)}")
+        if x0.shape != y0.shape or x0.shape != x1.shape or x0.shape != y1.shape:
+            raise ValueError("rectangle corner tensors must share the same shape")
+        stride = int(prefix.shape[1])
+        flat = prefix.reshape(-1)
+        x0 = x0.to(dtype=torch.long)
+        y0 = y0.to(dtype=torch.long)
+        x1 = x1.to(dtype=torch.long)
+        y1 = y1.to(dtype=torch.long)
+        idx00 = y0 * stride + x0
+        idx01 = y0 * stride + x1
+        idx10 = y1 * stride + x0
+        idx11 = y1 * stride + x1
+        return flat[idx11] - flat[idx01] - flat[idx10] + flat[idx00]
+
+    def _get_rect_linear_offsets(
+        self,
+        *,
+        body_w: int,
+        body_h: int,
+        cL: int,
+        cR: int,
+        cB: int,
+        cT: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        key = (int(body_w), int(body_h), int(cL), int(cR), int(cB), int(cT))
+        cached = self._rect_linear_offsets_cache.get(key, None)
+        if cached is not None:
+            return cached
+
+        body_x = torch.arange(int(body_w), dtype=torch.long, device=self._device)
+        body_y = torch.arange(int(body_h), dtype=torch.long, device=self._device)
+        body_offsets = (body_y[:, None] * int(self._W) + body_x[None, :]).reshape(-1)
+
+        pad_x = torch.arange(-int(cL), int(body_w) + int(cR), dtype=torch.long, device=self._device)
+        pad_y = torch.arange(-int(cB), int(body_h) + int(cT), dtype=torch.long, device=self._device)
+        pad_offsets = (pad_y[:, None] * int(self._W) + pad_x[None, :]).reshape(-1)
+
+        out = (body_offsets, pad_offsets)
+        self._rect_linear_offsets_cache[key] = out
+        return out
+
+    def _ensure_static_prefix_cache(self) -> torch.Tensor:
+        prefix = self._static_invalid_ps
+        if isinstance(prefix, torch.Tensor):
+            return prefix
+        prefix = self._build_prefix(self._static_invalid)
+        self._static_invalid_ps = prefix
+        return prefix
+
+    def _ensure_runtime_prefix_cache(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        occ_ps = self._occ_invalid_ps
+        clear_ps = self._clear_invalid_ps
+        if isinstance(occ_ps, torch.Tensor) and isinstance(clear_ps, torch.Tensor):
+            return occ_ps, clear_ps
+        self._rebuild_runtime_prefix_cache()
+        if self._occ_invalid_ps is None or self._clear_invalid_ps is None:
+            raise RuntimeError("runtime prefix cache rebuild failed")
+        return self._occ_invalid_ps, self._clear_invalid_ps
 
     def _rebuild_runtime_prefix_cache(self) -> None:
         if not self._uses_prefixsum:
@@ -287,22 +361,22 @@ class GridMaps:
         valid_h: int,
         valid_w: int,
     ) -> torch.Tensor:
-        if self._static_invalid_ps is None or self._occ_invalid_ps is None or self._clear_invalid_ps is None:
-            raise RuntimeError("prefixsum backend requires runtime/static prefix caches")
+        static_ps = self._ensure_static_prefix_cache()
+        occ_ps, clear_ps = self._ensure_runtime_prefix_cache()
 
         kw = int(body_w + cL + cR)
         kh = int(body_h + cB + cT)
         zone_ps = self._get_zone_invalid_ps(gid)
 
-        pad_static = self._window_sum(self._static_invalid_ps, kh, kw)
-        pad_occ = self._window_sum(self._occ_invalid_ps, kh, kw)
+        pad_static = self._window_sum(static_ps, kh, kw)
+        pad_occ = self._window_sum(occ_ps, kh, kw)
         pad_zone = self._window_sum(zone_ps, kh, kw)
         pad_hit = pad_static + pad_occ + pad_zone
 
-        body_static = self._window_sum(self._static_invalid_ps, body_h, body_w)
-        body_occ = self._window_sum(self._occ_invalid_ps, body_h, body_w)
+        body_static = self._window_sum(static_ps, body_h, body_w)
+        body_occ = self._window_sum(occ_ps, body_h, body_w)
         body_zone = self._window_sum(zone_ps, body_h, body_w)
-        body_clear = self._window_sum(self._clear_invalid_ps, body_h, body_w)
+        body_clear = self._window_sum(clear_ps, body_h, body_w)
 
         body_hit = (
             body_static[cB: cB + valid_h, cL: cL + valid_w]
@@ -311,6 +385,223 @@ class GridMaps:
             + body_clear[cB: cB + valid_h, cL: cL + valid_w]
         )
         return (pad_hit == 0) & (body_hit == 0)
+
+    def _is_placeable_batch_prefix(
+        self,
+        *,
+        gid: GroupId,
+        x_bl: torch.Tensor,
+        y_bl: torch.Tensor,
+        body_w: int,
+        body_h: int,
+        cL: int,
+        cR: int,
+        cB: int,
+        cT: int,
+    ) -> torch.Tensor:
+        """Direct rectangle query path for sparse batch checks.
+
+        This stays rectangle-specific so future irregular shapes can add a
+        separate mask-based query path without rewriting the full-map backends.
+        """
+        if x_bl.shape != y_bl.shape:
+            raise ValueError(
+                f"x_bl and y_bl must share shape, got {tuple(x_bl.shape)} vs {tuple(y_bl.shape)}"
+            )
+
+        result = torch.zeros_like(x_bl, dtype=torch.bool, device=self._device)
+        if result.numel() == 0:
+            return result
+
+        bw = int(body_w)
+        bh = int(body_h)
+        kw = int(bw + cL + cR)
+        kh = int(bh + cB + cT)
+        if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
+            return result
+
+        x_bl = x_bl.to(device=self._device, dtype=torch.long)
+        y_bl = y_bl.to(device=self._device, dtype=torch.long)
+
+        body_x0 = x_bl
+        body_y0 = y_bl
+        body_x1 = x_bl + bw
+        body_y1 = y_bl + bh
+
+        pad_x0 = x_bl - int(cL)
+        pad_y0 = y_bl - int(cB)
+        pad_x1 = x_bl + bw + int(cR)
+        pad_y1 = y_bl + bh + int(cT)
+
+        in_bounds = (
+            (body_x0 >= 0)
+            & (body_y0 >= 0)
+            & (body_x1 <= self._W)
+            & (body_y1 <= self._H)
+            & (pad_x0 >= 0)
+            & (pad_y0 >= 0)
+            & (pad_x1 <= self._W)
+            & (pad_y1 <= self._H)
+        )
+        if not bool(in_bounds.any().item()):
+            return result
+
+        static_ps = self._ensure_static_prefix_cache()
+        occ_ps, clear_ps = self._ensure_runtime_prefix_cache()
+        zone_ps = self._get_zone_invalid_ps(gid)
+
+        body_static = self._rect_sum_batch(
+            static_ps,
+            x0=body_x0[in_bounds],
+            y0=body_y0[in_bounds],
+            x1=body_x1[in_bounds],
+            y1=body_y1[in_bounds],
+        )
+        body_occ = self._rect_sum_batch(
+            occ_ps,
+            x0=body_x0[in_bounds],
+            y0=body_y0[in_bounds],
+            x1=body_x1[in_bounds],
+            y1=body_y1[in_bounds],
+        )
+        body_zone = self._rect_sum_batch(
+            zone_ps,
+            x0=body_x0[in_bounds],
+            y0=body_y0[in_bounds],
+            x1=body_x1[in_bounds],
+            y1=body_y1[in_bounds],
+        )
+        body_clear = self._rect_sum_batch(
+            clear_ps,
+            x0=body_x0[in_bounds],
+            y0=body_y0[in_bounds],
+            x1=body_x1[in_bounds],
+            y1=body_y1[in_bounds],
+        )
+
+        pad_static = self._rect_sum_batch(
+            static_ps,
+            x0=pad_x0[in_bounds],
+            y0=pad_y0[in_bounds],
+            x1=pad_x1[in_bounds],
+            y1=pad_y1[in_bounds],
+        )
+        pad_occ = self._rect_sum_batch(
+            occ_ps,
+            x0=pad_x0[in_bounds],
+            y0=pad_y0[in_bounds],
+            x1=pad_x1[in_bounds],
+            y1=pad_y1[in_bounds],
+        )
+        pad_zone = self._rect_sum_batch(
+            zone_ps,
+            x0=pad_x0[in_bounds],
+            y0=pad_y0[in_bounds],
+            x1=pad_x1[in_bounds],
+            y1=pad_y1[in_bounds],
+        )
+
+        result[in_bounds] = (
+            (body_static + body_occ + body_zone == 0)
+            & (body_clear == 0)
+            & (pad_static + pad_occ + pad_zone == 0)
+        )
+        return result
+
+    def _is_placeable_batch_gather(
+        self,
+        *,
+        gid: GroupId,
+        x_bl: torch.Tensor,
+        y_bl: torch.Tensor,
+        body_w: int,
+        body_h: int,
+        cL: int,
+        cR: int,
+        cB: int,
+        cT: int,
+    ) -> torch.Tensor:
+        if x_bl.shape != y_bl.shape:
+            raise ValueError(
+                f"x_bl and y_bl must share shape, got {tuple(x_bl.shape)} vs {tuple(y_bl.shape)}"
+            )
+
+        result = torch.zeros(x_bl.shape, dtype=torch.bool, device=self._device)
+        if result.numel() == 0:
+            return result
+
+        bw = int(body_w)
+        bh = int(body_h)
+        kw = int(bw + cL + cR)
+        kh = int(bh + cB + cT)
+        if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
+            return result
+
+        x_flat = x_bl.to(device=self._device, dtype=torch.long).reshape(-1)
+        y_flat = y_bl.to(device=self._device, dtype=torch.long).reshape(-1)
+
+        body_x0 = x_flat
+        body_y0 = y_flat
+        body_x1 = x_flat + bw
+        body_y1 = y_flat + bh
+
+        pad_x0 = x_flat - int(cL)
+        pad_y0 = y_flat - int(cB)
+        pad_x1 = x_flat + bw + int(cR)
+        pad_y1 = y_flat + bh + int(cT)
+
+        in_bounds = (
+            (body_x0 >= 0)
+            & (body_y0 >= 0)
+            & (body_x1 <= self._W)
+            & (body_y1 <= self._H)
+            & (pad_x0 >= 0)
+            & (pad_y0 >= 0)
+            & (pad_x1 <= self._W)
+            & (pad_y1 <= self._H)
+        )
+        if not bool(in_bounds.any().item()):
+            return result
+
+        valid_idx = torch.nonzero(in_bounds, as_tuple=False).reshape(-1)
+        x_valid = x_flat[valid_idx]
+        y_valid = y_flat[valid_idx]
+        base = y_valid * int(self._W) + x_valid
+
+        body_offsets, pad_offsets = self._get_rect_linear_offsets(
+            body_w=bw,
+            body_h=bh,
+            cL=int(cL),
+            cR=int(cR),
+            cB=int(cB),
+            cT=int(cT),
+        )
+        static_f = self._static_invalid.reshape(-1)
+        occ_f = self.occ_invalid.reshape(-1)
+        zone_f = self._get_zone_invalid(gid).reshape(-1)
+        clear_f = self.clear_invalid.reshape(-1)
+
+        offset_count = max(int(body_offsets.numel()), int(pad_offsets.numel()), 1)
+        chunk_size = max(1, 1_048_576 // offset_count)
+        flat_result = result.reshape(-1)
+
+        for start in range(0, int(valid_idx.numel()), chunk_size):
+            stop = min(start + chunk_size, int(valid_idx.numel()))
+            base_chunk = base[start:stop]
+            body_idx = base_chunk[:, None] + body_offsets[None, :]
+            pad_idx = base_chunk[:, None] + pad_offsets[None, :]
+
+            body_hit = static_f[body_idx].any(dim=1)
+            body_hit |= occ_f[body_idx].any(dim=1)
+            body_hit |= zone_f[body_idx].any(dim=1)
+            body_clear_hit = clear_f[body_idx].any(dim=1)
+
+            pad_hit = static_f[pad_idx].any(dim=1)
+            pad_hit |= occ_f[pad_idx].any(dim=1)
+            pad_hit |= zone_f[pad_idx].any(dim=1)
+
+            flat_result[valid_idx[start:stop]] = (~body_hit) & (~body_clear_hit) & (~pad_hit)
+        return result
 
     def is_placeable_batch(
         self,
@@ -325,28 +616,33 @@ class GridMaps:
         cB: int = 0,
         cT: int = 0,
     ) -> torch.Tensor:
-        """Vectorized placeability check. Returns [N] bool.
-
-        Computes full is_placeable_map and indexes into it.
-        """
-        bw = int(body_w)
-        bh = int(body_h)
-        cl = int(cL)
-        cr = int(cR)
-        cb = int(cB)
-        ct = int(cT)
-        H, W = self.shape
-
-        m = self.is_placeable_map(
-            gid=gid, body_w=bw, body_h=bh,
-            cL=cl, cR=cr, cB=cb, cT=ct,
-        )
-        in_bounds = (x_bl >= 0) & (y_bl >= 0) & (x_bl < W) & (y_bl < H)
-        xc = x_bl.clamp(0, max(0, W - 1))
-        yc = y_bl.clamp(0, max(0, H - 1))
-        result = torch.zeros_like(x_bl, dtype=torch.bool)
-        if in_bounds.any():
-            result[in_bounds] = m[yc[in_bounds], xc[in_bounds]]
+        """Vectorized placeability check. Returns [N] bool."""
+        if self._resolved_collision_check == "conv":
+            result = self._is_placeable_batch_gather(
+                gid=gid,
+                x_bl=x_bl,
+                y_bl=y_bl,
+                body_w=int(body_w),
+                body_h=int(body_h),
+                cL=int(cL),
+                cR=int(cR),
+                cB=int(cB),
+                cT=int(cT),
+            )
+        elif self._resolved_collision_check == "prefixsum":
+            result = self._is_placeable_batch_prefix(
+                gid=gid,
+                x_bl=x_bl,
+                y_bl=y_bl,
+                body_w=int(body_w),
+                body_h=int(body_h),
+                cL=int(cL),
+                cR=int(cR),
+                cB=int(cB),
+                cT=int(cT),
+            )
+        else:
+            raise RuntimeError(f"unsupported collision backend: {self._resolved_collision_check!r}")
         return result
 
     def is_placeable_map(
@@ -441,7 +737,7 @@ class GridMaps:
         out._zone_invalid_by_gid = self._zone_invalid_by_gid
         out._static_invalid_ps = self._static_invalid_ps
         out._zone_invalid_ps_by_gid = self._zone_invalid_ps_by_gid
-
+        out._rect_linear_offsets_cache = self._rect_linear_offsets_cache
         if self._uses_prefixsum:
             out._occ_invalid_ps = self._occ_invalid_ps
             out._clear_invalid_ps = self._clear_invalid_ps
@@ -469,6 +765,9 @@ class GridMaps:
         if self._uses_prefixsum:
             self._occ_invalid_ps = src._occ_invalid_ps
             self._clear_invalid_ps = src._clear_invalid_ps
+        else:
+            self._occ_invalid_ps = None
+            self._clear_invalid_ps = None
 
     def reset_runtime(self) -> None:
         self.occ_invalid.zero_()
