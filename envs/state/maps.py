@@ -8,8 +8,6 @@ import torch.nn.functional as F
 from ..action import GroupId
 from ..placement.static import StaticSpec
 
-RectI = Tuple[int, int, int, int]
-
 
 class GridMaps:
     """Runtime map state + static constraint maps.
@@ -98,16 +96,6 @@ class GridMaps:
     @property
     def constraint_maps(self) -> Dict[str, torch.Tensor]:
         return self._constraint_maps
-
-    @staticmethod
-    def _rect_hits_invalid(rect: RectI, src: torch.Tensor) -> bool:
-        x0, y0, x1, y1 = rect
-        h, w = src.shape
-        if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
-            return True
-        if x0 >= x1 or y0 >= y1:
-            return False
-        return bool(torch.any(src[y0:y1, x0:x1]).item())
 
     @staticmethod
     def _build_prefix(src: torch.Tensor) -> torch.Tensor:
@@ -786,52 +774,6 @@ class GridMaps:
             is_rectangular=is_rectangular,
         )
         self._rebuild_runtime_prefix_cache()
-
-    def update_rects(
-        self,
-        *,
-        bbox_min_x: float,
-        bbox_max_x: float,
-        bbox_min_y: float,
-        bbox_max_y: float,
-        body_rect: RectI,
-        clear_rect: RectI,
-    ) -> None:
-        x0, y0, x1, y1 = body_rect
-        px0, py0, px1, py1 = clear_rect
-        body_map = torch.ones((max(0, int(y1) - int(y0)), max(0, int(x1) - int(x0))), dtype=torch.bool, device=self._device)
-        clearance_map = torch.ones((max(0, int(py1) - int(py0)), max(0, int(px1) - int(px0))), dtype=torch.bool, device=self._device)
-        self.paint_placement(
-            bbox_min_x=bbox_min_x,
-            bbox_max_x=bbox_max_x,
-            bbox_min_y=bbox_min_y,
-            bbox_max_y=bbox_max_y,
-            x_bl=int(x0),
-            y_bl=int(y0),
-            body_map=body_map,
-            clearance_map=clearance_map,
-            clearance_origin=(int(x0) - int(px0), int(y0) - int(py0)),
-            is_rectangular=True,
-        )
-
-    def paint_rects(
-        self,
-        *,
-        bbox_min_x: float,
-        bbox_max_x: float,
-        bbox_min_y: float,
-        bbox_max_y: float,
-        body_rect: RectI,
-        clear_rect: RectI,
-    ) -> None:
-        self.update_rects(
-            bbox_min_x=bbox_min_x,
-            bbox_max_x=bbox_max_x,
-            bbox_min_y=bbox_min_y,
-            bbox_max_y=bbox_max_y,
-            body_rect=body_rect,
-            clear_rect=clear_rect,
-        )
 
     def placed_bbox(self) -> Tuple[float, float, float, float]:
         if not self.has_bbox:

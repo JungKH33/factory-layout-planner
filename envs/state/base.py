@@ -145,38 +145,27 @@ class EnvState:
             )
         x0 = int(math.floor(float(min_x)))
         y0 = int(math.floor(float(min_y)))
-        x1 = int(math.ceil(float(max_x)))
-        y1 = int(math.ceil(float(max_y)))
-        cL = int(getattr(placement, "clearance_left", 0) or 0)
-        cR = int(getattr(placement, "clearance_right", 0) or 0)
-        cB = int(getattr(placement, "clearance_bottom", 0) or 0)
-        cT = int(getattr(placement, "clearance_top", 0) or 0)
         body_map = getattr(placement, "body_map", None)
         clearance_map = getattr(placement, "clearance_map", None)
         clearance_origin = getattr(placement, "clearance_origin", None)
         is_rectangular = bool(getattr(placement, "is_rectangular", False))
-        if isinstance(body_map, torch.Tensor) and isinstance(clearance_map, torch.Tensor) and isinstance(clearance_origin, tuple):
-            self.maps.paint_placement(
-                bbox_min_x=float(min_x),
-                bbox_max_x=float(max_x),
-                bbox_min_y=float(min_y),
-                bbox_max_y=float(max_y),
-                x_bl=int(x0),
-                y_bl=int(y0),
-                body_map=body_map,
-                clearance_map=clearance_map,
-                clearance_origin=(int(clearance_origin[0]), int(clearance_origin[1])),
-                is_rectangular=is_rectangular,
+        if not isinstance(body_map, torch.Tensor) or not isinstance(clearance_map, torch.Tensor) or not isinstance(clearance_origin, tuple):
+            raise ValueError(
+                "placement must define body_map, clearance_map, clearance_origin, "
+                "and is_rectangular for map painting"
             )
-        else:
-            self.maps.update_rects(
-                bbox_min_x=float(min_x),
-                bbox_max_x=float(max_x),
-                bbox_min_y=float(min_y),
-                bbox_max_y=float(max_y),
-                body_rect=(x0, y0, x1, y1),
-                clear_rect=(x0 - cL, y0 - cB, x1 + cR, y1 + cT),
-            )
+        self.maps.paint_placement(
+            bbox_min_x=float(min_x),
+            bbox_max_x=float(max_x),
+            bbox_min_y=float(min_y),
+            bbox_max_y=float(max_y),
+            x_bl=int(x0),
+            y_bl=int(y0),
+            body_map=body_map,
+            clearance_map=clearance_map,
+            clearance_origin=(int(clearance_origin[0]), int(clearance_origin[1])),
+            is_rectangular=is_rectangular,
+        )
         self.flow.upsert_io(
             gid=gid,
             placement=placement,
