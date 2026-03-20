@@ -151,14 +151,32 @@ class EnvState:
         cR = int(getattr(placement, "clearance_right", 0) or 0)
         cB = int(getattr(placement, "clearance_bottom", 0) or 0)
         cT = int(getattr(placement, "clearance_top", 0) or 0)
-        self.maps.update_rects(
-            bbox_min_x=float(min_x),
-            bbox_max_x=float(max_x),
-            bbox_min_y=float(min_y),
-            bbox_max_y=float(max_y),
-            body_rect=(x0, y0, x1, y1),
-            clear_rect=(x0 - cL, y0 - cB, x1 + cR, y1 + cT),
-        )
+        body_map = getattr(placement, "body_map", None)
+        clearance_map = getattr(placement, "clearance_map", None)
+        clearance_origin = getattr(placement, "clearance_origin", None)
+        is_rectangular = bool(getattr(placement, "is_rectangular", False))
+        if isinstance(body_map, torch.Tensor) and isinstance(clearance_map, torch.Tensor) and isinstance(clearance_origin, tuple):
+            self.maps.paint_placement(
+                bbox_min_x=float(min_x),
+                bbox_max_x=float(max_x),
+                bbox_min_y=float(min_y),
+                bbox_max_y=float(max_y),
+                x_bl=int(x0),
+                y_bl=int(y0),
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=(int(clearance_origin[0]), int(clearance_origin[1])),
+                is_rectangular=is_rectangular,
+            )
+        else:
+            self.maps.update_rects(
+                bbox_min_x=float(min_x),
+                bbox_max_x=float(max_x),
+                bbox_min_y=float(min_y),
+                bbox_max_y=float(max_y),
+                body_rect=(x0, y0, x1, y1),
+                clear_rect=(x0 - cL, y0 - cB, x1 + cR, y1 + cT),
+            )
         self.flow.upsert_io(
             gid=gid,
             placement=placement,
@@ -210,21 +228,19 @@ class EnvState:
         gid: GroupId,
         x_bl: int,
         y_bl: int,
-        body_w: int,
-        body_h: int,
-        cL: int = 0,
-        cR: int = 0,
-        cB: int = 0,
-        cT: int = 0,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+        is_rectangular: bool,
     ) -> bool:
-        x0 = int(x_bl)
-        y0 = int(y_bl)
-        body_rect = (x0, y0, x0 + int(body_w), y0 + int(body_h))
-        pad_rect = (x0 - int(cL), y0 - int(cB), x0 + int(body_w) + int(cR), y0 + int(body_h) + int(cT))
         return self.maps.is_placeable(
             gid=gid,
-            body_rect=body_rect,
-            pad_rect=pad_rect,
+            x_bl=int(x_bl),
+            y_bl=int(y_bl),
+            body_map=body_map,
+            clearance_map=clearance_map,
+            clearance_origin=clearance_origin,
+            is_rectangular=is_rectangular,
         )
 
     def is_placeable_batch(
@@ -233,38 +249,36 @@ class EnvState:
         gid: GroupId,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
-        body_w: int,
-        body_h: int,
-        cL: int = 0,
-        cR: int = 0,
-        cB: int = 0,
-        cT: int = 0,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+        is_rectangular: bool,
     ) -> torch.Tensor:
         return self.maps.is_placeable_batch(
-            gid=gid, x_bl=x_bl, y_bl=y_bl,
-            body_w=int(body_w), body_h=int(body_h),
-            cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
+            gid=gid,
+            x_bl=x_bl,
+            y_bl=y_bl,
+            body_map=body_map,
+            clearance_map=clearance_map,
+            clearance_origin=clearance_origin,
+            is_rectangular=is_rectangular,
         )
 
     def is_placeable_map(
         self,
         *,
         gid: GroupId,
-        body_w: int,
-        body_h: int,
-        cL: int = 0,
-        cR: int = 0,
-        cB: int = 0,
-        cT: int = 0,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+        is_rectangular: bool,
     ) -> torch.Tensor:
         return self.maps.is_placeable_map(
             gid=gid,
-            body_w=int(body_w),
-            body_h=int(body_h),
-            cL=int(cL),
-            cR=int(cR),
-            cB=int(cB),
-            cT=int(cT),
+            body_map=body_map,
+            clearance_map=clearance_map,
+            clearance_origin=clearance_origin,
+            is_rectangular=is_rectangular,
         )
 
     def placed_bbox(self) -> Tuple[float, float, float, float]:

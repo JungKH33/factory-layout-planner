@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
+import torch
+
 
 @dataclass
 class PlacementBase:
@@ -22,6 +24,10 @@ class PlacementBase:
     max_x: float
     min_y: float
     max_y: float
+    body_map: torch.Tensor
+    clearance_map: torch.Tensor
+    clearance_origin: Tuple[int, int]
+    is_rectangular: bool
     clearance_left: int
     clearance_right: int
     clearance_bottom: int

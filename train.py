@@ -54,7 +54,6 @@ class TrainConfig:
 
     # env / model
     env_json: str
-    collision_check: str
     grid: int
     rot: int
     soft_coefficient: float
@@ -93,7 +92,6 @@ def parse_args() -> TrainConfig:
 
     # env/model
     p.add_argument("--env-json", type=str, default="envs/env_configs/basic_01.json")
-    p.add_argument("--collision-check", type=str, default="auto", choices=["auto", "conv", "prefixsum"])
     p.add_argument("--maskplace-grid", type=int, default=224)
     p.add_argument("--maskplace-rot", type=int, default=0)
     p.add_argument("--soft-coefficient", type=float, default=1.0)
@@ -129,7 +127,6 @@ def parse_args() -> TrainConfig:
     return TrainConfig(
         mode=str(a.mode),
         env_json=str(a.env_json),
-        collision_check=str(a.collision_check),
         grid=int(a.maskplace_grid),
         rot=int(a.maskplace_rot),
         soft_coefficient=float(a.soft_coefficient),
@@ -426,19 +423,11 @@ def build_env_factory(*, cfg: TrainConfig) -> Tuple[Any, Dict[str, Any]]:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # Load once to capture reset_kwargs from JSON; each env will create its own engine instance.
-    loaded0 = load_env(
-        cfg.env_json,
-        device=torch.device("cpu"),
-        collision_check=cfg.collision_check,
-    )
+    loaded0 = load_env(cfg.env_json, device=torch.device("cpu"))
     reset_kwargs = loaded0.reset_kwargs
 
     def _make_single_env() -> gym.Env:
-        loaded = load_env(
-            cfg.env_json,
-            device=torch.device("cpu"),
-            collision_check=cfg.collision_check,
-        )
+        loaded = load_env(cfg.env_json, device=torch.device("cpu"))
         engine = loaded.env
         engine.log = False
         if cfg.mode == "maskplace":

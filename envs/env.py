@@ -18,7 +18,7 @@ from .placement.static import StaticSpec
 from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
 
-# PlacementBase is defined in envs/base.py and imported above.
+# PlacementBase is defined in envs/placement/base.py and imported above.
 # Re-exported here so external code can do: from envs.env import PlacementBase, GridMaps
 __all__ = ["PlacementBase", "GridMaps", "FactoryLayoutEnv"]
 
@@ -49,7 +49,6 @@ class FactoryLayoutEnv(gym.Env):
         # zones.constraints.<name> = {"dtype": ..., "op": ..., "default": ..., "areas": [{"rect": [...], "value": ...}]}
         zone_constraints: Optional[Dict[str, Dict[str, Any]]] = None,
         device: Optional[torch.device] = None,
-        collision_check: str = "auto",
         max_steps: Optional[int] = None,
         reward_scale: float = 100.0,
         penalty_weight: float = 50000.0,
@@ -63,7 +62,6 @@ class FactoryLayoutEnv(gym.Env):
         group_flow_norm = dict(group_flow or {})
         self.forbidden_areas = list(forbidden_areas or [])
         self.zone_constraints = dict(zone_constraints or {})
-        self.collision_check = str(collision_check).lower()
         self.max_steps = max_steps
         self.reward_scale = float(reward_scale)
         self.penalty_weight = float(penalty_weight)
@@ -85,7 +83,6 @@ class FactoryLayoutEnv(gym.Env):
             device=self.device,
             forbidden_areas=self.forbidden_areas,
             zone_constraints=self.zone_constraints,
-            collision_check=self.collision_check,
         )
         flow = FlowGraph(self.group_flow, device=self.device)
         self._state = EnvState.empty(
@@ -279,11 +276,15 @@ class FactoryLayoutEnv(gym.Env):
         gid, x_c, y_c = self._normalize_action(action)
         geom = self._group_spec(gid)
 
-        def _check_placeable(x_bl, y_bl, body_w, body_h, cL, cR, cB, cT):
+        def _check_placeable(x_bl, y_bl, body_map, clearance_map, clearance_origin, is_rectangular):
             return self._state.is_placeable(
-                gid=gid, x_bl=int(x_bl), y_bl=int(y_bl),
-                body_w=int(body_w), body_h=int(body_h),
-                cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
+                gid=gid,
+                x_bl=int(x_bl),
+                y_bl=int(y_bl),
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=bool(is_rectangular),
             )
 
         placement = geom.resolve(
@@ -546,11 +547,15 @@ class FactoryLayoutEnv(gym.Env):
                 x_c = float(x) + w_r / 2.0
                 y_c = float(y) + h_r / 2.0
 
-                def _check_placeable_for_reset(x_bl, y_bl, body_w, body_h, cL, cR, cB, cT):
+                def _check_placeable_for_reset(x_bl, y_bl, body_map, clearance_map, clearance_origin, is_rectangular):
                     return self._state.is_placeable(
-                        gid=gid, x_bl=int(x_bl), y_bl=int(y_bl),
-                        body_w=int(body_w), body_h=int(body_h),
-                        cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
+                        gid=gid,
+                        x_bl=int(x_bl),
+                        y_bl=int(y_bl),
+                        body_map=body_map,
+                        clearance_map=clearance_map,
+                        clearance_origin=clearance_origin,
+                        is_rectangular=bool(is_rectangular),
                     )
 
                 placement = geom.resolve(

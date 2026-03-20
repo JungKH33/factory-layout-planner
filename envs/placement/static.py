@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -26,9 +27,11 @@ class VariantInfo:
     cR: int
     cB: int
     cT: int
+    clearance_origin: Tuple[int, int]
+    is_rectangular: bool
     entry_offsets: Tuple[Tuple[float, float], ...]   # center-relative
     exit_offsets: Tuple[Tuple[float, float], ...]     # center-relative
-    placeable_key: Tuple[int, int, int, int, int, int]  # (body_w, body_h, cL, cR, cB, cT)
+    shape_key: tuple
     cost_key: tuple  # (body_w, body_h, cL, cR, cB, cT, entry_offsets, exit_offsets)
 
 @dataclass
@@ -112,7 +115,8 @@ class StaticSpec:
 
         seen_cost: set = set()
         variants: List[VariantInfo] = []
-        unique_placeable: Dict[Tuple[int, int, int, int, int, int], List[VariantInfo]] = {}
+        variants_by_shape: Dict[tuple, List[VariantInfo]] = {}
+        shape_tensors_by_key: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
         raw_variant_count = 0
 
         for rot in rotations:
@@ -141,7 +145,20 @@ class StaticSpec:
 
                 eo_t = tuple(eo)
                 xo_t = tuple(xo)
-                pk = (body_w, body_h, cL, cR, cB, cT)
+                body_map = torch.ones((body_h, body_w), dtype=torch.bool, device=self.device)
+                clearance_map = torch.ones(
+                    (body_h + cB + cT, body_w + cL + cR),
+                    dtype=torch.bool,
+                    device=self.device,
+                )
+                clearance_origin = (int(cL), int(cB))
+                is_rectangular = True
+                pk = self._make_shape_key(
+                    body_map=body_map,
+                    clearance_map=clearance_map,
+                    clearance_origin=clearance_origin,
+                    is_rectangular=is_rectangular,
+                )
                 ck = (body_w, body_h, cL, cR, cB, cT, eo_t, xo_t)
 
                 if ck in seen_cost:
@@ -152,16 +169,20 @@ class StaticSpec:
                     rotation=rr, mirror=m,
                     body_w=body_w, body_h=body_h,
                     cL=cL, cR=cR, cB=cB, cT=cT,
+                    clearance_origin=clearance_origin,
+                    is_rectangular=is_rectangular,
                     entry_offsets=eo_t, exit_offsets=xo_t,
-                    placeable_key=pk, cost_key=ck,
+                    shape_key=pk, cost_key=ck,
                 )
                 variants.append(vi)
-                if pk not in unique_placeable:
-                    unique_placeable[pk] = []
-                unique_placeable[pk].append(vi)
+                shape_tensors_by_key[pk] = (body_map, clearance_map, clearance_origin, is_rectangular)
+                if pk not in variants_by_shape:
+                    variants_by_shape[pk] = []
+                variants_by_shape[pk].append(vi)
 
         self._variants: List[VariantInfo] = variants
-        self._unique_placeable: Dict[Tuple[int, int, int, int, int, int], List[VariantInfo]] = unique_placeable
+        self._variants_by_shape: Dict[tuple, List[VariantInfo]] = variants_by_shape
+        self._shape_tensors_by_key: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = shape_tensors_by_key
 
         # Precompute offset tensors per variant
         self._variant_entry_off_t: List[torch.Tensor] = []
@@ -179,11 +200,11 @@ class StaticSpec:
             self._variant_exit_off_t.append(xt)
 
         logger.info(
-            "StaticSpec %r variant summary: raw=%d, unique_variants=%d, unique_placeable=%d",
+            "StaticSpec %r variant summary: raw=%d, unique_variants=%d, unique_shapes=%d",
             self.id,
             raw_variant_count,
             len(self._variants),          # ck 기준 unique
-            len(self._unique_placeable),  # pk 기준 unique
+            len(self._variants_by_shape),  # shape 기준 unique
         )
 
     def set_device(self, device: torch.device) -> None:
@@ -195,6 +216,55 @@ class StaticSpec:
             self._variant_entry_off_t[i] = t.to(device)
         for i, t in enumerate(self._variant_exit_off_t):
             self._variant_exit_off_t[i] = t.to(device)
+        moved: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
+        for key, (body_map, clearance_map, clearance_origin, is_rectangular) in self._shape_tensors_by_key.items():
+            moved[key] = (
+                body_map.to(device=device, dtype=torch.bool),
+                clearance_map.to(device=device, dtype=torch.bool),
+                clearance_origin,
+                bool(is_rectangular),
+            )
+        self._shape_tensors_by_key = moved
+
+    @staticmethod
+    def _make_shape_key(
+        *,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+        is_rectangular: bool,
+    ) -> tuple:
+        if bool(is_rectangular):
+            return (
+                "rect",
+                int(body_map.shape[0]),
+                int(body_map.shape[1]),
+                int(clearance_map.shape[0]),
+                int(clearance_map.shape[1]),
+                int(clearance_origin[0]),
+                int(clearance_origin[1]),
+            )
+        body_cpu = body_map.to(device="cpu", dtype=torch.bool).contiguous()
+        clear_cpu = clearance_map.to(device="cpu", dtype=torch.bool).contiguous()
+        body_sig = hashlib.sha1(body_cpu.numpy().tobytes()).hexdigest()
+        clear_sig = hashlib.sha1(clear_cpu.numpy().tobytes()).hexdigest()
+        return (
+            "mask",
+            int(body_cpu.shape[0]),
+            int(body_cpu.shape[1]),
+            body_sig,
+            int(clear_cpu.shape[0]),
+            int(clear_cpu.shape[1]),
+            clear_sig,
+            int(clearance_origin[0]),
+            int(clearance_origin[1]),
+        )
+
+    def shape_tensors(self, shape_key: tuple) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]:
+        out = self._shape_tensors_by_key.get(shape_key, None)
+        if out is None:
+            raise KeyError(f"unknown shape_key for spec {self.id!r}: {shape_key!r}")
+        return out
 
 
     @staticmethod
@@ -376,6 +446,13 @@ class StaticSpec:
         entries = list(self._entries_from_center(x_c_s, y_c_s, r, mirror=mirror))
         exits = list(self._exits_from_center(x_c_s, y_c_s, r, mirror=mirror))
         cL, cR, cB, cT = self._clearance_lrtb(r, mirror=mirror)
+        body_map = torch.ones((int(h), int(w)), dtype=torch.bool, device=self.device)
+        clearance_map = torch.ones(
+            (int(h) + int(cB) + int(cT), int(w) + int(cL) + int(cR)),
+            dtype=torch.bool,
+            device=self.device,
+        )
+        clearance_origin = (int(cL), int(cB))
         return StaticPlacement(
             entries=entries,
             exits=exits,
@@ -383,6 +460,10 @@ class StaticSpec:
             max_x=float(x_bl) + w,
             min_y=float(y_bl),
             max_y=float(y_bl) + h,
+            body_map=body_map,
+            clearance_map=clearance_map,
+            clearance_origin=clearance_origin,
+            is_rectangular=True,
             x_bl=x_bl,
             y_bl=y_bl,
             rotation=int(r),
@@ -412,7 +493,7 @@ class StaticSpec:
         with lowest score (delta_cost).
 
         Callbacks:
-          is_placeable_fn(x_bl, y_bl, body_w, body_h, cL, cR, cB, cT) -> bool
+          is_placeable_fn(x_bl, y_bl, body_map, clearance_map, clearance_origin, is_rectangular) -> bool
           score_fn(placements: List[StaticPlacement]) -> Tensor[N]
         If *score_fn* is None, picks the first feasible variant.
         """
@@ -424,8 +505,16 @@ class StaticSpec:
             y_bl = int(round(y_c - h / 2.0))
             x_c_s = float(x_bl) + w / 2.0
             y_c_s = float(y_bl) + h / 2.0
+            body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
 
-            if not is_placeable_fn(x_bl, y_bl, vi.body_w, vi.body_h, vi.cL, vi.cR, vi.cB, vi.cT):
+            if not is_placeable_fn(
+                x_bl,
+                y_bl,
+                body_map,
+                clearance_map,
+                clearance_origin,
+                is_rectangular,
+            ):
                 continue
 
             entries = list(self._entries_from_center(x_c_s, y_c_s, vi.rotation, mirror=vi.mirror))
@@ -434,6 +523,10 @@ class StaticSpec:
                 entries=entries, exits=exits,
                 min_x=float(x_bl), max_x=float(x_bl) + w,
                 min_y=float(y_bl), max_y=float(y_bl) + h,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=bool(is_rectangular),
                 x_bl=x_bl, y_bl=y_bl, rotation=vi.rotation,
                 w=w, h=h, x_c=x_c_s, y_c=y_c_s,
                 clearance_left=vi.cL, clearance_right=vi.cR,
@@ -454,13 +547,16 @@ class StaticSpec:
     # ------------------------------------------------------------------
 
     def placeable_map(self, state: "EnvState", gid: object) -> torch.Tensor:
-        """Return [H,W] bool BL-indexed placeable map, OR'd across all unique geometries."""
+        """Return [H,W] bool BL-indexed placeable map, OR'd across all unique shapes."""
         result = None
-        for pk in self._unique_placeable:
-            body_w, body_h, cL, cR, cB, cT = pk
+        for shape_key in self._variants_by_shape:
+            body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
             m = state.is_placeable_map(
-                gid=gid, body_w=body_w, body_h=body_h,
-                cL=cL, cR=cR, cB=cB, cT=cT,
+                gid=gid,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=is_rectangular,
             )
             if result is None:
                 result = m
@@ -481,16 +577,21 @@ class StaticSpec:
         """Check if center coordinates are placeable in ANY variant. Returns [N] bool."""
         N = int(x_c.shape[0])
         ok = torch.zeros(N, dtype=torch.bool, device=self.device)
-        for pk in self._unique_placeable:
-            body_w, body_h, cL, cR, cB, cT = pk
+        for shape_key in self._variants_by_shape:
+            body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
+            body_h, body_w = int(body_map.shape[0]), int(body_map.shape[1])
             x_bl = torch.round(x_c - body_w / 2.0).to(torch.long)
             y_bl = torch.round(y_c - body_h / 2.0).to(torch.long)
-            pk_ok = state.is_placeable_batch(
-                gid=gid, x_bl=x_bl, y_bl=y_bl,
-                body_w=body_w, body_h=body_h,
-                cL=cL, cR=cR, cB=cB, cT=cT,
+            shape_ok = state.is_placeable_batch(
+                gid=gid,
+                x_bl=x_bl,
+                y_bl=y_bl,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=is_rectangular,
             )
-            ok = ok | pk_ok
+            ok = ok | shape_ok
         return ok
 
     def cost_batch(
@@ -512,12 +613,17 @@ class StaticSpec:
         needed = reward.required()
 
         for i, vi in enumerate(self._variants):
+            body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
             x_bl = torch.round(x_c - vi.body_w / 2.0).to(torch.long)
             y_bl = torch.round(y_c - vi.body_h / 2.0).to(torch.long)
             ok = state.is_placeable_batch(
-                gid=gid, x_bl=x_bl, y_bl=y_bl,
-                body_w=vi.body_w, body_h=vi.body_h,
-                cL=vi.cL, cR=vi.cR, cB=vi.cB, cT=vi.cT,
+                gid=gid,
+                x_bl=x_bl,
+                y_bl=y_bl,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=is_rectangular,
             )
             if not ok.any():
                 continue
@@ -607,7 +713,7 @@ if __name__ == "__main__":
     )
 
     # --- Variant precomputation ---
-    print(f"variants={len(geom._variants)}, unique_placeable={len(geom._unique_placeable)}")
+    print(f"variants={len(geom._variants)}, unique_shapes={len(geom._variants_by_shape)}")
     for vi in geom._variants:
         print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
               f"clear=({vi.cL},{vi.cR},{vi.cB},{vi.cT}) "
@@ -634,7 +740,7 @@ if __name__ == "__main__":
         clearance_top_rel=0,
         mirrorable=True,
     )
-    print(f"\nmirrorable: variants={len(geom_m._variants)}, unique_placeable={len(geom_m._unique_placeable)}")
+    print(f"\nmirrorable: variants={len(geom_m._variants)}, unique_shapes={len(geom_m._variants_by_shape)}")
     for vi in geom_m._variants:
         print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
               f"clear=({vi.cL},{vi.cR},{vi.cB},{vi.cT})")

@@ -180,18 +180,21 @@ class GreedyV3Adapter(BaseAdapter):
         state = env.get_state()
         rr = spec._resolve_rotation(rotation)
         result = None
-        seen_pk: set = set()
+        seen_shape: set = set()
         for vi in spec._variants:
             if vi.rotation != rr:
                 continue
-            pk = vi.placeable_key
-            if pk in seen_pk:
+            shape_key = vi.shape_key
+            if shape_key in seen_shape:
                 continue
-            seen_pk.add(pk)
-            body_w, body_h, cL, cR, cB, cT = pk
+            seen_shape.add(shape_key)
+            body_map, clearance_map, clearance_origin, is_rectangular = spec.shape_tensors(shape_key)
             m = state.is_placeable_map(
-                gid=gid, body_w=body_w, body_h=body_h,
-                cL=cL, cR=cR, cB=cB, cT=cT,
+                gid=gid,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=is_rectangular,
             )
             if result is None:
                 result = m
