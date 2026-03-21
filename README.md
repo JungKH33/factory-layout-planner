@@ -215,7 +215,7 @@ Ports define where material enters/exits a facility. Coordinates are relative to
 
 #### Clearance
 
-Clearance defines the required buffer zone around a facility that other facilities cannot overlap.
+Clearance defines the required buffer zone around a facility that other facilities cannot overlap. Clearance zones may overlap each other; only facility bodies must not overlap bodies or clearances of other facilities.
 
 **Option 1 - Uniform (all sides equal):**
 ```json

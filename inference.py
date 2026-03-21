@@ -23,7 +23,7 @@ from envs.action_space import ActionSpace as CandidateSet
 # --- config (module-level constants, keep simple) ---
 ENV_JSON: str = "envs/env_configs/mixed_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "greedyv3"  # "greedy" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -31,6 +31,7 @@ MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layou
 TOPK_K: int = 50
 TOPK_SCAN_STEP: float = 5.0
 TOPK_QUANT_STEP: float = 10.0
+TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
 SEARCH_MODE: str = "mcts"  # "none" | "mcts"
@@ -50,7 +51,7 @@ BEAM_DEPTH: int = 5
 BEAM_EXPANSION_TOPK: int = 16
 
 # Orientation expansion: adapter가 (center, orientation) 쌍을 후보로 생성
-EXPAND_ORIENTATIONS: bool = True
+EXPAND_ORIENTATIONS: bool = False
 MAX_ORIENTATIONS: int = 3
 
 # Top-K tracking: search 중 최고 결과 K개 저장
@@ -83,6 +84,8 @@ def main() -> None:
         "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
                      "expand_orientations": EXPAND_ORIENTATIONS, "max_orientations": MAX_ORIENTATIONS},
         "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5,
+                     "expand_orientations": EXPAND_ORIENTATIONS, "max_orientations": MAX_ORIENTATIONS},
+        "greedyv4": {"k": TOPK_K, "cell_size": TOPK_CELL_SIZE, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
                      "expand_orientations": EXPAND_ORIENTATIONS, "max_orientations": MAX_ORIENTATIONS},
         "alphachip": {"coarse_grid": int(ALPHACHIP_GRID)},
         "maskplace": {"grid": 224, "soft_coefficient": 1.0},

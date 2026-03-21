@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .base import Agent, BaseAdapter
-from .placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
+from .placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter, GreedyV4Adapter
 from .placement.maskplace import MaskPlaceAgent, MaskPlaceAdapter
 from .placement.alphachip import AlphaChipAgent, AlphaChipAdapter
 
@@ -48,6 +48,9 @@ REGISTRY: Dict[str, Dict[str, AgentAdapterSpec]] = {
     "greedyv3": {
         "greedy": AgentAdapterSpec(GreedyAgent, GreedyV3Adapter),
     },
+    "greedyv4": {
+        "greedy": AgentAdapterSpec(GreedyAgent, GreedyV4Adapter),
+    },
     "maskplace": {
         "maskplace": AgentAdapterSpec(MaskPlaceAgent, MaskPlaceAdapter),
         "greedy": AgentAdapterSpec(GreedyAgent, MaskPlaceAdapter),
@@ -63,6 +66,7 @@ DEFAULT_AGENT: Dict[str, str] = {
     "greedy": "greedy",
     "greedyv2": "greedy",
     "greedyv3": "greedy",
+    "greedyv4": "greedy",
     "maskplace": "maskplace",
     "alphachip": "alphachip",
 }
@@ -81,7 +85,7 @@ def create(
     ----------
     method : str
         Adapter method: ``"greedy"`` | ``"greedyv2"`` | ``"greedyv3"``
-        | ``"maskplace"`` | ``"alphachip"``.
+        | ``"greedyv4"`` | ``"maskplace"`` | ``"alphachip"``.
     agent : str, optional
         Override agent type.  Defaults to the method's natural agent
         (e.g. ``"greedy"`` for greedy adapters, ``"maskplace"`` for maskplace).
