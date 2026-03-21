@@ -49,9 +49,9 @@ BEAM_WIDTH: int = 8
 BEAM_DEPTH: int = 5
 BEAM_EXPANSION_TOPK: int = 16
 
-# Orientation search: search에서 각 center position마다 여러 orientation 시도
-ORIENTATION_SEARCH: bool = True
-MAX_ORIENTATION_BRANCHES: int = 3
+# Orientation expansion: adapter가 (center, orientation) 쌍을 후보로 생성
+EXPAND_ORIENTATIONS: bool = True
+MAX_ORIENTATIONS: int = 3
 
 # Top-K tracking: search 중 최고 결과 K개 저장
 TRACK_TOP_K: int = 5  # 0이면 비활성화
@@ -78,9 +78,12 @@ def main() -> None:
     engine.log = True
 
     adapter_kwargs: dict = {
-        "greedy": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
-        "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
-        "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5},
+        "greedy": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
+                   "expand_orientations": EXPAND_ORIENTATIONS, "max_orientations": MAX_ORIENTATIONS},
+        "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
+                     "expand_orientations": EXPAND_ORIENTATIONS, "max_orientations": MAX_ORIENTATIONS},
+        "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5,
+                     "expand_orientations": EXPAND_ORIENTATIONS, "max_orientations": MAX_ORIENTATIONS},
         "alphachip": {"coarse_grid": int(ALPHACHIP_GRID)},
         "maskplace": {"grid": 224, "soft_coefficient": 1.0},
     }
@@ -107,8 +110,6 @@ def main() -> None:
                 rollout_depth=int(ROLLOUT_DEPTH),
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
-                orientation_search=ORIENTATION_SEARCH,
-                max_orientation_branches=MAX_ORIENTATION_BRANCHES,
             )
         )
     elif SEARCH_MODE == "beam":
@@ -119,8 +120,6 @@ def main() -> None:
                 expansion_topk=BEAM_EXPANSION_TOPK,
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
-                orientation_search=ORIENTATION_SEARCH,
-                max_orientation_branches=MAX_ORIENTATION_BRANCHES,
             )
         )
     else:

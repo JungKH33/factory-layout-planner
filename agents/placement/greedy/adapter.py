@@ -37,8 +37,10 @@ class GreedyAdapter(BaseAdapter):
         diversity_ratio: float = 0.0,  # parity (unused)
         min_diversity: int = 0,  # parity (unused)
         random_seed: Optional[int] = None,
+        expand_orientations: bool = False,
+        max_orientations: int = 4,
     ):
-        super().__init__()
+        super().__init__(expand_orientations=expand_orientations, max_orientations=max_orientations)
         self.k = int(k)
         self.scan_step = float(scan_step)
         self.quant_step = float(quant_step) if quant_step is not None else None
@@ -81,12 +83,17 @@ class GreedyAdapter(BaseAdapter):
             w, h = spec.rotated_size(int(rotation))
             poses[i, 0] = float(x_bl) + float(w) / 2.0
             poses[i, 1] = float(y_bl) + float(h) / 2.0
+
+        if self.expand_orientations:
+            return self._apply_orientation_expansion(gid, poses, mask, self.k)
+
         self.action_poses = poses
+        self.action_orientation_indices = None
         delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
         vmask = mask.to(dtype=torch.bool, device=self.device).view(-1)
         vidx = torch.where(vmask)[0]
         if int(vidx.numel()) > 0:
-            vv = poses[vidx]  # [V, 2] float centers
+            vv = poses[vidx]
             d = self._score_poses(gid, vv).to(dtype=torch.float32, device=self.device)
             delta[vidx] = d.view(-1)
         self.action_delta = delta

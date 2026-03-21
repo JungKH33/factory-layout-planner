@@ -27,6 +27,7 @@ class ActionSpace:
     poses: torch.Tensor   # [N, 2] float32 (x_c, y_c)
     mask: torch.Tensor    # bool [N]
     gid: Optional[GroupId] = None
+    orientation_indices: Optional[torch.Tensor] = None  # int64 [N] — per-action orientation index
 
     # -- geometric features (Optional, reward용) --
     entries: Optional[torch.Tensor] = None       # [N, Emax, 2]
@@ -49,3 +50,11 @@ class ActionSpace:
             )
         if self.mask.dtype != torch.bool:
             raise TypeError(f"ActionSpace.mask must be torch.bool, got {self.mask.dtype}")
+        if self.orientation_indices is not None:
+            if not isinstance(self.orientation_indices, torch.Tensor):
+                raise TypeError("ActionSpace.orientation_indices must be torch.Tensor or None")
+            if self.orientation_indices.ndim != 1 or int(self.orientation_indices.shape[0]) != int(self.poses.shape[0]):
+                raise ValueError(
+                    f"ActionSpace.orientation_indices must have shape [N], "
+                    f"got {tuple(self.orientation_indices.shape)} for N={int(self.poses.shape[0])}"
+                )

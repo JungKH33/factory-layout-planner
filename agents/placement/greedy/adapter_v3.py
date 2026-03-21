@@ -35,8 +35,10 @@ class GreedyV3Adapter(BaseAdapter):
         oversample_factor: int = 2,
         edge_ratio: float = 0.8,
         random_seed: Optional[int] = None,
+        expand_orientations: bool = False,
+        max_orientations: int = 4,
     ):
-        super().__init__()
+        super().__init__(expand_orientations=expand_orientations, max_orientations=max_orientations)
         self.k = int(k)
         self.quant_step = float(quant_step) if quant_step is not None else None
         self.oversample_factor = int(oversample_factor)
@@ -60,12 +62,15 @@ class GreedyV3Adapter(BaseAdapter):
         self._rng = random.Random(self.action_space_seed())
         gid = self.current_gid()
         if gid is None:
-            self.action_poses = torch.zeros((self.k, 2), dtype=torch.float32, device=self.device)
-            self.action_delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
-            return torch.zeros((self.k,), dtype=torch.bool, device=self.device)
+            return self._empty_orientation_output(self.k)
 
         poses, mask = self._generate(self.engine, gid)
+
+        if self.expand_orientations:
+            return self._apply_orientation_expansion(gid, poses, mask, self.k)
+
         self.action_poses = poses
+        self.action_orientation_indices = None
 
         delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
         vmask = mask.to(dtype=torch.bool, device=self.device).view(-1)

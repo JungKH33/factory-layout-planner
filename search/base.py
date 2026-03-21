@@ -34,11 +34,7 @@ ProgressCallback = Callable[[SearchProgress], None]
 @dataclass(frozen=True)
 class BaseSearchConfig:
     """Common search config fields shared by all search algorithms."""
-
-    # Orientation search: when enabled, expanding a center action tries
-    # multiple orientations as separate branches instead of auto-resolving.
-    orientation_search: bool = False
-    max_orientation_branches: int = 4
+    pass
 
 
 class BaseSearch(ABC):
@@ -104,6 +100,9 @@ class TopKTracker:
 
     def add(self, result: SearchResult) -> bool:
         """결과 추가. cost가 낮을수록 좋은 결과로 간주. 리스트 변경 시 True 반환."""
+        if any(-neg_c == result.cost for neg_c, _, _ in self._heap):
+            return False
+
         entry = (-result.cost, self._counter, result)
         self._counter += 1
         changed = False

@@ -114,7 +114,7 @@ Step reward = `-(delta_cost) / reward_scale`
 
 Search operates at the **adapter** level. Each MCTS node stores an `EnvState` copy via `engine.get_state().copy()`. The agent provides priors (softmax of `-Δcost`) and leaf values. Rollouts use the greedy agent to a configurable depth.
 
-**Orientation search**: when `orientation_search=True` in `MCTSConfig`/`BeamConfig`, search branches over placeable orientations at each center instead of auto-resolving. `max_orientation_branches` limits the branching factor. In MCTS, orientation decision is a separate tree level (orientation-decision nodes with `orient_ctx`); in Beam, each center candidate expands into multiple orientation-specific beams.
+**Orientation expansion**: when `expand_orientations=True` on an adapter (BaseAdapter param), each center candidate is expanded into `(center, orientation_index)` pairs. `max_orientations` limits how many orientations per center are kept. The adapter's `_apply_orientation_expansion()` computes per-orientation costs in a single `cost_batch(per_orientation=True)` call and selects the top-K `(center, orient)` pairs by cost. `ActionSpace.orientation_indices` carries the per-action orientation index; `decode_action()` produces `EnvAction` with explicit `orientation_index`. Search algorithms (MCTS/Beam) treat these as regular actions with no special orientation branching.
 
 `TopKTracker` (min-heap) tracks best K complete episodes by cost across all search iterations.
 

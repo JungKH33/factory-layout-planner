@@ -455,87 +455,22 @@ class MatplotlibBackend(VisualizerBackend):
         ax.set_aspect("equal")
         ax.set_title("FactoryLayoutEnv")
 
-        # Zone rects (simplified — no heatmap overlay for static save)
-        if show_zones:
-            for name in data.constraint_names:
-                zone = data.constraint_zones.get(name)
-                if zone is None:
-                    continue
-                for area in zone.rects:
-                    rect = area.get("rect", None)
-                    value = area.get("value", None)
-                    if rect is None:
-                        continue
-                    x0, y0, x1, y1 = int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
-                    w, h = max(0, x1 - x0), max(0, y1 - y0)
-                    if w <= 0 or h <= 0:
-                        continue
-                    ax.add_patch(patches.Rectangle(
-                        (x0, y0), w, h,
-                        linewidth=1.2, edgecolor="#1e90ff", facecolor="#1e90ff",
-                        alpha=0.10, linestyle="-",
-                    ))
-                    if value is not None:
-                        ax.text(
-                            x0 + w / 2.0, y0 + h / 2.0,
-                            f"{name}{zone.op}{value}",
-                            ha="center", va="center", fontsize=8, color="#1e90ff",
-                            bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.55, linewidth=0.0),
-                        )
+        groups = _draw_layout_from_data(ax, data)
 
-        # Forbidden rects
-        if show_masks:
-            for x0, y0, x1, y1 in data.forbidden_rects:
-                w, h = x1 - x0, y1 - y0
-                if w > 0 and h > 0:
-                    ax.add_patch(patches.Rectangle(
-                        (x0, y0), w, h,
-                        linewidth=1.2, edgecolor="#d62728", facecolor="#d62728", alpha=0.15,
-                    ))
-
-        # Facilities
-        for fac in data.facilities:
-            if fac.body_polygon_abs:
-                patch = patches.Polygon(
-                    fac.body_polygon_abs, closed=True,
-                    linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
-                )
-                if fac.clearance_polygon_abs:
-                    cl_patch = patches.Polygon(
-                        fac.clearance_polygon_abs, closed=True,
-                        linewidth=0.8, edgecolor="#ff6b6b", facecolor="none",
-                        linestyle="--", alpha=0.5,
-                    )
-                    ax.add_patch(cl_patch)
-            else:
-                patch = patches.Rectangle(
-                    (fac.x_bl, fac.y_bl), fac.w, fac.h,
-                    linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
-                )
-            ax.add_patch(patch)
-            ax.text(fac.x_c, fac.y_c, str(fac.gid), ha="center", va="center", fontsize=8)
-
-        # Action space
-        if data.candidates_xy:
-            xs = [c[0] for c in data.candidates_xy]
-            ys = [c[1] for c in data.candidates_xy]
-            ax.scatter(xs, ys, s=18, c="green", alpha=0.65, linewidths=0.0)
-
-        # Flow
-        if show_flow:
-            for arrow in data.flow_arrows:
-                ax.annotate(
-                    "", xy=arrow.dst_xy, xytext=arrow.src_xy,
-                    arrowprops=dict(arrowstyle="-|>", color="blue", lw=0.8, alpha=0.3),
-                )
-
-        # Score
-        if show_score:
-            ax.text(
-                0.01, 0.99, f"cost={data.cost:.3f}",
-                transform=ax.transAxes, ha="left", va="top", fontsize=9,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7),
-            )
+        if not show_masks:
+            for a in groups.get("forbidden_areas", []):
+                a.set_visible(False)
+        if not show_flow:
+            for a in groups.get("flow", []):
+                a.set_visible(False)
+        if not show_score:
+            for a in groups.get("score", []):
+                a.set_visible(False)
+        if not show_zones:
+            for key, arts in groups.items():
+                if key.startswith("zone:"):
+                    for a in arts:
+                        a.set_visible(False)
 
         plt.tight_layout()
         fig.savefig(save_path, dpi=150)
@@ -690,9 +625,7 @@ class MatplotlibBackend(VisualizerBackend):
                 else:
                     policy_cbar.update_normal(sc)
             else:
-                if policy_cbar is not None:
-                    policy_cbar.remove()
-                    policy_cbar = None
+                policy_cbar = None
                 cax_policy.clear()
                 cax_policy.axis("off")
 
