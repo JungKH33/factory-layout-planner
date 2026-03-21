@@ -108,7 +108,7 @@ Step reward = `-(delta_cost) / reward_scale`
 - **AreaReward**: HPWL compactness `0.5 * ((max_x-min_x) + (max_y-min_y))`
 - **TerminalReward**: failure penalty = `penalty_weight * remaining_area_ratio / reward_scale`
 
-`engine.delta_cost(gid, x_batch, y_batch, rot_batch)` is the vectorized incremental cost used by adapters and agents (never full `cost()` per candidate).
+`spec.cost_batch(gid, poses, state, reward, per_orientation)` is the vectorized incremental cost used by adapters and agents (never full `cost()` per candidate).
 
 ### Search (MCTS / Beam)
 
@@ -141,7 +141,7 @@ DecisionPipeline.decide():
                           "facility_clearance_*", "facility_weight/height/dry", "allowed_areas" } },
   "flow": [["<src>", "<dst>", <weight>], ...],
   "zones": { "forbidden_areas", "weight_areas", "height_areas", "dry_areas", "placement_areas" },
-  "reset": { "initial_positions": {"<gid>": [x, y, rot]}, "remaining_order": [...] }
+  "reset": { "initial_placements": {"<gid>": [x_c, y_c, orientation_index]}, "remaining_order": [...] }
 }
 ```
 
@@ -167,5 +167,5 @@ Zone constraint logic: op is facility requirement (e.g. `height<=30` → facilit
 - **Device ownership**: engine's `device` is set at construction; all tensors follow it. Adapters inherit device on `bind()`.
 - **`inference.py` config**: module-level constants (`ENV_JSON`, `WRAPPER_MODE`, `AGENT_MODE`, `SEARCH_MODE`, etc.) — no CLI args.
 - **Current facility selection**: adapters usually build candidates for `remaining[0]` (ordering agents can reorder this list), but `EnvAction` itself now requires explicit `gid`.
-- **Delta pattern**: all candidate evaluation uses `delta_cost()` (vectorized incremental) rather than full `cost()` per candidate. `cost_batch(per_orientation=True)` and `placeable_batch(per_orientation=True)` return `[N, V]` per-orientation results.
+- **Delta pattern**: all candidate evaluation uses `cost_batch()` (vectorized incremental) rather than full `cost()` per candidate. `cost_batch(per_orientation=True)` and `placeable_batch(per_orientation=True)` return `[N, V]` per-orientation results.
 - **Static-sharing on copy**: `GridMaps.copy()` shares static tensors by reference, clones only runtime tensors. Makes MCTS snapshots cheap.

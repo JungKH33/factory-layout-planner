@@ -531,7 +531,6 @@ class FactoryLayoutEnv(gym.Env):
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         super().reset(seed=seed)
         options = dict(options or {})
-        initial_positions = options.get("initial_positions", None)
         remaining_order = options.get("remaining_order", None)
 
         # Base order: 그대로 입력 순서 (env-side remaining 정렬 없음).
@@ -554,48 +553,31 @@ class FactoryLayoutEnv(gym.Env):
             remaining = list(base_remaining)
         self._state.reset_runtime(remaining=remaining)
 
-        # Apply validated initial placements (and sync caches).
-        if initial_positions is not None:
-            if not isinstance(initial_positions, dict):
-                raise ValueError("reset(options): initial_positions must be a dict {gid: (x,y,rot)}")
-            for gid, pose in initial_positions.items():
-                if gid not in self.group_specs:
-                    raise ValueError(f"reset(options): initial_positions has unknown group id: {gid!r}")
-                if (not isinstance(pose, (tuple, list))) or len(pose) != 3:
-                    raise ValueError(f"reset(options): initial_positions[{gid!r}] must be (x,y,rot)")
-                x = int(pose[0])
-                y = int(pose[1])
-                rot = int(pose[2]) * 90  # config orient 0/1 → rotation 0/90
-                if gid in self._state.placed:
-                    raise ValueError(f"reset(options): initial_positions contains duplicate gid: {gid!r}")
-                geom = self._group_spec(gid)
-                w_r, h_r = geom.rotated_size(rot)
-                x_c = float(x) + w_r / 2.0
-                y_c = float(y) + h_r / 2.0
-
-                def _check_placeable_for_reset(x_bl, y_bl, body_map, clearance_map, clearance_origin, is_rectangular):
-                    return self._state.is_placeable(
-                        gid=gid,
-                        x_bl=int(x_bl),
-                        y_bl=int(y_bl),
-                        body_map=body_map,
-                        clearance_map=clearance_map,
-                        clearance_origin=clearance_origin,
-                        is_rectangular=bool(is_rectangular),
+        # Apply initial placements via the same resolve_action path as step_action.
+        initial_placements = options.get("initial_placements", None)
+        if initial_placements is not None:
+            if not isinstance(initial_placements, dict):
+                raise ValueError("reset(options): initial_placements must be a dict {gid: EnvAction}")
+            for gid, action in initial_placements.items():
+                if not isinstance(action, EnvAction):
+                    raise TypeError(
+                        f"reset(options): initial_placements[{gid!r}] must be EnvAction, "
+                        f"got {type(action).__name__}"
                     )
-
-                placement = geom.resolve(
-                    x_c=x_c,
-                    y_c=y_c,
-                    is_placeable_fn=_check_placeable_for_reset,
-                    score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
-                )
+                if gid != action.gid:
+                    raise ValueError(
+                        f"reset(options): key {gid!r} does not match action.gid={action.gid!r}"
+                    )
+                if gid in self._state.placed:
+                    raise ValueError(f"reset(options): initial_placements contains duplicate gid: {gid!r}")
+                _gid, placement = self.resolve_action(action)
                 if placement is None:
                     warnings.warn(
-                        f"reset(options): invalid initial placement gid={gid!r} pose=({x},{y},{rot}) - placing anyway",
+                        f"reset(options): not placeable gid={gid!r} "
+                        f"x_c={action.x_c} y_c={action.y_c} oi={action.orientation_index} — skipping",
                         stacklevel=2,
                     )
-                    placement = geom.build_placement(x_c=x_c, y_c=y_c, rotation=rot)
+                    continue
                 self._apply_resolved_placement(gid, placement)
         return {}, {}
 
@@ -690,12 +672,12 @@ if __name__ == "__main__":
 
     # --- reset: A·B 사전 배치, C만 step으로 배치 ---
     # forbidden [0,0,30,20] 밖 + constraint map 조건
-    initial_positions = {
-        "A": (32, 22, 0),   # A: 20×10, clearance 1 → x∈[31,53], y∈[22,32]
-        "B": (55, 22, 0),   # B: 15×15, clearance 1 → x∈[54,71], y∈[22,37]
+    initial_placements = {
+        "A": EnvAction(gid="A", x_c=42.0, y_c=27.0, orientation_index=0),
+        "B": EnvAction(gid="B", x_c=62.5, y_c=29.5, orientation_index=0),
     }
     t1 = time.perf_counter()
-    obs, _ = env.reset(options={"initial_positions": initial_positions})
+    obs, _ = env.reset(options={"initial_placements": initial_placements})
     reset_ms = (time.perf_counter() - t1) * 1000.0
 
     print("env_demo")

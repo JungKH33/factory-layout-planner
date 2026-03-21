@@ -12,6 +12,7 @@ import torch
 
 from agents.placement.alphachip import AlphaChipAdapter
 from agents.placement.greedy import GreedyAdapter
+from envs.action import EnvAction
 from envs.env import FactoryLayoutEnv
 from envs.placement.static import StaticRectSpec
 from envs.action_space import ActionSpace as CandidateSet
@@ -53,9 +54,9 @@ def main():
         "placeable": {"dtype": "int", "op": "==", "default": 0, "areas": [{"rect": [30, 20, 120, 80], "value": 1}]},
     }
 
-    initial_positions = {
-        "A": (80, 15, 0),
-        "B": (82, 32, 0),
+    initial_placements = {
+        "A": EnvAction(gid="A", x_c=90.0, y_c=20.0, orientation_index=0),
+        "B": EnvAction(gid="B", x_c=90.0, y_c=40.0, orientation_index=0),
     }
     remaining_order = ["C", "A", "B"]
 
@@ -73,7 +74,7 @@ def main():
 
     # 1) AlphaChip adapter demo
     env1 = AlphaChipAdapter(engine=engine, coarse_grid=32)
-    _obs1, _ = env1.reset(options={"initial_positions": initial_positions, "remaining_order": remaining_order})
+    _obs1, _ = env1.reset(options={"initial_placements": initial_placements, "remaining_order": remaining_order})
     plot_layout(env1, action_space=None, backend=backend)
     plot_flow_graph(env1, backend=backend)
 
@@ -89,7 +90,7 @@ def main():
         oversample_factor=2,
         random_seed=7,
     )
-    topk_obs, _ = env2.reset(options={"initial_positions": initial_positions, "remaining_order": remaining_order})
+    topk_obs, _ = env2.reset(options={"initial_placements": initial_placements, "remaining_order": remaining_order})
     cand = None
     if isinstance(topk_obs, dict) and ("action_mask" in topk_obs) and ("action_poses" in topk_obs):
         cand = CandidateSet(

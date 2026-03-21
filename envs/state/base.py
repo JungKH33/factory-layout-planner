@@ -77,7 +77,7 @@ class EnvState:
 
         Placement objects inside ``placements`` are shared by reference
         (shallow dict copy).  This is intentional – placements are treated
-        as **immutable** after creation (``build_placement``).  Do NOT
+        as **immutable** after creation (``resolve``).  Do NOT
         mutate a placement object in-place once it has been stored here.
         """
         return EnvState(

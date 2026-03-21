@@ -356,19 +356,17 @@ if __name__ == "__main__":
     # 일부 그룹 배치 (A, B, C)
     print("\n[2] Placing some groups...")
     placements = [
-        ("H", 200, 300, 0),   # A 그룹: (200, 300), 회전 없음
-        ("B", 350, 100, 0),   # B 그룹: (350, 100), 회전 없음
-        ("E", 180, 100, 0),   # C 그룹: (180, 100), 회전 없음
+        ("H", 320.0, 350.0, 0),   # H 그룹: center (320, 350)
+        ("B", 410.0, 160.0, 0),   # B 그룹: center (410, 160)
+        ("E", 250.0, 150.0, 0),   # E 그룹: center (250, 150)
     ]
-    
-    for gid, x, y, rot in placements:
+
+    for gid, x_c, y_c, oi in placements:
         if gid in env.get_state().remaining:
-            _spec = env.group_specs[gid]
-            _w, _h = _spec.rotated_size(int(rot))
             obs, reward, terminated, truncated, info = env.step_action(
-                EnvAction(gid=gid, x_c=float(x) + float(_w) / 2.0, y_c=float(y) + float(_h) / 2.0)
+                EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=oi)
             )
-            print(f"    Placed {gid} at ({x}, {y}, rot={rot}) - reason: {info.get('reason')}")
+            print(f"    Placed {gid} at center ({x_c}, {y_c}) oi={oi} - reason: {info.get('reason')}")
     
     print(f"    Placed: {list(env.get_state().placed)}")
     print(f"    Remaining: {env.get_state().remaining}")

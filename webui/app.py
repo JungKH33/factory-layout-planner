@@ -261,16 +261,8 @@ async def step(sid: str, req: StepRequest):
                 session.truncated = True
                 info = {"reason": "masked_action"}
             else:
-                x_bl, y_bl, rot, _i, _j = adapter.decode_action(a)
-                gid = candidates.gid
-                if gid is None:
-                    raise ValueError("candidate gid is required")
-                spec = engine.group_specs[gid]
-                w, h = spec.rotated_size(int(rot))
-                x_c = float(x_bl) + float(w) / 2.0
-                y_c = float(y_bl) + float(h) / 2.0
-                placement = EnvAction(gid=gid, x_c=x_c, y_c=y_c)
-                obs_core, reward, session.terminated, session.truncated, info = engine.step_action(placement)
+                env_action = adapter.decode_action(a, candidates)
+                obs_core, reward, session.terminated, session.truncated, info = engine.step_action(env_action)
                 session.obs = adapter.build_observation(obs_core)
             
             # Update candidates for new state

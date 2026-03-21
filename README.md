@@ -346,22 +346,22 @@ Controls initial state when the environment resets.
 
 | Field | Type | Description |
 |---|---|---|
-| `initial_positions` | dict | Pre-place facilities at fixed poses before the agent starts |
+| `initial_placements` | dict | Pre-place facilities at fixed poses before the agent starts |
 | `remaining_order` | list | Order in which the agent places remaining facilities |
 
 ```json
 "reset": {
-  "initial_positions": {
-    "A": [100, 50, 0],
-    "B": [200, 100, 90]
+  "initial_placements": {
+    "A": [130.0, 90.0, 0],
+    "B": [260.0, 160.0, 1]
   },
   "remaining_order": ["C", "D", "E"]
 }
 ```
 
-Each value in `initial_positions` is `[x_bl, y_bl, rotation]`:
-- `x_bl, y_bl`: bottom-left corner coordinates (integer cells)
-- `rotation`: degrees counter-clockwise, one of `{0, 90, 180, 270}`
+Each value in `initial_placements` is `[x_c, y_c, orientation_index]`:
+- `x_c, y_c`: center coordinates (float, same as `EnvAction`)
+- `orientation_index`: index into `GroupSpec.orientations` list (0-based). If omitted (2-element list `[x_c, y_c]`), the engine tries all orientations and picks the best placeable one.
 
 ---
 

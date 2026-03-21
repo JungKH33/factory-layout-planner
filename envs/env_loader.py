@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
+from envs.action import EnvAction
 from envs.env import FactoryLayoutEnv
 from envs.placement.base import GroupSpec
 from envs.placement.static import StaticRectSpec, StaticIrregularSpec
@@ -205,18 +206,21 @@ def load_env(
 
     reset_cfg = data.get("reset", {})
     reset_kwargs: Dict[str, Any] = {}
-    if "initial_positions" in reset_cfg and reset_cfg["initial_positions"] is not None:
+    if "initial_placements" in reset_cfg and reset_cfg["initial_placements"] is not None:
         ip = {}
-        for gid, pose in reset_cfg["initial_positions"].items():
-            if not (isinstance(pose, list) and len(pose) == 3):
-                raise ValueError(f"initial_positions[{gid}] must be [x, y, rot], got: {pose}")
+        for gid, pose in reset_cfg["initial_placements"].items():
+            if not (isinstance(pose, list) and len(pose) in (2, 3)):
+                raise ValueError(
+                    f"initial_placements[{gid}] must be [x_c, y_c] or [x_c, y_c, orientation_index], got: {pose}"
+                )
             try:
-                x_bl = int(round(float(pose[0])))
-                y_bl = int(round(float(pose[1])))
+                x_c = float(pose[0])
+                y_c = float(pose[1])
             except Exception as e:
-                raise ValueError(f"initial_positions[{gid}]: x/y must be numbers, got: {pose}") from e
-            ip[gid] = (x_bl, y_bl, int(pose[2]))
-        reset_kwargs["initial_positions"] = ip
+                raise ValueError(f"initial_placements[{gid}]: x_c/y_c must be numbers, got: {pose}") from e
+            oi = int(pose[2]) if len(pose) > 2 else None
+            ip[gid] = EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=oi)
+        reset_kwargs["initial_placements"] = ip
     if "remaining_order" in reset_cfg and reset_cfg["remaining_order"] is not None:
         reset_kwargs["remaining_order"] = list(reset_cfg["remaining_order"])
 

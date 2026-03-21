@@ -573,37 +573,55 @@ def build_zones(
     return zones
 
 
-def build_initial_positions(
+def build_initial_placements(
     fixed_positions: List[Dict],
     facility_dict: Dict[str, Dict],
+    groups: Dict[str, Dict],
     scale: float,
-) -> Dict[str, List[int]]:
-    """Convert fixedFacilityPositions to initial_positions."""
-    initial_positions = {}
-    
+) -> Dict[str, List[float]]:
+    """Convert fixedFacilityPositions to initial_placements [x_c, y_c, orientation_index]."""
+    placements: Dict[str, List[float]] = {}
+
+    # rotation degrees → orientation_index mapping
+    _rot_to_oi = {0: 0, 90: 1, 180: 2, 270: 3}
+
     for fp in fixed_positions:
         fac_id = fp["facilityId"]
         fac = facility_dict.get(fac_id)
         if fac is None:
             logger.warning("Fixed position for unknown facility %s, skipping", fac_id)
             continue
-        
+
         group_id = fac.get("facilityGroup")
         if group_id is None:
             logger.warning("Facility %s has no facilityGroup, skipping", fac_id)
             continue
-        
+
+        grp = groups.get(group_id)
+        if grp is None:
+            logger.warning("Group %s not in groups dict, skipping %s", group_id, fac_id)
+            continue
+
         pos = fp["position"]
-        x = int(pos["x"] / scale)
-        y = int(pos["y"] / scale)
-        rot = int(fp.get("rotation", 0))
-        
-        if group_id not in initial_positions:
-            initial_positions[group_id] = [x, y, rot]
+        x_bl = float(pos["x"]) / scale
+        y_bl = float(pos["y"]) / scale
+        rot_deg = int(fp.get("rotation", 0))
+        oi = _rot_to_oi.get(rot_deg, 0)
+
+        w = float(grp.get("width", 1))
+        h = float(grp.get("height", 1))
+        # swap dimensions for 90/270
+        if rot_deg in (90, 270):
+            w, h = h, w
+        x_c = x_bl + w / 2.0
+        y_c = y_bl + h / 2.0
+
+        if group_id not in placements:
+            placements[group_id] = [x_c, y_c, oi]
         else:
-            logger.info("Group %s already has initial position, skipping %s", group_id, fac_id)
-    
-    return initial_positions
+            logger.info("Group %s already has initial placement, skipping %s", group_id, fac_id)
+
+    return placements
 
 
 def recalculate_group_size(
@@ -654,18 +672,16 @@ def recalculate_group_size(
 
 def validate_and_adjust_groups(
     env_data: Dict[str, Any],
-    initial_positions: Dict[str, List],
     scale: float = 1.0,
     max_iterations: int = 5,
 ) -> Dict[str, Any]:
     """env로 로드 후 placeable 검사, 필요시 rows/cols 조정.
-    
+
     Args:
         env_data: 생성된 env 데이터
-        initial_positions: 이미 배치된 그룹들 (검사 제외)
         scale: mm per grid unit
         max_iterations: 최대 조정 반복 횟수
-    
+
     Returns:
         조정된 env_data
     """
@@ -688,7 +704,7 @@ def validate_and_adjust_groups(
         try:
             loaded = load_env(temp_path)
             env = loaded.env
-            env.reset(options={"initial_positions": initial_positions})
+            env.reset(options=loaded.reset_kwargs)
         finally:
             Path(temp_path).unlink(missing_ok=True)
         
@@ -833,8 +849,8 @@ def convert_sma_to_env(
     
     # Initial positions
     fixed_positions = data.get("fixedFacilityPositions", [])
-    initial_positions = build_initial_positions(fixed_positions, facility_dict, scale)
-    logger.info("Initial positions: %d", len(initial_positions))
+    initial_placements = build_initial_placements(fixed_positions, facility_dict, groups, scale)
+    logger.info("Initial placements: %d", len(initial_placements))
     
     # Build output
     env_data = {
@@ -852,12 +868,12 @@ def convert_sma_to_env(
         "reset": {},
     }
     
-    if initial_positions:
-        env_data["reset"]["initial_positions"] = initial_positions
+    if initial_placements:
+        env_data["reset"]["initial_placements"] = initial_placements
     
     # Validate and adjust groups if needed
     logger.info("Validating placeable positions...")
-    env_data = validate_and_adjust_groups(env_data, initial_positions, scale)
+    env_data = validate_and_adjust_groups(env_data, scale)
     
     # Save
     save_json(env_data, output_path)

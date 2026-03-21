@@ -59,9 +59,6 @@ class GroupSpec:
     def rotated_size(self, rotation: int):
         raise NotImplementedError(f"{type(self).__name__}.rotated_size() is not implemented")
 
-    def build_placement(self, **kwargs):
-        raise NotImplementedError(f"{type(self).__name__}.build_placement() is not implemented")
-
     def resolve(self, **kwargs):
         raise NotImplementedError(f"{type(self).__name__}.resolve() is not implemented")
 

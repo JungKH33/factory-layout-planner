@@ -133,32 +133,26 @@ def main() -> None:
     logger.info("Remaining groups: %s", len(base_env.get_state().remaining))
     
     # ===== 1.5. 기존 그룹 미리 배치 (하드코딩) =====
-    # (gid, x, y, rot) 형식
+    # (gid, x_c, y_c, orientation_index) 형식 — center 기반
     # forbidden area: [0, 0, 150, 200] 피해서 배치
-    # A: 160x80, B: 120x120, C: 100x60
     PRE_PLACEMENTS = [
-        ("A", 100, 200, 0),   # 160~320, 50~130
-        ("B", 150, 300, 0),  # 160~280, 150~270
-        # ("C", 50, 220, 0),   # 50~150, 220~280
-        #("D", 200, 400, 0),  # 200~360, 100~180
-        ("E", 300, 350, 0),  # 300~460, 200~280
-        #("F", 250, 350, 0),  # 250~410, 350~430
-        ("G", 180, 420, 0),  # 180~340, 420~500
-        ("H", 400, 200, 0),  # 320~480, 250~330
-        ("I", 350, 80, 0),  # 400~560, 150~230
+        ("A", 180.0, 240.0, 0),
+        ("B", 210.0, 360.0, 0),
+        ("E", 370.0, 400.0, 0),
+        ("G", 215.0, 455.0, 0),
+        ("H", 520.0, 250.0, 0),
+        ("I", 405.0, 125.0, 0),
     ]
-    
+
     if PRE_PLACEMENTS:
         logger.info("Pre-placing %s groups (hardcoded)", len(PRE_PLACEMENTS))
-        for gid, x, y, rot in PRE_PLACEMENTS:
+        for gid, x_c, y_c, oi in PRE_PLACEMENTS:
             if gid in base_env.get_state().remaining:
-                _spec = base_env.group_specs[gid]
-                _w, _h = _spec.rotated_size(int(rot))
                 _obs, _reward, _terminated, _truncated, info = base_env.step_action(
-                    EnvAction(gid=gid, x_c=float(x) + float(_w) / 2.0, y_c=float(y) + float(_h) / 2.0)
+                    EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=oi)
                 )
                 if info.get("reason") == "placed":
-                    logger.info("Placed: %s at (%s, %s), rot=%s", gid, x, y, rot)
+                    logger.info("Placed: %s at center (%.1f, %.1f) oi=%d", gid, x_c, y_c, oi)
                 else:
                     logger.warning("Failed to pre-place %s: reason=%s", gid, info.get("reason"))
             else:

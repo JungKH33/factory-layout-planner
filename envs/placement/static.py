@@ -775,43 +775,6 @@ class StaticRectSpec(StaticSpec):
             mirror=vi.mirror,
         )
 
-    def build_placement(
-        self,
-        *,
-        x_c: float,
-        y_c: float,
-        rotation: int = 0,
-        mirror: bool = False,
-    ) -> StaticRectPlacement:
-        r = self._resolve_rotation(rotation)
-        w, h = self._rotated_size(r)
-        x_bl = int(round(x_c - w / 2.0))
-        y_bl = int(round(y_c - h / 2.0))
-        x_c_s = float(x_bl) + w / 2.0
-        y_c_s = float(y_bl) + h / 2.0
-        entries = list(self._entries_from_center(x_c_s, y_c_s, r, mirror=mirror))
-        exits = list(self._exits_from_center(x_c_s, y_c_s, r, mirror=mirror))
-        cL, cR, cB, cT = self._clearance_lrtb_for_orientation(r, mirror=mirror)
-        body_map = torch.ones((int(h), int(w)), dtype=torch.bool, device=self.device)
-        clearance_map = torch.ones(
-            (int(h) + int(cB) + int(cT), int(w) + int(cL) + int(cR)),
-            dtype=torch.bool, device=self.device,
-        )
-        clearance_origin = (int(cL), int(cB))
-        return StaticRectPlacement(
-            x_c=x_c_s, y_c=y_c_s,
-            entries=entries, exits=exits,
-            min_x=float(x_bl), max_x=float(x_bl) + w,
-            min_y=float(y_bl), max_y=float(y_bl) + h,
-            body_map=body_map, clearance_map=clearance_map,
-            clearance_origin=clearance_origin, is_rectangular=True,
-            x_bl=x_bl, y_bl=y_bl, rotation=int(r),
-            w=float(w), h=float(h),
-            clearance_left=int(cL), clearance_right=int(cR),
-            clearance_bottom=int(cB), clearance_top=int(cT),
-            mirror=bool(mirror),
-        )
-
 
 # ---------------------------------------------------------------------------
 # StaticIrregularSpec
@@ -1043,54 +1006,6 @@ class StaticIrregularSpec(StaticSpec):
             clearance_polygon_abs=cp_abs,
         )
 
-    def build_placement(
-        self,
-        *,
-        x_c: float,
-        y_c: float,
-        rotation: int = 0,
-        mirror: bool = False,
-    ) -> StaticIrregularPlacement:
-        r = self._resolve_rotation(rotation)
-        vi = self._orientation_for_pose(r, mirror=mirror)
-        w = float(vi.body_w)
-        h = float(vi.body_h)
-        x_bl = int(round(x_c - w / 2.0))
-        y_bl = int(round(y_c - h / 2.0))
-        x_c_s = float(x_bl) + w / 2.0
-        y_c_s = float(y_bl) + h / 2.0
-        body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
-        bp_abs = (self._transform_polygon_to_world(
-            self.body_polygon, x_bl, y_bl, r, mirror,
-            self.width, self.height) if self.body_polygon else None)
-        cp_abs = (self._transform_polygon_to_world(
-            self.clearance_polygon, x_bl, y_bl, r, mirror,
-            self.width, self.height) if self.clearance_polygon else None)
-        return StaticIrregularPlacement(
-            x_c=x_c_s, y_c=y_c_s,
-            entries=list(self._entries_from_center(x_c_s, y_c_s, r, mirror=mirror)),
-            exits=list(self._exits_from_center(x_c_s, y_c_s, r, mirror=mirror)),
-            min_x=float(x_bl), max_x=float(x_bl) + w,
-            min_y=float(y_bl), max_y=float(y_bl) + h,
-            body_map=body_map, clearance_map=clearance_map,
-            clearance_origin=clearance_origin,
-            is_rectangular=bool(is_rectangular),
-            x_bl=x_bl, y_bl=y_bl, rotation=int(r),
-            w=w, h=h,
-            mirror=bool(mirror),
-            body_polygon_abs=bp_abs,
-            clearance_polygon_abs=cp_abs,
-        )
-
-    def _orientation_for_pose(self, rotation: int, *, mirror: bool) -> StaticOrientation:
-        rr = self._resolve_rotation(rotation)
-        for vi in self._orientations:
-            if vi.rotation == rr and bool(vi.mirror) == bool(mirror):
-                return vi
-        raise ValueError(
-            f"StaticIrregularSpec {self.id!r} does not have an orientation for rotation={rr}, mirror={bool(mirror)}"
-        )
-
     # ----- irregular-specific helpers -----
 
     def _validate_body_bbox(self) -> None:
@@ -1288,10 +1203,13 @@ if __name__ == "__main__":
               f"clear=({vi.cL},{vi.cR},{vi.cB},{vi.cT}) "
               f"entries={len(vi.entry_offsets)} exits={len(vi.exit_offsets)}")
 
-    scalar = geom.build_placement(x_c=14.0, y_c=7.0, rotation=90)
+    # resolve with orientation_index=1 (90° rotation)
+    def _always_true(*args):
+        return True
+    resolved = geom.resolve(x_c=14.0, y_c=7.0, is_placeable_fn=_always_true, orientation_index=1)
     print(
-        f"\nbuild_placement(x_c=14.0,y_c=7.0,rotation=90) -> "
-        f"w={scalar.w}, h={scalar.h}, entries={len(scalar.entries)}, exits={len(scalar.exits)}"
+        f"\nresolve(x_c=14.0,y_c=7.0,orientation_index=1) -> "
+        f"w={resolved.w}, h={resolved.h}, entries={len(resolved.entries)}, exits={len(resolved.exits)}"
     )
 
     # --- Irregular demo (L-shape via polygon + auto clearance) ---
@@ -1309,7 +1227,7 @@ if __name__ == "__main__":
     for vi in irr._orientations:
         print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
               f"rect={vi.is_rectangular} origin={vi.clearance_origin}")
-    ip = irr.build_placement(x_c=20.0, y_c=10.0, rotation=0)
-    print(f"  build_placement -> w={ip.w}, h={ip.h}, body_map={tuple(ip.body_map.shape)}")
+    ip = irr.resolve(x_c=20.0, y_c=10.0, is_placeable_fn=_always_true, orientation_index=0)
+    print(f"  resolve -> w={ip.w}, h={ip.h}, body_map={tuple(ip.body_map.shape)}")
     print(f"  body_polygon_abs={ip.body_polygon_abs}")
     print("OK")
