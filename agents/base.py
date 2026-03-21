@@ -178,7 +178,7 @@ class BaseAdapter(ABC):
 
         Takes center-only candidates from any subclass's ``create_mask()`` and
         expands them into ``(center, orientation_index)`` pairs, keeping the
-        top *k* by cost.  Sets ``self.action_poses``, ``self.action_delta``,
+        top *k* by cost.  Sets ``self.action_poses``, ``self.action_costs``,
         and ``self.action_orientation_indices``.
 
         ``cost_batch(per_orientation=True)`` already returns inf for
@@ -234,13 +234,13 @@ class BaseAdapter(ABC):
         out_mask[:pick_k] = True
 
         self.action_poses = out_poses
-        self.action_delta = out_delta
+        self.action_costs = out_delta
         self.action_orientation_indices = out_orient
         return out_mask
 
     def _empty_orientation_output(self, k: int) -> torch.Tensor:
         self.action_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
-        self.action_delta = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
+        self.action_costs = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
         self.action_orientation_indices = None
         return torch.zeros((k,), dtype=torch.bool, device=self.device)
 
@@ -284,7 +284,7 @@ class BaseAdapter(ABC):
 
         Each adapter defines its own observation format tailored to the
         model/agent it serves.  Greedy adapters return
-        ``{"action_delta": Tensor[N]}`` for the greedy agent.
+        ``{"action_costs": Tensor[N]}`` for the greedy agent.
         """
         raise NotImplementedError
 

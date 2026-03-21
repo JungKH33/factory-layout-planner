@@ -49,13 +49,13 @@ class GreedyV3Adapter(BaseAdapter):
         self.observation_space = gym.spaces.Dict({})
 
         self.action_poses: Optional[torch.Tensor] = None  # float [K,2]
-        self.action_delta: Optional[torch.Tensor] = None  # float [K]
+        self.action_costs: Optional[torch.Tensor] = None  # float [K]
 
     def build_observation(self) -> Dict[str, Any]:
         self.mask = self.create_mask()
         obs: Dict[str, Any] = {}
-        if isinstance(self.action_delta, torch.Tensor):
-            obs["action_delta"] = self.action_delta
+        if isinstance(self.action_costs, torch.Tensor):
+            obs["action_costs"] = self.action_costs
         return obs
 
     def create_mask(self) -> torch.Tensor:
@@ -78,7 +78,7 @@ class GreedyV3Adapter(BaseAdapter):
         if int(vidx.numel()) > 0:
             d = self._score_poses(gid, poses[vidx]).to(dtype=torch.float32, device=self.device)
             delta[vidx] = d.view(-1)
-        self.action_delta = delta
+        self.action_costs = delta
         return mask
 
     # ---- state api (for wrapped search/MCTS) ----
@@ -89,10 +89,10 @@ class GreedyV3Adapter(BaseAdapter):
             snap["action_poses"] = self.action_poses.clone()
         else:
             snap["action_poses"] = None
-        if isinstance(self.action_delta, torch.Tensor):
-            snap["action_delta"] = self.action_delta.clone()
+        if isinstance(self.action_costs, torch.Tensor):
+            snap["action_costs"] = self.action_costs.clone()
         else:
-            snap["action_delta"] = None
+            snap["action_costs"] = None
         return snap
 
     def set_state(self, state: Dict[str, object]) -> None:
@@ -108,11 +108,11 @@ class GreedyV3Adapter(BaseAdapter):
             self.action_poses = ax.to(device=self.device, dtype=torch.float32).clone()
         else:
             self.action_poses = None
-        ad = state.get("action_delta", None)
+        ad = state.get("action_costs", None)
         if isinstance(ad, torch.Tensor):
-            self.action_delta = ad.to(device=self.device, dtype=torch.float32).clone()
+            self.action_costs = ad.to(device=self.device, dtype=torch.float32).clone()
         else:
-            self.action_delta = None
+            self.action_costs = None
 
     # ---- candidate generation (center-based, orientation-free) ----
 

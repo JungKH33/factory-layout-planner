@@ -56,13 +56,13 @@ class GreedyAdapter(BaseAdapter):
         self.observation_space = gym.spaces.Dict({})
 
         self.action_poses: Optional[torch.Tensor] = None  # float [K,2]
-        self.action_delta: Optional[torch.Tensor] = None  # float [K]
+        self.action_costs: Optional[torch.Tensor] = None  # float [K]
 
     def build_observation(self) -> Dict[str, Any]:
         self.mask = self.create_mask()
         obs: Dict[str, Any] = {}
-        if isinstance(self.action_delta, torch.Tensor):
-            obs["action_delta"] = self.action_delta
+        if isinstance(self.action_costs, torch.Tensor):
+            obs["action_costs"] = self.action_costs
         return obs
 
     def create_mask(self) -> torch.Tensor:
@@ -71,7 +71,7 @@ class GreedyAdapter(BaseAdapter):
         gid = self.current_gid()
         if gid is None:
             self.action_poses = torch.zeros((self.k, 2), dtype=torch.float32, device=self.device)
-            self.action_delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
+            self.action_costs = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
             return torch.zeros((self.k,), dtype=torch.bool, device=self.device)
 
         candidates, mask = self._generate(self.engine, gid)
@@ -96,7 +96,7 @@ class GreedyAdapter(BaseAdapter):
             vv = poses[vidx]
             d = self._score_poses(gid, vv).to(dtype=torch.float32, device=self.device)
             delta[vidx] = d.view(-1)
-        self.action_delta = delta
+        self.action_costs = delta
         return mask
 
     # ---- state api (for wrapped search/MCTS) ----
@@ -107,10 +107,10 @@ class GreedyAdapter(BaseAdapter):
             snap["action_poses"] = self.action_poses.clone()
         else:
             snap["action_poses"] = None
-        if isinstance(self.action_delta, torch.Tensor):
-            snap["action_delta"] = self.action_delta.clone()
+        if isinstance(self.action_costs, torch.Tensor):
+            snap["action_costs"] = self.action_costs.clone()
         else:
-            snap["action_delta"] = None
+            snap["action_costs"] = None
         return snap
 
     def set_state(self, state: Dict[str, object]) -> None:
@@ -126,11 +126,11 @@ class GreedyAdapter(BaseAdapter):
             self.action_poses = ax.to(device=self.device, dtype=torch.float32).clone()
         else:
             self.action_poses = None
-        ad = state.get("action_delta", None)
+        ad = state.get("action_costs", None)
         if isinstance(ad, torch.Tensor):
-            self.action_delta = ad.to(device=self.device, dtype=torch.float32).clone()
+            self.action_costs = ad.to(device=self.device, dtype=torch.float32).clone()
         else:
-            self.action_delta = None
+            self.action_costs = None
 
     # ---- candidate generation (copied from actionspace/topk.py; BL int coords) ----
     def _quota(self, k: int) -> Tuple[int, int, int, int]:

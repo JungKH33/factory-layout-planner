@@ -23,7 +23,7 @@ class GreedyV4Adapter(BaseAdapter):
     then the adapter supplies the precise position within that cell.
 
     Observation includes:
-    - ``action_delta``: ``[K]`` float — incremental cost per candidate
+    - ``action_costs``: ``[K]`` float — incremental cost per candidate
     - ``cell_features``: ``[H_c, W_c, C]`` float — per-cell feature map
       (C channels: has_candidate, best_cost, candidate_count, mean_cost)
     - ``cell_indices``: ``[K]`` int — which coarse cell each action belongs to
@@ -52,15 +52,15 @@ class GreedyV4Adapter(BaseAdapter):
         self.observation_space = gym.spaces.Dict({})
 
         self.action_poses: Optional[torch.Tensor] = None   # float [K, 2]
-        self.action_delta: Optional[torch.Tensor] = None    # float [K]
+        self.action_costs: Optional[torch.Tensor] = None    # float [K]
         self.cell_indices: Optional[torch.Tensor] = None    # int64 [K]
         self.cell_features: Optional[torch.Tensor] = None   # float [H_c, W_c, C]
 
     def build_observation(self) -> Dict[str, Any]:
         self.mask = self.create_mask()
         obs: Dict[str, Any] = {}
-        if isinstance(self.action_delta, torch.Tensor):
-            obs["action_delta"] = self.action_delta
+        if isinstance(self.action_costs, torch.Tensor):
+            obs["action_costs"] = self.action_costs
         if isinstance(self.cell_features, torch.Tensor):
             obs["cell_features"] = self.cell_features
         if isinstance(self.cell_indices, torch.Tensor):
@@ -89,7 +89,7 @@ class GreedyV4Adapter(BaseAdapter):
         self.action_poses = poses
         self.action_orientation_indices = None
         self.cell_indices = cell_ids
-        self.action_delta = costs
+        self.action_costs = costs
         return mask
 
     # ---- state api (for MCTS) ----
@@ -98,7 +98,7 @@ class GreedyV4Adapter(BaseAdapter):
         snap = dict(super().get_state_copy())
         snap["rng_state"] = self._rng.getstate()
         snap["action_poses"] = self.action_poses.clone() if isinstance(self.action_poses, torch.Tensor) else None
-        snap["action_delta"] = self.action_delta.clone() if isinstance(self.action_delta, torch.Tensor) else None
+        snap["action_costs"] = self.action_costs.clone() if isinstance(self.action_costs, torch.Tensor) else None
         snap["cell_indices"] = self.cell_indices.clone() if isinstance(self.cell_indices, torch.Tensor) else None
         snap["cell_features"] = self.cell_features.clone() if isinstance(self.cell_features, torch.Tensor) else None
         return snap
@@ -113,8 +113,8 @@ class GreedyV4Adapter(BaseAdapter):
                 pass
         ax = state.get("action_poses", None)
         self.action_poses = ax.to(device=self.device, dtype=torch.float32).clone() if isinstance(ax, torch.Tensor) else None
-        ad = state.get("action_delta", None)
-        self.action_delta = ad.to(device=self.device, dtype=torch.float32).clone() if isinstance(ad, torch.Tensor) else None
+        ad = state.get("action_costs", None)
+        self.action_costs = ad.to(device=self.device, dtype=torch.float32).clone() if isinstance(ad, torch.Tensor) else None
         ci = state.get("cell_indices", None)
         self.cell_indices = ci.to(device=self.device, dtype=torch.int64).clone() if isinstance(ci, torch.Tensor) else None
         cf = state.get("cell_features", None)

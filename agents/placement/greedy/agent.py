@@ -27,7 +27,7 @@ class GreedyAgent:
         if int(valid_idx.numel()) == 0:
             return priors
 
-        scores_obs = obs.get("action_delta", None)
+        scores_obs = obs.get("action_costs", None)
         if isinstance(scores_obs, torch.Tensor) and int(scores_obs.numel()) == N:
             scores = scores_obs.to(dtype=torch.float32, device=device).view(-1)[valid_idx]
         else:
@@ -58,7 +58,7 @@ class GreedyAgent:
         if int(valid_idx.numel()) == 0:
             return 0
 
-        scores_obs = obs.get("action_delta", None)
+        scores_obs = obs.get("action_costs", None)
         if not (isinstance(scores_obs, torch.Tensor) and int(scores_obs.numel()) == N):
             return int(valid_idx[0].item())
         scores = scores_obs.to(dtype=torch.float32, device=action_space.poses.device).view(-1)[valid_idx]

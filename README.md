@@ -381,7 +381,7 @@ The system uses an **Agent + Adapter** architecture. Adapters translate raw engi
 
 | Adapter | Action Space | Observation | Best For |
 |---|---|---|---|
-| **GreedyAdapter** | Top-K sampled candidates | `{"action_delta": [K]}` | Fast heuristic search |
+| **GreedyAdapter** | Top-K sampled candidates | `{"action_costs": [K]}` | Fast heuristic search |
 | **GreedyV2Adapter** | Top-K with different sampling | Same as above | Alternative sampling |
 | **GreedyV3Adapter** | Edge-based boundary sampling | Same as above | Large grids, MCTS |
 | **MaskPlaceAdapter** | Dense GxG grid (default 224x224) | CNN state maps | RL training |
