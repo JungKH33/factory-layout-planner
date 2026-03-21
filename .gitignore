@@ -18,3 +18,7 @@ __pycache__/
 # === Claude ===
 .claude/
 
+
+# Temparary 
+README.md
+

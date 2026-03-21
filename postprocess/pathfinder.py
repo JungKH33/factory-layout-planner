@@ -274,7 +274,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(__file__).rsplit("postprocess", 1)[0])
     
     from envs.env_loader import load_env
-    from envs.env_visualizer import plot_layout
+    from envs.visualizer import plot_layout
     from postprocess.output import print_summary
     
     # 1. env 로드

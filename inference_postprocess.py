@@ -19,7 +19,7 @@ import torch
 
 from envs.action import EnvAction
 from envs.env_loader import load_env
-from envs.env_visualizer import plot_layout, save_layout, _draw_layout_layers
+from envs.visualizer import plot_layout, save_layout, draw_layout_layers as _draw_layout_layers
 
 from search.mcts import MCTSConfig, MCTSSearch
 

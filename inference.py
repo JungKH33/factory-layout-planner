@@ -8,7 +8,7 @@ import time
 import torch
 
 from envs.env_loader import load_env
-from envs.env_visualizer import plot_layout, save_layout, browse_steps, StepFrame
+from envs.visualizer import plot_layout, save_layout, browse_steps, StepFrame
 from postprocess import RoutePlanner
 
 from pipeline import DecisionPipeline
@@ -265,7 +265,7 @@ def main() -> None:
     # routes = planner.plan_all()
 
     # Preview before saving (interactive; close the window to continue).
-    plot_layout(adapter, action_space=None, routes= None)
+    plot_layout(adapter, action_space=None, routes= None, backend="plotly")
 
     save_layout(
         adapter,

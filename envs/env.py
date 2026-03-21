@@ -606,7 +606,7 @@ class FactoryLayoutEnv(gym.Env):
 
 if __name__ == "__main__":
     import time
-    from envs.env_visualizer import plot_flow_graph, plot_layout
+    from envs.visualizer import plot_flow_graph, plot_layout
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     dev = torch.device("cpu")

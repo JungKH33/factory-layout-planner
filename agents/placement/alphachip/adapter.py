@@ -192,7 +192,7 @@ if __name__ == "__main__":
     from envs.action_space import ActionSpace as CandidateSet
     from envs.action import EnvAction
     from envs.env_loader import load_env
-    from envs.env_visualizer import plot_layout
+    from envs.visualizer import plot_layout
 
     def _as_numpy(x: object) -> np.ndarray:
         if torch.is_tensor(x):

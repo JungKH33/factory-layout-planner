@@ -10,369 +10,205 @@
   "groups": {
     "A": {
       "type": "rect",
-      "width": 60,
-      "height": 40,
+      "width": 75,
+      "height": 50,
       "rotatable": true,
-      "entries_rel": [
-        [
-          0,
-          20
-        ]
-      ],
-      "exits_rel": [
-        [
-          60,
-          20
-        ]
-      ],
-      "clearance_lrtb": [
-        20,
-        20,
-        10,
-        10
-      ]
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[0, 15], [0, 35]],
+      "exits_rel": [[75, 15], [75, 35]],
+      "clearance_lrtb": [25, 25, 13, 13]
     },
     "B": {
       "type": "rect",
-      "width": 50,
-      "height": 50,
+      "width": 62,
+      "height": 62,
       "rotatable": true,
-      "entries_rel": [
-        [
-          25,
-          0
-        ]
-      ],
-      "exits_rel": [
-        [
-          25,
-          50
-        ]
-      ],
-      "clearance": 10
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[18, 0], [31, 0], [44, 0]],
+      "exits_rel": [[18, 62], [31, 62], [44, 62]],
+      "clearance": 12
     },
     "C": {
       "type": "irregular",
-      "width": 60,
-      "height": 40,
+      "width": 75,
+      "height": 50,
       "rotatable": true,
-      "entries_rel": [
-        [
-          0,
-          20
-        ]
-      ],
-      "exits_rel": [
-        [
-          60,
-          20
-        ]
-      ],
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[0, 10], [0, 25], [0, 40]],
+      "exits_rel": [[75, 8], [75, 18]],
       "body_polygon": [
-        [
-          0,
-          0
-        ],
-        [
-          60,
-          0
-        ],
-        [
-          60,
-          20
-        ],
-        [
-          20,
-          20
-        ],
-        [
-          20,
-          40
-        ],
-        [
-          0,
-          40
-        ]
+        [0, 0],
+        [75, 0],
+        [75, 25],
+        [25, 25],
+        [25, 50],
+        [0, 50]
       ],
-      "clearance": 10
-    },
-    "D": {
-      "type": "irregular",
-      "width": 50,
-      "height": 40,
-      "rotatable": false,
-      "entries_rel": [
-        [
-          0,
-          20
-        ]
-      ],
-      "exits_rel": [
-        [
-          50,
-          20
-        ]
-      ],
-      "body_polygon": [
-        [
-          0,
-          0
-        ],
-        [
-          10,
-          0
-        ],
-        [
-          10,
-          20
-        ],
-        [
-          20,
-          20
-        ],
-        [
-          20,
-          0
-        ],
-        [
-          30,
-          0
-        ],
-        [
-          30,
-          20
-        ],
-        [
-          40,
-          20
-        ],
-        [
-          40,
-          0
-        ],
-        [
-          50,
-          0
-        ],
-        [
-          50,
-          40
-        ],
-        [
-          0,
-          40
-        ]
-      ],
-      "clearance": 10
+      "clearance": 12
     },
     "E": {
       "type": "rect",
-      "width": 45,
-      "height": 35,
+      "width": 56,
+      "height": 44,
       "rotatable": true,
-      "entries_rel": [
-        [
-          22,
-          0
-        ]
-      ],
-      "exits_rel": [
-        [
-          22,
-          35
-        ]
-      ],
-      "clearance": 10
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[16, 0], [28, 0], [40, 0]],
+      "exits_rel": [[16, 44], [28, 44], [40, 44]],
+      "clearance": 11
     },
     "F": {
       "type": "rect",
-      "width": 55,
-      "height": 45,
+      "width": 69,
+      "height": 56,
       "rotatable": true,
-      "entries_rel": [
-        [
-          0,
-          22
-        ]
-      ],
-      "exits_rel": [
-        [
-          55,
-          22
-        ]
-      ],
-      "clearance": 10
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[0, 16], [0, 28], [0, 40]],
+      "exits_rel": [[69, 16], [69, 28], [69, 40]],
+      "clearance": 12
     },
     "G": {
       "type": "irregular",
-      "width": 50,
-      "height": 50,
+      "width": 62,
+      "height": 62,
       "rotatable": true,
-      "entries_rel": [
-        [
-          25,
-          0
-        ]
-      ],
-      "exits_rel": [
-        [
-          25,
-          50
-        ]
-      ],
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[12, 0], [31, 0], [50, 0]],
+      "exits_rel": [[27, 62], [31, 62], [35, 62]],
       "body_polygon": [
-        [
-          0,
-          0
-        ],
-        [
-          50,
-          0
-        ],
-        [
-          50,
-          20
-        ],
-        [
-          30,
-          20
-        ],
-        [
-          30,
-          50
-        ],
-        [
-          20,
-          50
-        ],
-        [
-          20,
-          20
-        ],
-        [
-          0,
-          20
-        ]
+        [0, 0],
+        [62, 0],
+        [62, 25],
+        [37, 25],
+        [37, 62],
+        [25, 62],
+        [25, 25],
+        [0, 25]
       ],
-      "clearance": 10
+      "clearance": 12
     },
     "H": {
       "type": "irregular",
-      "width": 45,
-      "height": 45,
+      "width": 56,
+      "height": 56,
       "rotatable": true,
-      "entries_rel": [
-        [
-          0,
-          22
-        ]
-      ],
-      "exits_rel": [
-        [
-          45,
-          22
-        ]
-      ],
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[0, 8], [0, 28], [0, 48]],
+      "exits_rel": [[56, 30], [56, 44]],
       "body_polygon": [
-        [
-          0,
-          0
-        ],
-        [
-          45,
-          0
-        ],
-        [
-          45,
-          15
-        ],
-        [
-          15,
-          15
-        ],
-        [
-          15,
-          45
-        ],
-        [
-          0,
-          45
-        ]
+        [0, 0],
+        [56, 0],
+        [56, 19],
+        [19, 19],
+        [19, 56],
+        [0, 56]
       ],
-      "clearance": 10
+      "clearance": 11
+    },
+    "I": {
+      "type": "irregular",
+      "width": 32,
+      "height": 128,
+      "rotatable": true,
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[0, 32], [0, 64], [0, 96]],
+      "exits_rel": [[32, 32], [32, 64], [32, 96]],
+      "body_polygon": [[0, 0], [32, 0], [32, 128], [0, 128]],
+      "clearance": 16
+    },
+    "J": {
+      "type": "irregular",
+      "width": 48,
+      "height": 72,
+      "rotatable": true,
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[0, 12], [0, 36], [0, 60]],
+      "exits_rel": [[12, 72], [24, 72], [48, 60]],
+      "body_polygon": [
+        [0, 0],
+        [24, 0],
+        [24, 48],
+        [48, 48],
+        [48, 72],
+        [0, 72]
+      ],
+      "clearance": 12
+    },
+    "S": {
+      "type": "irregular",
+      "width": 72,
+      "height": 48,
+      "rotatable": true,
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[12, 0], [36, 0], [0, 12]],
+      "exits_rel": [[30, 48], [54, 48], [72, 32], [72, 40]],
+      "body_polygon": [
+        [0, 0],
+        [48, 0],
+        [48, 24],
+        [72, 24],
+        [72, 48],
+        [24, 48],
+        [24, 24],
+        [0, 24]
+      ],
+      "clearance": 12
+    },
+    "T": {
+      "type": "irregular",
+      "width": 60,
+      "height": 48,
+      "rotatable": true,
+      "entry_port_mode": "mean",
+      "exit_port_mode": "mean",
+      "entries_rel": [[22, 0], [30, 0], [38, 0]],
+      "exits_rel": [[8, 48], [30, 48], [52, 48]],
+      "body_polygon": [
+        [18, 0],
+        [42, 0],
+        [42, 24],
+        [60, 24],
+        [60, 48],
+        [0, 48],
+        [0, 24],
+        [18, 24]
+      ],
+      "clearance": 11
     }
   },
   "flow": [
-    [
-      "A",
-      "B",
-      1.0
-    ],
-    [
-      "A",
-      "C",
-      0.8
-    ],
-    [
-      "B",
-      "D",
-      1.0
-    ],
-    [
-      "C",
-      "D",
-      0.7
-    ],
-    [
-      "A",
-      "E",
-      0.5
-    ],
-    [
-      "B",
-      "F",
-      0.6
-    ],
-    [
-      "E",
-      "G",
-      1.0
-    ],
-    [
-      "F",
-      "H",
-      1.0
-    ],
-    [
-      "G",
-      "D",
-      0.5
-    ],
-    [
-      "H",
-      "D",
-      0.5
-    ],
-    [
-      "C",
-      "G",
-      0.4
-    ],
-    [
-      "E",
-      "H",
-      0.4
-    ]
+    ["A", "B", 1.0],
+    ["A", "C", 0.8],
+    ["A", "E", 0.5],
+    ["B", "I", 1.0],
+    ["B", "F", 0.6],
+    ["C", "J", 0.7],
+    ["C", "G", 0.4],
+    ["E", "G", 1.0],
+    ["F", "H", 1.0],
+    ["G", "S", 0.5],
+    ["H", "T", 0.5],
+    ["E", "H", 0.4],
+    ["I", "F", 0.5],
+    ["J", "E", 0.5],
+    ["S", "B", 0.35],
+    ["T", "C", 0.35],
+    ["G", "T", 0.25],
+    ["H", "S", 0.25]
   ],
   "zones": {
     "forbidden_areas": [
       {
-        "rect": [
-          0,
-          0,
-          80,
-          80
-        ]
+        "rect": [0, 0, 80, 80]
       }
     ]
   },
