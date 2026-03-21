@@ -31,9 +31,19 @@ class SearchProgress:
 ProgressCallback = Callable[[SearchProgress], None]
 
 
+@dataclass(frozen=True)
+class BaseSearchConfig:
+    """Common search config fields shared by all search algorithms."""
+
+    # Orientation search: when enabled, expanding a center action tries
+    # multiple orientations as separate branches instead of auto-resolving.
+    orientation_search: bool = False
+    max_orientation_branches: int = 4
+
+
 class BaseSearch(ABC):
     """Base class for search algorithms with progress callback support."""
-    
+
     def __init__(self):
         self.top_tracker: Optional[TopKTracker] = None
         self._progress_callback: Optional[ProgressCallback] = None

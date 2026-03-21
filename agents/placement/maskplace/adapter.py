@@ -80,9 +80,9 @@ class MaskPlaceAdapter(BaseAdapter):
     def _create_mask_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
         """Return torch.BoolTensor[G*G] valid-action mask for a specific gid.
 
-        Uses spec.placeable_batch which checks ALL rotation/mirror variants
+        Uses spec.placeable_batch which checks ALL rotation/mirror orientations
         and ORs the results: a center cell is valid if the facility can be
-        placed there in *any* variant.
+        placed there in *any* orientation.
         """
         if gid is None:
             return torch.zeros((self.grid * self.grid,), dtype=torch.bool, device=self.device)

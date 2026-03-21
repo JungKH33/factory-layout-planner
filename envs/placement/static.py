@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
-from .base import GroupSpec, GroupPlacement
+from .base import GroupSpec, GroupPlacement, Orientation
 
 if TYPE_CHECKING:
     from ..state.base import EnvState
@@ -21,23 +21,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class VariantInfo:
-    """One unique (rotation, mirror) variant with precomputed geometry."""
+class StaticOrientation(Orientation):
+    """Static-spec orientation: extends Orientation with clearance and cache keys."""
 
-    rotation: int
-    mirror: bool
-    body_w: int
-    body_h: int
-    cL: int
-    cR: int
-    cB: int
-    cT: int
-    clearance_origin: Tuple[int, int]
-    is_rectangular: bool
-    entry_offsets: Tuple[Tuple[float, float], ...]
-    exit_offsets: Tuple[Tuple[float, float], ...]
-    shape_key: tuple
-    cost_key: tuple
+    cL: int = 0
+    cR: int = 0
+    cB: int = 0
+    cT: int = 0
+    clearance_origin: Tuple[int, int] = (0, 0)
+    is_rectangular: bool = True
+    shape_key: tuple = ()
+    cost_key: tuple = ()
+
+
+# Backwards-compat alias (will be removed)
 
 
 # ---------------------------------------------------------------------------
@@ -83,15 +80,15 @@ class StaticSpec(GroupSpec):
     """Common spec for static facilities (rect or irregular).
 
     Provides:
-    - Variant storage and lookup
+    - Orientation storage and lookup
     - Rotation / mirror / clearance helpers
     - Port coordinate transforms (single + batch)
     - placeable_map / placeable_batch / cost_batch
-    - resolve() — tries every variant and picks the best
+    - resolve() — tries every orientation and picks the best
     - shape_tensors() — returns (body_map, clearance_map, origin, is_rect) by key
 
     Subclasses must implement ``__post_init__`` which is responsible for
-    calling ``_store_variants(variants, shape_tensors_by_key)`` to populate
+    calling ``_store_orientations(orientations, shape_tensors_by_key)`` to populate
     the internal caches.
     """
 
@@ -108,21 +105,21 @@ class StaticSpec(GroupSpec):
     _exit_port_mode: str = "min"
     clearance_lrtb_rel: Optional[Tuple[int, int, int, int]] = None
 
-    # ----- variant storage (populated by _store_variants) -----
+    # ----- orientation storage (populated by _store_orientations) -----
 
-    def _store_variants(
+    def _store_orientations(
         self,
-        variants: List[VariantInfo],
+        orientations: List[StaticOrientation],
         shape_tensors_by_key: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]],
     ) -> None:
-        self._variants: List[VariantInfo] = variants
-        self._variants_by_shape: Dict[tuple, List[VariantInfo]] = {}
-        for vi in variants:
-            self._variants_by_shape.setdefault(vi.shape_key, []).append(vi)
+        self._orientations: List[StaticOrientation] = orientations
+        self._orientations_by_shape: Dict[tuple, List[StaticOrientation]] = {}
+        for vi in orientations:
+            self._orientations_by_shape.setdefault(vi.shape_key, []).append(vi)
         self._shape_tensors_by_key: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = shape_tensors_by_key
-        self._variant_entry_off_t: List[torch.Tensor] = []
-        self._variant_exit_off_t: List[torch.Tensor] = []
-        for vi in variants:
+        self._orient_entry_off_t: List[torch.Tensor] = []
+        self._orient_exit_off_t: List[torch.Tensor] = []
+        for vi in orientations:
             if vi.entry_offsets:
                 et = torch.tensor(list(vi.entry_offsets), dtype=torch.float32, device=self.device)
             else:
@@ -131,8 +128,13 @@ class StaticSpec(GroupSpec):
                 xt = torch.tensor(list(vi.exit_offsets), dtype=torch.float32, device=self.device)
             else:
                 xt = torch.empty((0, 2), dtype=torch.float32, device=self.device)
-            self._variant_entry_off_t.append(et)
-            self._variant_exit_off_t.append(xt)
+            self._orient_entry_off_t.append(et)
+            self._orient_exit_off_t.append(xt)
+
+    @property
+    def orientations(self) -> List[Orientation]:
+        """All unique (rotation, mirror) orientations for this spec."""
+        return list(self._orientations)
 
     # ----- rotation / clearance helpers -----
 
@@ -175,7 +177,7 @@ class StaticSpec(GroupSpec):
 
     # ----- clearance helpers -----
 
-    def _clearance_lrtb_for_variant(self, rotation: int, *, mirror: bool = False) -> Tuple[int, int, int, int]:
+    def _clearance_lrtb_for_orientation(self, rotation: int, *, mirror: bool = False) -> Tuple[int, int, int, int]:
         """Return (L, R, B, T) clearance for a given rotation/mirror of the canonical LRTB."""
         r = self._resolve_rotation(rotation)
         if self.clearance_lrtb_rel is not None:
@@ -362,10 +364,10 @@ class StaticSpec(GroupSpec):
         if self.device == device:
             return
         self.device = device
-        for i, t in enumerate(self._variant_entry_off_t):
-            self._variant_entry_off_t[i] = t.to(device)
-        for i, t in enumerate(self._variant_exit_off_t):
-            self._variant_exit_off_t[i] = t.to(device)
+        for i, t in enumerate(self._orient_entry_off_t):
+            self._orient_entry_off_t[i] = t.to(device)
+        for i, t in enumerate(self._orient_exit_off_t):
+            self._orient_exit_off_t[i] = t.to(device)
         moved: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
         for key, (body_map, clearance_map, clearance_origin, is_rectangular) in self._shape_tensors_by_key.items():
             moved[key] = (
@@ -376,7 +378,7 @@ class StaticSpec(GroupSpec):
             )
         self._shape_tensors_by_key = moved
 
-    # ----- variant-level port offset computation -----
+    # ----- orientation-level port offset computation -----
 
     def _compute_port_offsets(
         self, rotation: int, mirror: bool,
@@ -400,11 +402,11 @@ class StaticSpec(GroupSpec):
             xo.append((round(rdx, 6), round(rdy, 6)))
         return tuple(eo), tuple(xo)
 
-    # ----- resolve (variant selection) -----
+    # ----- resolve (orientation selection) -----
 
     def _make_placement(
         self,
-        vi: VariantInfo,
+        vi: StaticOrientation,
         x_c_s: float,
         y_c_s: float,
         x_bl: int,
@@ -424,9 +426,15 @@ class StaticSpec(GroupSpec):
         y_c: float,
         is_placeable_fn: Callable[..., bool],
         score_fn: Optional[Callable] = None,
+        orientation_index: Optional[int] = None,
     ) -> 'GroupPlacement | None':
+        if orientation_index is not None:
+            orientations_to_try = [self._orientations[orientation_index]]
+        else:
+            orientations_to_try = self._orientations
+
         placeable: List[GroupPlacement] = []
-        for vi in self._variants:
+        for vi in orientations_to_try:
             w = float(vi.body_w)
             h = float(vi.body_h)
             x_bl = int(round(x_c - w / 2.0))
@@ -457,7 +465,7 @@ class StaticSpec(GroupSpec):
 
     def placeable_map(self, state: "EnvState", gid: object) -> torch.Tensor:
         result = None
-        for shape_key in self._variants_by_shape:
+        for shape_key in self._orientations_by_shape:
             body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
             m = state.is_placeable_map(
                 gid=gid,
@@ -475,16 +483,63 @@ class StaticSpec(GroupSpec):
             return torch.zeros((H, W), dtype=torch.bool, device=self.device)
         return result
 
+    def placeable_center_map(self, state: "EnvState", gid: object) -> torch.Tensor:
+        """Center-based validity map (OR of all orientation shapes shifted to center coords)."""
+        H, W = state.maps.shape
+        result = torch.zeros((H, W), dtype=torch.bool, device=self.device)
+        for shape_key in self._orientations_by_shape:
+            body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
+            bl_map = state.is_placeable_map(
+                gid=gid,
+                body_map=body_map,
+                clearance_map=clearance_map,
+                clearance_origin=clearance_origin,
+                is_rectangular=is_rectangular,
+            )
+            bh, bw = int(body_map.shape[0]), int(body_map.shape[1])
+            dx = bw // 2
+            dy = bh // 2
+            src_h = min(H - dy, int(bl_map.shape[0]))
+            src_w = min(W - dx, int(bl_map.shape[1]))
+            if src_h > 0 and src_w > 0:
+                result[dy:dy + src_h, dx:dx + src_w] |= bl_map[:src_h, :src_w]
+        return result
+
     def placeable_batch(
         self,
         state: "EnvState",
         gid: object,
         x_c: torch.Tensor,
         y_c: torch.Tensor,
+        per_orientation: bool = False,
     ) -> torch.Tensor:
+        """Check placeability for batch of center positions.
+
+        Returns:
+            per_orientation=False (default): ``[N]`` bool — True if ANY
+                orientation is placeable.
+            per_orientation=True: ``[N, V]`` bool — per-orientation result
+                (V = len(self._orientations)).
+        """
         N = int(x_c.shape[0])
+        V = len(self._orientations)
+        if per_orientation:
+            result = torch.zeros((N, V), dtype=torch.bool, device=self.device)
+            for i, vi in enumerate(self._orientations):
+                body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
+                body_h, body_w = int(body_map.shape[0]), int(body_map.shape[1])
+                x_bl = torch.round(x_c - body_w / 2.0).to(torch.long)
+                y_bl = torch.round(y_c - body_h / 2.0).to(torch.long)
+                result[:, i] = state.is_placeable_batch(
+                    gid=gid,
+                    x_bl=x_bl, y_bl=y_bl,
+                    body_map=body_map, clearance_map=clearance_map,
+                    clearance_origin=clearance_origin, is_rectangular=is_rectangular,
+                )
+            return result
+        # Default: OR across all shapes (original behaviour)
         ok = torch.zeros(N, dtype=torch.bool, device=self.device)
-        for shape_key in self._variants_by_shape:
+        for shape_key in self._orientations_by_shape:
             body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
             body_h, body_w = int(body_map.shape[0]), int(body_map.shape[1])
             x_bl = torch.round(x_c - body_w / 2.0).to(torch.long)
@@ -505,15 +560,30 @@ class StaticSpec(GroupSpec):
         poses: torch.Tensor,
         state: "EnvState",
         reward: "RewardComposer",
+        per_orientation: bool = False,
     ) -> torch.Tensor:
+        """Vectorized incremental cost for batch of center positions.
+
+        Returns:
+            per_orientation=False (default): ``[N]`` float — min cost across
+                all orientations (inf where nothing is placeable).
+            per_orientation=True: ``[N, V]`` float — per-orientation cost
+                (V = len(self._orientations), inf where not placeable).
+        """
         N = int(poses.shape[0])
+        V = len(self._orientations)
         if N == 0:
+            if per_orientation:
+                return torch.zeros((0, V), dtype=torch.float32, device=self.device)
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
-        best = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
+        if per_orientation:
+            result = torch.full((N, V), float('inf'), dtype=torch.float32, device=self.device)
+        else:
+            result = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
         x_c = poses[:, 0]
         y_c = poses[:, 1]
         needed = reward.required()
-        for i, vi in enumerate(self._variants):
+        for i, vi in enumerate(self._orientations):
             body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
             x_bl = torch.round(x_c - vi.body_w / 2.0).to(torch.long)
             y_bl = torch.round(y_c - vi.body_h / 2.0).to(torch.long)
@@ -526,14 +596,17 @@ class StaticSpec(GroupSpec):
             if not ok.any():
                 continue
             idx = torch.where(ok)[0]
-            features = self._build_variant_features(vi, i, poses[idx], needed)
+            features = self._build_orientation_features(vi, i, poses[idx], needed)
             scores = reward.delta_batch(state, gid=gid, **features)
-            best[idx] = torch.min(best[idx], scores)
-        return best
+            if per_orientation:
+                result[idx, i] = scores
+            else:
+                result[idx] = torch.min(result[idx], scores)
+        return result
 
-    def _build_variant_features(
+    def _build_orientation_features(
         self,
-        vi: VariantInfo,
+        vi: StaticOrientation,
         vi_idx: int,
         center: torch.Tensor,
         needed: set,
@@ -555,7 +628,7 @@ class StaticSpec(GroupSpec):
         if "max_y" in needed:
             out["max_y"] = y_bl.to(torch.float32) + float(vi.body_h)
         if "entries" in needed:
-            eo = self._variant_entry_off_t[vi_idx]
+            eo = self._orient_entry_off_t[vi_idx]
             if eo.shape[0] > 0:
                 c = torch.stack([x_c_s, y_c_s], dim=1)
                 out["entries"] = c[:, None, :] + eo[None, :, :]
@@ -566,7 +639,7 @@ class StaticSpec(GroupSpec):
                 out["entries"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
                 out["entries_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
         if "exits" in needed:
-            xo = self._variant_exit_off_t[vi_idx]
+            xo = self._orient_exit_off_t[vi_idx]
             if xo.shape[0] > 0:
                 c = torch.stack([x_c_s, y_c_s], dim=1)
                 out["exits"] = c[:, None, :] + xo[None, :, :]
@@ -618,17 +691,17 @@ class StaticRectSpec(StaticSpec):
         mirrors = (False, True) if self.mirrorable else (False,)
 
         seen_cost: set = set()
-        variants: List[VariantInfo] = []
+        orients: List[StaticOrientation] = []
         shape_tensors_by_key: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
-        raw_variant_count = 0
+        raw_orientation_count = 0
 
         for rot in rotations:
             rr = self._resolve_rotation(rot)
             for m in mirrors:
-                raw_variant_count += 1
+                raw_orientation_count += 1
                 w, h = self._rotated_size(rr)
                 body_w, body_h = int(w), int(h)
-                cL, cR, cB, cT = self._clearance_lrtb_for_variant(rr, mirror=m)
+                cL, cR, cB, cT = self._clearance_lrtb_for_orientation(rr, mirror=m)
                 eo_t, xo_t = self._compute_port_offsets(rr, m)
 
                 body_map = torch.ones((body_h, body_w), dtype=torch.bool, device=self.device)
@@ -647,7 +720,7 @@ class StaticRectSpec(StaticSpec):
                     continue
                 seen_cost.add(ck)
 
-                vi = VariantInfo(
+                vi = StaticOrientation(
                     rotation=rr, mirror=m,
                     body_w=body_w, body_h=body_h,
                     cL=cL, cR=cR, cB=cB, cT=cT,
@@ -656,15 +729,15 @@ class StaticRectSpec(StaticSpec):
                     entry_offsets=eo_t, exit_offsets=xo_t,
                     shape_key=pk, cost_key=ck,
                 )
-                variants.append(vi)
+                orients.append(vi)
                 shape_tensors_by_key[pk] = (body_map, clearance_map, clearance_origin, is_rectangular)
 
-        self._store_variants(variants, shape_tensors_by_key)
+        self._store_orientations(orients, shape_tensors_by_key)
 
         logger.info(
-            "StaticRectSpec %r variant summary: raw=%d, unique_variants=%d, unique_shapes=%d",
-            self.id, raw_variant_count,
-            len(self._variants), len(self._variants_by_shape),
+            "StaticRectSpec %r orientation summary: raw=%d, unique=%d, unique_shapes=%d",
+            self.id, raw_orientation_count,
+            len(self._orientations), len(self._orientations_by_shape),
         )
 
     @property
@@ -673,7 +746,7 @@ class StaticRectSpec(StaticSpec):
 
     def _make_placement(
         self,
-        vi: VariantInfo,
+        vi: StaticOrientation,
         x_c_s: float,
         y_c_s: float,
         x_bl: int,
@@ -718,7 +791,7 @@ class StaticRectSpec(StaticSpec):
         y_c_s = float(y_bl) + h / 2.0
         entries = list(self._entries_from_center(x_c_s, y_c_s, r, mirror=mirror))
         exits = list(self._exits_from_center(x_c_s, y_c_s, r, mirror=mirror))
-        cL, cR, cB, cT = self._clearance_lrtb_for_variant(r, mirror=mirror)
+        cL, cR, cB, cT = self._clearance_lrtb_for_orientation(r, mirror=mirror)
         body_map = torch.ones((int(h), int(w)), dtype=torch.bool, device=self.device)
         clearance_map = torch.ones(
             (int(h) + int(cB) + int(cT), int(w) + int(cL) + int(cR)),
@@ -808,7 +881,7 @@ class StaticIrregularSpec(StaticSpec):
 
         self._validate_body_bbox()
         self._validate_ports()
-        self._build_variants()
+        self._build_orientations()
 
     # ----- rasterisation helpers -----
 
@@ -935,7 +1008,7 @@ class StaticIrregularSpec(StaticSpec):
 
     def _make_placement(
         self,
-        vi: VariantInfo,
+        vi: StaticOrientation,
         x_c_s: float,
         y_c_s: float,
         x_bl: int,
@@ -979,7 +1052,7 @@ class StaticIrregularSpec(StaticSpec):
         mirror: bool = False,
     ) -> StaticIrregularPlacement:
         r = self._resolve_rotation(rotation)
-        vi = self._variant_for_pose(r, mirror=mirror)
+        vi = self._orientation_for_pose(r, mirror=mirror)
         w = float(vi.body_w)
         h = float(vi.body_h)
         x_bl = int(round(x_c - w / 2.0))
@@ -1009,13 +1082,13 @@ class StaticIrregularSpec(StaticSpec):
             clearance_polygon_abs=cp_abs,
         )
 
-    def _variant_for_pose(self, rotation: int, *, mirror: bool) -> VariantInfo:
+    def _orientation_for_pose(self, rotation: int, *, mirror: bool) -> StaticOrientation:
         rr = self._resolve_rotation(rotation)
-        for vi in self._variants:
+        for vi in self._orientations:
             if vi.rotation == rr and bool(vi.mirror) == bool(mirror):
                 return vi
         raise ValueError(
-            f"StaticIrregularSpec {self.id!r} does not have a variant for rotation={rr}, mirror={bool(mirror)}"
+            f"StaticIrregularSpec {self.id!r} does not have an orientation for rotation={rr}, mirror={bool(mirror)}"
         )
 
     # ----- irregular-specific helpers -----
@@ -1032,17 +1105,35 @@ class StaticIrregularSpec(StaticSpec):
             raise ValueError(f"StaticIrregularSpec {self.id!r} body_map must touch the right boundary")
 
     def _validate_ports(self) -> None:
-        invalid_ports: List[str] = []
+        invalid_bounds: List[str] = []
         bounds = f"[0, {self.width}] x [0, {self.height}]"
         for port_type, ports in (("entry", self.entries_rel), ("exit", self.exits_rel)):
             for idx, port in enumerate(ports):
                 x, y = float(port[0]), float(port[1])
                 if x < 0.0 or x > float(self.width) or y < 0.0 or y > float(self.height):
-                    invalid_ports.append(f"{port_type}[{idx}]=({x}, {y})")
-        if invalid_ports:
+                    invalid_bounds.append(f"{port_type}[{idx}]=({x}, {y})")
+        if invalid_bounds:
             logger.warning(
                 f"StaticIrregularSpec {self.id!r} has ports outside local bounds {bounds}: "
-                + ", ".join(invalid_ports)
+                + ", ".join(invalid_bounds)
+            )
+
+        import numpy as np
+        from matplotlib.path import Path as MplPath
+
+        poly = MplPath(np.asarray(self.body_polygon, dtype=np.float64))
+        invalid_interior: List[str] = []
+        for port_type, ports in (("entry", self.entries_rel), ("exit", self.exits_rel)):
+            for idx, port in enumerate(ports):
+                x, y = float(port[0]), float(port[1])
+                if x < 0.0 or x > float(self.width) or y < 0.0 or y > float(self.height):
+                    continue
+                if not poly.contains_point((x, y)):
+                    invalid_interior.append(f"{port_type}[{idx}]=({x}, {y})")
+        if invalid_interior:
+            logger.warning(
+                f"StaticIrregularSpec {self.id!r} has ports outside body_polygon interior: "
+                + ", ".join(invalid_interior)
             )
 
     @staticmethod
@@ -1075,14 +1166,14 @@ class StaticIrregularSpec(StaticSpec):
             return (cH - oy - bH, ox)
         raise ValueError(f"rotation must be a multiple of 90 degrees, got {rotation!r}")
 
-    def _build_variants(self) -> None:
+    def _build_orientations(self) -> None:
         rotations = (0, 90, 180, 270) if self.rotatable else (0,)
         mirrors = (False, True) if self.mirrorable else (False,)
 
         seen_cost: set = set()
-        variants: List[VariantInfo] = []
+        orients: List[StaticOrientation] = []
         shape_tensors_by_key: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
-        raw_variant_count = 0
+        raw_orientation_count = 0
         bH_canon, bW_canon = self.height, self.width
         cH_canon = int(self.clearance_map_canonical.shape[0])
         cW_canon = int(self.clearance_map_canonical.shape[1])
@@ -1090,7 +1181,7 @@ class StaticIrregularSpec(StaticSpec):
         for rot in rotations:
             rr = self._resolve_rotation(rot)
             for m in mirrors:
-                raw_variant_count += 1
+                raw_orientation_count += 1
                 body_map = self._transform_body_map(self.body_map_canonical, rr, mirror=m)
                 clearance_map = self._transform_body_map(self.clearance_map_canonical, rr, mirror=m)
                 body_h = int(body_map.shape[0])
@@ -1115,7 +1206,7 @@ class StaticIrregularSpec(StaticSpec):
                     continue
                 seen_cost.add(ck)
 
-                vi = VariantInfo(
+                vi = StaticOrientation(
                     rotation=rr, mirror=bool(m),
                     body_w=body_w, body_h=body_h,
                     cL=int(cL), cR=int(cR), cB=int(cB), cT=int(cT),
@@ -1124,15 +1215,15 @@ class StaticIrregularSpec(StaticSpec):
                     entry_offsets=eo_t, exit_offsets=xo_t,
                     shape_key=pk, cost_key=ck,
                 )
-                variants.append(vi)
+                orients.append(vi)
                 shape_tensors_by_key[pk] = (body_map, clearance_map, clearance_origin, is_rectangular)
 
-        self._store_variants(variants, shape_tensors_by_key)
+        self._store_orientations(orients, shape_tensors_by_key)
 
         logger.info(
-            "StaticIrregularSpec %r variant summary: raw=%d, unique_variants=%d, unique_shapes=%d",
-            self.id, raw_variant_count,
-            len(self._variants), len(self._variants_by_shape),
+            "StaticIrregularSpec %r orientation summary: raw=%d, unique=%d, unique_shapes=%d",
+            self.id, raw_orientation_count,
+            len(self._orientations), len(self._orientations_by_shape),
         )
 
     def _coerce_body_map(self, body_map: Any) -> torch.Tensor:
@@ -1191,8 +1282,8 @@ if __name__ == "__main__":
         exits_rel=[(4.0, 4.0)],
         clearance_lrtb_rel=(1, 1, 0, 0),
     )
-    print(f"variants={len(geom._variants)}, unique_shapes={len(geom._variants_by_shape)}")
-    for vi in geom._variants:
+    print(f"orientations={len(geom._orientations)}, unique_shapes={len(geom._orientations_by_shape)}")
+    for vi in geom._orientations:
         print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
               f"clear=({vi.cL},{vi.cR},{vi.cB},{vi.cT}) "
               f"entries={len(vi.entry_offsets)} exits={len(vi.exit_offsets)}")
@@ -1214,8 +1305,8 @@ if __name__ == "__main__":
         body_polygon=[(0, 0), (6, 0), (6, 2), (2, 2), (2, 4), (0, 4)],
         clearance_lrtb_rel=(1, 1, 1, 1),
     )
-    print(f"\nirregular variants={len(irr._variants)}, unique_shapes={len(irr._variants_by_shape)}")
-    for vi in irr._variants:
+    print(f"\nirregular orientations={len(irr._orientations)}, unique_shapes={len(irr._orientations_by_shape)}")
+    for vi in irr._orientations:
         print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_w},{vi.body_h}) "
               f"rect={vi.is_rectangular} origin={vi.clearance_origin}")
     ip = irr.build_placement(x_c=20.0, y_c=10.0, rotation=0)

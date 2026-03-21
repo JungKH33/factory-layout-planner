@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 
 GroupId = Union[int, str]
 
@@ -12,10 +12,12 @@ class EnvAction:
 
     - gid is required.
     - x_c/y_c are center coordinates (float, orient-independent).
-    - The engine resolves to concrete rotation/mirror via
-      GroupSpec.resolve().
+    - orientation_index: if None the engine tries all orientations and
+      picks the cheapest placeable one via GroupSpec.resolve().
+      If set, the engine uses that specific orientation directly.
     """
 
     gid: GroupId
     x_c: float
     y_c: float
+    orientation_index: Optional[int] = None

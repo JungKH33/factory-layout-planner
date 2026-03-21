@@ -211,7 +211,7 @@ class GreedyAdapter(BaseAdapter):
         rr = spec._resolve_rotation(rotation)
         result = None
         seen_shape: set = set()
-        for vi in spec._variants:
+        for vi in spec._orientations:  # TODO: remove direct rotation filtering, use spec.orientations
             if vi.rotation != rr:
                 continue
             shape_key = vi.shape_key

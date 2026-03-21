@@ -127,12 +127,12 @@ class BaseAdapter(ABC):
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 
     def _score_poses(self, gid: GroupId, poses: torch.Tensor) -> torch.Tensor:
-        """Score candidate center poses — min delta cost across PLACEABLE variants.
+        """Score candidate center poses — min delta cost across PLACEABLE orientations.
 
         poses: [N, 2] float tensor of (x_c, y_c).
         Returns: [N] float32 — per-position minimum delta cost across all
-        placeable rotation/mirror variants.  Positions with no placeable
-        variant get inf.
+        placeable rotation/mirror orientations.  Positions with no placeable
+        orientation get inf.
         """
         spec = self.engine.group_specs[gid]
         return spec.cost_batch(

@@ -6,15 +6,18 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+import math
+
+from envs.action import EnvAction
 from envs.env import FactoryLayoutEnv
 from envs.state import EnvState
 from agents.base import Agent, BaseAdapter
 from envs.action_space import ActionSpace as CandidateSet
-from search.base import BaseSearch, SearchProgress, SearchResult, TopKTracker
+from search.base import BaseSearch, BaseSearchConfig, SearchProgress, SearchResult, TopKTracker
 
 
 @dataclass(frozen=True)
-class BeamConfig:
+class BeamConfig(BaseSearchConfig):
     beam_width: int = 8
     depth: int = 5
     expansion_topk: int = 16
@@ -111,21 +114,40 @@ class BeamSearch(BaseSearch):
                     a = int(a)
                     if not bool(valid_mask[a].item()):
                         continue
-                    self._set_engine_state(engine=engine, adapter=adapter, engine_state=state)
-                    reward, terminated, truncated, _info = self._apply_action_index(
-                        engine=engine,
-                        adapter=adapter,
-                        action=int(a),
-                        action_space=action_space,
-                    )
 
-                    new_cum = float(cum_reward) + float(reward)
-                    root_a = a if first_action < 0 else int(first_action)
-                    new_beams.append((new_cum, root_a, self._get_engine_state(engine=engine, adapter=adapter)))
+                    orient_branches: List[Optional[int]] = [None]
+                    if self.config.orientation_search:
+                        orient_branches = self._orientation_branches(
+                            engine=engine, adapter=adapter,
+                            center_action=a, action_space=action_space,
+                            engine_state=state,
+                        )
 
-                    # Track completed placements
-                    if terminated or truncated:
-                        self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=new_cum, is_terminal=True)
+                    for oi in orient_branches:
+                        self._set_engine_state(engine=engine, adapter=adapter, engine_state=state)
+                        if oi is not None:
+                            env_act = adapter.decode_action(int(a), action_space)
+                            act_with_orient = EnvAction(
+                                gid=env_act.gid, x_c=env_act.x_c, y_c=env_act.y_c,
+                                orientation_index=int(oi),
+                            )
+                            _, reward, terminated, truncated, _info = engine.step_action(act_with_orient)
+                            reward = float(reward)
+                            terminated = bool(terminated)
+                            truncated = bool(truncated)
+                        else:
+                            reward, terminated, truncated, _info = self._apply_action_index(
+                                engine=engine, adapter=adapter,
+                                action=int(a), action_space=action_space,
+                            )
+
+                        new_cum = float(cum_reward) + float(reward)
+                        root_a = a if first_action < 0 else int(first_action)
+                        new_beams.append((new_cum, root_a, self._get_engine_state(engine=engine, adapter=adapter)))
+
+                        # Track completed placements
+                        if terminated or truncated:
+                            self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=new_cum, is_terminal=True)
 
             if not new_beams:
                 break
@@ -238,6 +260,58 @@ class BeamSearch(BaseSearch):
             extra={"beam_size": len(beams), "active_root_actions": len(root_action_scores)},
         )
         self._emit_progress(progress)
+
+    def _orientation_branches(
+        self,
+        *,
+        engine: FactoryLayoutEnv,
+        adapter: BaseAdapter,
+        center_action: int,
+        action_space: CandidateSet,
+        engine_state: EnvState,
+    ) -> List[Optional[int]]:
+        """Return orientation indices to try for a center action.
+
+        Returns ``[None]`` (auto-resolve) when orientation search is off or
+        there's only one orientation.  Otherwise returns up to
+        ``max_orientation_branches`` orientation indices sorted by cost.
+        """
+        try:
+            env_action = adapter.decode_action(int(center_action), action_space)
+        except (IndexError, ValueError):
+            return [None]
+        gid = env_action.gid
+        x_c, y_c = float(env_action.x_c), float(env_action.y_c)
+        spec = engine.group_specs[gid]
+        orientations = spec.orientations
+        V = len(orientations)
+        if V <= 1:
+            return [None]
+
+        self._set_engine_state(engine=engine, adapter=adapter, engine_state=engine_state)
+        state = engine.get_state()
+        poses = torch.tensor([[x_c, y_c]], dtype=torch.float32, device=adapter.device)
+        ok_per = spec.placeable_batch(
+            state=state, gid=gid,
+            x_c=poses[:, 0], y_c=poses[:, 1],
+            per_orientation=True,
+        ).view(-1)  # [V]
+        placeable = torch.where(ok_per)[0].tolist()
+        if len(placeable) <= 1:
+            return [None] if not placeable else [placeable[0]]
+
+        max_br = int(self.config.max_orientation_branches)
+        if len(placeable) > max_br:
+            costs_per = spec.cost_batch(
+                gid=gid, poses=poses, state=state,
+                reward=engine.reward_composer,
+                per_orientation=True,
+            ).view(-1)
+            sub = [(oi, float(costs_per[oi].item())) for oi in placeable]
+            sub.sort(key=lambda t: t[1])
+            placeable = [t[0] for t in sub[:max_br]]
+
+        return placeable  # type: ignore[return-value]
 
     def _track_if_terminal(
         self,

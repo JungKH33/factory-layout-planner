@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple, Union
 
 import numpy as np
 import torch
 
+from envs.action import EnvAction
 from envs.env import FactoryLayoutEnv
 from envs.state import EnvState
 from agents.base import Agent, BaseAdapter
 from envs.action_space import ActionSpace as CandidateSet
-from search.base import BaseSearch, SearchProgress, SearchResult, TopKTracker
+from search.base import BaseSearch, BaseSearchConfig, SearchProgress, SearchResult, TopKTracker
+
+# Child key: plain int (no orientation search) or (center, orient_idx) tuple.
+_ChildKey = Union[int, Tuple[int, int]]
 
 
 @dataclass(frozen=True)
-class MCTSConfig:
+class MCTSConfig(BaseSearchConfig):
     num_simulations: int = 50
     c_puct: float = 2.0
     # Rollout control:
@@ -51,6 +55,7 @@ class _Node:
         action: Optional[int] = None,
         reward: float = 0.0,
         terminal: bool = False,
+        orient_ctx: Optional[Tuple[object, float, float]] = None,
     ):
         self.engine_state = engine_state
         self.action_space = action_space
@@ -58,6 +63,9 @@ class _Node:
         self.action = action
         self.reward = float(reward)
         self.terminal = bool(terminal)
+        # If set, this is an orientation-decision node: (gid, x_c, y_c).
+        # valid_actions are orientation indices; expanding steps the engine.
+        self.orient_ctx = orient_ctx
 
         self.visits = 0
         self.total_value = 0.0
@@ -365,6 +373,144 @@ class MCTSSearch(BaseSearch):
                 pri[valid] = 1.0 / float(cnt)
         return pri
 
+    # ---- orientation-node helpers ----
+
+    def _make_orientation_node(
+        self,
+        *,
+        engine: FactoryLayoutEnv,
+        adapter: BaseAdapter,
+        parent: _Node,
+        center_action: int,
+    ) -> Optional[_Node]:
+        """Create an orientation-decision node for a center action.
+
+        Returns None if no orientation is placeable (shouldn't normally happen
+        because the center was already deemed valid).
+        """
+        cand = parent.action_space
+        try:
+            env_action = adapter.decode_action(int(center_action), cand)
+        except (IndexError, ValueError):
+            return None
+        gid = env_action.gid
+        x_c, y_c = float(env_action.x_c), float(env_action.y_c)
+        spec = engine.group_specs[gid]
+        all_orientations = spec.orientations
+        V = len(all_orientations)
+        if V <= 0:
+            return None
+
+        state = engine.get_state()
+        poses = torch.tensor([[x_c, y_c]], dtype=torch.float32, device=adapter.device)
+        ok_per = spec.placeable_batch(
+            state=state, gid=gid,
+            x_c=poses[:, 0], y_c=poses[:, 1],
+            per_orientation=True,
+        )  # [1, V]
+        ok_v = ok_per.view(-1)  # [V]
+
+        # Limit to max_orientation_branches: pick lowest-cost ones.
+        max_br = int(self.config.max_orientation_branches)
+        placeable_indices = torch.where(ok_v)[0].tolist()
+        if not placeable_indices:
+            return None
+        if len(placeable_indices) > max_br:
+            # Score each to keep the cheapest max_br orientations.
+            costs_per = spec.cost_batch(
+                gid=gid, poses=poses, state=state,
+                reward=engine.reward_composer,
+                per_orientation=True,
+            ).view(-1)  # [V]
+            # Sort placeable by cost ascending, keep top max_br
+            sub_costs = [(oi, float(costs_per[oi].item())) for oi in placeable_indices]
+            sub_costs.sort(key=lambda t: t[1])
+            placeable_indices = [t[0] for t in sub_costs[:max_br]]
+
+        # Build a slim ActionSpace for the orientation node.
+        mask = torch.zeros(V, dtype=torch.bool, device=adapter.device)
+        for oi in placeable_indices:
+            mask[oi] = True
+
+        dummy_poses = torch.zeros((V, 2), dtype=torch.float32, device=adapter.device)
+        orient_action_space = CandidateSet(poses=dummy_poses, mask=mask)
+
+        # Priors: softmax of -cost for placeable orientations (uniform fallback).
+        priors = torch.zeros(V, dtype=torch.float32, device=adapter.device)
+        if len(placeable_indices) == 1:
+            priors[placeable_indices[0]] = 1.0
+        else:
+            costs_per = spec.cost_batch(
+                gid=gid, poses=poses, state=state,
+                reward=engine.reward_composer,
+                per_orientation=True,
+            ).view(-1)
+            neg_cost = torch.zeros(V, dtype=torch.float32, device=adapter.device)
+            for oi in placeable_indices:
+                c = float(costs_per[oi].item())
+                neg_cost[oi] = -c if math.isfinite(c) else 0.0
+            neg_cost = neg_cost.masked_fill(~mask, float('-inf'))
+            priors = torch.softmax(neg_cost, dim=0)
+            priors = priors.masked_fill(~mask, 0.0)
+            s = float(priors.sum().item())
+            if s > 0:
+                priors = priors / s
+            else:
+                priors[mask] = 1.0 / float(len(placeable_indices))
+
+        return _Node(
+            engine_state=parent.engine_state,  # same state — no placement yet
+            action_space=orient_action_space,
+            priors=priors,
+            action=int(center_action),
+            reward=0.0,
+            terminal=False,
+            orient_ctx=(gid, x_c, y_c),
+        )
+
+    def _expand_orientation(
+        self,
+        *,
+        engine: FactoryLayoutEnv,
+        adapter: BaseAdapter,
+        orient_node: _Node,
+        orient_action: int,
+        agent: Agent,
+    ) -> _Node:
+        """Expand an orientation node: step engine with specific orientation."""
+        gid, x_c, y_c = orient_node.orient_ctx  # type: ignore[misc]
+        env_action = EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=int(orient_action))
+        _, reward, terminated, truncated, info = engine.step_action(env_action)
+        terminal = bool(terminated or truncated)
+
+        if terminal:
+            next_action_space = CandidateSet(
+                poses=torch.zeros((0, 2), dtype=torch.float32, device=adapter.device),
+                mask=torch.zeros((0,), dtype=torch.bool, device=adapter.device),
+            )
+            priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
+        else:
+            obs2 = adapter.build_observation()
+            next_action_space = adapter.build_action_space()
+            priors = self._safe_priors(
+                agent=agent, adapter=adapter, obs=obs2,
+                action_space=next_action_space,
+            )
+
+        child = _Node(
+            engine_state=self._get_engine_state(engine=engine, adapter=adapter),
+            action_space=next_action_space,
+            priors=priors,
+            action=int(orient_action),
+            reward=float(reward),
+            terminal=terminal or (
+                not terminal and int(next_action_space.mask.to(torch.int64).sum().item()) == 0
+            ),
+        )
+        return child
+
+    # ---- main simulation loop ----
+
     def _simulate(
         self,
         *,
@@ -402,6 +548,41 @@ class MCTSSearch(BaseSearch):
             else:
                 # Restore engine state only once, right before expansion.
                 self._set_engine_state(engine=engine, adapter=adapter, engine_state=node.engine_state)
+
+                # --- orientation-decision branching ---
+                if node.orient_ctx is not None:
+                    # This IS an orientation node — expand the chosen orientation.
+                    child = self._expand_orientation(
+                        engine=engine, adapter=adapter,
+                        orient_node=node, orient_action=int(action),
+                        agent=agent,
+                    )
+                    node.children[int(action)] = child
+                    node = child
+                    path_nodes.append(node)
+                    path_rewards.append(float(child.reward))
+                    if child.terminal:
+                        cum_reward = sum(path_rewards)
+                        self._track_terminal(engine=engine, adapter=adapter, cum_reward=cum_reward)
+                    break
+
+                if self.config.orientation_search and node.orient_ctx is None:
+                    # Center-selection node with orientation search ON:
+                    # Create an orientation-decision node instead of stepping.
+                    orient_node = self._make_orientation_node(
+                        engine=engine, adapter=adapter,
+                        parent=node, center_action=int(action),
+                    )
+                    if orient_node is not None and orient_node.valid_actions:
+                        node.children[int(action)] = orient_node
+                        node = orient_node
+                        path_nodes.append(node)
+                        path_rewards.append(0.0)  # no reward yet
+                        # Don't break — continue loop to select orientation.
+                        continue
+                    # Fallthrough: no valid orientations → use default resolve.
+
+                # --- default expansion (no orientation search) ---
                 cand = node.action_space
                 reward, terminated, truncated, _info = self._apply_action_index(
                     engine=engine,

@@ -114,6 +114,8 @@ Step reward = `-(delta_cost) / reward_scale`
 
 Search operates at the **adapter** level. Each MCTS node stores an `EnvState` copy via `engine.get_state().copy()`. The agent provides priors (softmax of `-Δcost`) and leaf values. Rollouts use the greedy agent to a configurable depth.
 
+**Orientation search**: when `orientation_search=True` in `MCTSConfig`/`BeamConfig`, search branches over placeable orientations at each center instead of auto-resolving. `max_orientation_branches` limits the branching factor. In MCTS, orientation decision is a separate tree level (orientation-decision nodes with `orient_ctx`); in Beam, each center candidate expands into multiple orientation-specific beams.
+
 `TopKTracker` (min-heap) tracks best K complete episodes by cost across all search iterations.
 
 ### Pipeline flow
@@ -160,9 +162,10 @@ Zone constraint logic: op is facility requirement (e.g. `height<=30` → facilit
 ## Key Conventions
 
 - **Coordinate system**: bottom-left origin `(x_bl, y_bl)`, rotation in `{0, 90, 180, 270}` degrees CCW. Tensor indexing is `tensor[y, x]`. Port coords (`ent_rel_x/y`, `exi_rel_x/y`) are BL-relative.
+- **Orientation model**: `Orientation` (base, `envs/placement/base.py`) → `StaticOrientation` (static impl, `envs/placement/static.py`). `GroupSpec.orientations` returns all `(rotation, mirror)` orientations. Adapters work with center coordinates only; the engine resolves orientation at step time. `EnvAction.orientation_index` can pin a specific orientation (used by search).
 - **Grid units**: integer cells. `grid_size` (meters/cell) is only for display/output.
 - **Device ownership**: engine's `device` is set at construction; all tensors follow it. Adapters inherit device on `bind()`.
 - **`inference.py` config**: module-level constants (`ENV_JSON`, `WRAPPER_MODE`, `AGENT_MODE`, `SEARCH_MODE`, etc.) — no CLI args.
 - **Current facility selection**: adapters usually build candidates for `remaining[0]` (ordering agents can reorder this list), but `EnvAction` itself now requires explicit `gid`.
-- **Delta pattern**: all candidate evaluation uses `delta_cost()` (vectorized incremental) rather than full `cost()` per candidate.
+- **Delta pattern**: all candidate evaluation uses `delta_cost()` (vectorized incremental) rather than full `cost()` per candidate. `cost_batch(per_orientation=True)` and `placeable_batch(per_orientation=True)` return `[N, V]` per-orientation results.
 - **Static-sharing on copy**: `GridMaps.copy()` shares static tensors by reference, clones only runtime tensors. Makes MCTS snapshots cheap.

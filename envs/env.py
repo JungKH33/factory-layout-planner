@@ -295,8 +295,9 @@ class FactoryLayoutEnv(gym.Env):
     def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'GroupPlacement | None']:
         """Resolve a center-based EnvAction to (gid, concrete placement or None).
 
-        Tries all (rotation, mirror) variants at the given center and picks the
-        cheapest placeable one.
+        Tries all (rotation, mirror) orientations at the given center and picks the
+        cheapest placeable one.  If ``action.orientation_index`` is set, only
+        that specific orientation is attempted.
         """
         gid, x_c, y_c = self._normalize_action(action)
         geom = self._group_spec(gid)
@@ -317,6 +318,7 @@ class FactoryLayoutEnv(gym.Env):
             y_c=float(y_c),
             is_placeable_fn=_check_placeable,
             score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
+            orientation_index=action.orientation_index,
         )
         return gid, placement
 
@@ -492,7 +494,7 @@ class FactoryLayoutEnv(gym.Env):
             return self._fail("not_placeable")
 
         # TODO(perf): resolve_action already evaluates delta_cost internally
-        # via score_fn to pick the best variant.  Here we re-compute it for
+        # via score_fn to pick the best orientation.  Here we re-compute it for
         # the chosen concrete placement.  Refactor to carry the score through
         # resolve() to avoid the double computation.
         delta = float(self._delta_cost_from_placements(gid_eff, [placement])[0].item())

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import random
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,17 +8,21 @@ import gymnasium as gym
 import torch
 import torch.nn.functional as F
 
-from envs.env import FactoryLayoutEnv, GroupId  # new env (renamed from env_new)
+from envs.env import FactoryLayoutEnv, GroupId
 from ...base import BaseAdapter
 
 
 class GreedyV3Adapter(BaseAdapter):
-    """Top-K candidate wrapper: Discrete(K) actions over an in-file TopK generator.
+    """Top-K candidate wrapper: Discrete(K) actions over center-based sampling.
+
+    Samples candidate **center** positions from the unified placeable map
+    (all orientations OR'd).  Orientation is resolved by the engine at step
+    time — the adapter never accesses rotation directly.
 
     Notes:
-    - Candidate coordinates are bottom-left integer coordinates (engine contract).
-    - `action_mask` is torch.BoolTensor[K] (True means valid).
-    - `action_poses` is torch.FloatTensor[K,2] of (x_c, y_c) center coordinates.
+    - ``action_mask`` is ``torch.BoolTensor[K]`` (True means valid).
+    - ``action_poses`` is ``torch.FloatTensor[K, 2]`` of ``(x_c, y_c)``
+      center coordinates.
     """
 
     metadata = {"render_modes": []}
@@ -28,7 +31,6 @@ class GreedyV3Adapter(BaseAdapter):
         self,
         *,
         k: int = 50,
-        # B-1 (edge-based): sample candidates from the *boundary* of valid top-left map.
         quant_step: Optional[float] = 10.0,
         oversample_factor: int = 2,
         edge_ratio: float = 0.8,
@@ -55,7 +57,6 @@ class GreedyV3Adapter(BaseAdapter):
         return obs
 
     def create_mask(self) -> torch.Tensor:
-        # Keep candidate sampling deterministic from engine state.
         self._rng = random.Random(self.action_space_seed())
         gid = self.current_gid()
         if gid is None:
@@ -63,16 +64,9 @@ class GreedyV3Adapter(BaseAdapter):
             self.action_delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
             return torch.zeros((self.k,), dtype=torch.bool, device=self.device)
 
-        candidates, mask = self._generate(self.engine, gid)
-
-        poses = torch.zeros((self.k, 2), dtype=torch.float32, device=self.device)
-        spec = self.engine.group_specs[gid]
-        for i, c in enumerate(candidates[: self.k]):
-            _, x_bl, y_bl, rotation = c
-            w, h = spec.rotated_size(int(rotation))
-            poses[i, 0] = float(x_bl) + float(w) / 2.0
-            poses[i, 1] = float(y_bl) + float(h) / 2.0
+        poses, mask = self._generate(self.engine, gid)
         self.action_poses = poses
+
         delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
         vmask = mask.to(dtype=torch.bool, device=self.device).view(-1)
         vidx = torch.where(vmask)[0]
@@ -115,207 +109,115 @@ class GreedyV3Adapter(BaseAdapter):
         else:
             self.action_delta = None
 
-    # ---- candidate generation (BL int coords) ----
-
-    def _wh_int(self, env: FactoryLayoutEnv, gid: GroupId, rotation: int) -> Tuple[int, int]:
-        g = env.group_specs[gid]
-        w, h = g.rotated_size(int(rotation))
-        return int(w), int(h)
-
-    def _clamp_bl(self, env: FactoryLayoutEnv, x_bl: int, y_bl: int, w: int, h: int) -> Tuple[int, int]:
-        max_x = int(env.grid_width) - int(w)
-        max_y = int(env.grid_height) - int(h)
-        if max_x < 0 or max_y < 0:
-            return 0, 0
-        x2 = max(0, min(int(x_bl), max_x))
-        y2 = max(0, min(int(y_bl), max_y))
-        return int(x2), int(y2)
-
-    def _pad_candidates(self, gid: GroupId, count: int) -> List[Tuple[GroupId, int, int, int]]:
-        return [(gid, 0, 0, 0) for _ in range(count)]
-
-    def _dedup_tagged(
-        self,
-        candidates: List[Tuple[int, Tuple[GroupId, int, int, int]]],
-        q: float,
-        group: object,
-    ) -> List[Tuple[int, Tuple[GroupId, int, int, int]]]:
-        if q <= 0:
-            return candidates
-        seen = set()
-        unique: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
-        for src, c in candidates:
-            _, x_bl, y_bl, rotation = c
-            w, h = group.rotated_size(int(rotation))
-            x_c = float(x_bl) + float(w) / 2.0
-            y_c = float(y_bl) + float(h) / 2.0
-            qx = int(round(x_c / q))
-            qy = int(round(y_c / q))
-            key = (qx, qy)
-            if key not in seen:
-                seen.add(key)
-                unique.append((src, c))
-        return unique
-
-    def _validate_with_maps(
-        self,
-        candidates: torch.Tensor,
-        valid_by_rotation: Dict[int, torch.Tensor],
-    ) -> torch.Tensor:
-        """Vectorized placement validation using pre-computed placeable maps."""
-        N = int(candidates.shape[0])
-        result = torch.zeros(N, dtype=torch.bool, device=self.device)
-        x, y, rotation = candidates[:, 0], candidates[:, 1], candidates[:, 2]
-        for o, vmap in valid_by_rotation.items():
-            H, W = int(vmap.shape[0]), int(vmap.shape[1])
-            rotation_match = (rotation == o)
-            if not rotation_match.any():
-                continue
-            xi, yi = x[rotation_match], y[rotation_match]
-            in_bounds = (xi >= 0) & (xi < W) & (yi >= 0) & (yi < H)
-            xc = xi.clamp(0, W - 1)
-            yc = yi.clamp(0, H - 1)
-            result[rotation_match] = vmap[yc, xc] & in_bounds
-        return result
-
-    def _build_rotation_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rotation: int) -> torch.Tensor:
-        spec = env.group_specs[gid]
-        state = env.get_state()
-        rr = spec._resolve_rotation(rotation)
-        result = None
-        seen_shape: set = set()
-        for vi in spec._variants:
-            if vi.rotation != rr:
-                continue
-            shape_key = vi.shape_key
-            if shape_key in seen_shape:
-                continue
-            seen_shape.add(shape_key)
-            body_map, clearance_map, clearance_origin, is_rectangular = spec.shape_tensors(shape_key)
-            m = state.is_placeable_map(
-                gid=gid,
-                body_map=body_map,
-                clearance_map=clearance_map,
-                clearance_origin=clearance_origin,
-                is_rectangular=is_rectangular,
-            )
-            if result is None:
-                result = m
-            else:
-                result = result | m
-        if result is None:
-            H, W = state.maps.shape
-            return torch.zeros((H, W), dtype=torch.bool, device=env.device)
-        return result
+    # ---- candidate generation (center-based, orientation-free) ----
 
     def _torch_gen(self, *, env: FactoryLayoutEnv) -> torch.Generator:
-        # Use python RNG as the source-of-truth; seed a torch.Generator for tensor sampling.
         seed = int(self._rng.randrange(0, 2**31 - 1))
         g = torch.Generator(device=env.device)
         g.manual_seed(seed)
         return g
 
-    def _sample_from_valid(
-        self,
-        *,
-        env: FactoryLayoutEnv,
-        gid: GroupId,
-        rot: int,
-        valid_map: torch.Tensor,
-        count: int,
-        gen: torch.Generator,
-    ) -> List[Tuple[GroupId, int, int, int]]:
-        if count <= 0:
-            return []
-        if not isinstance(valid_map, torch.Tensor) or valid_map.numel() == 0:
-            return []
-        idx = torch.nonzero(valid_map, as_tuple=False)  # [M,2] of (y,x)
-        if idx.numel() == 0:
-            return []
-        M = int(idx.shape[0])
-        if M <= count:
-            pick = idx
-        else:
-            perm = torch.randperm(M, generator=gen, device=env.device)[: int(count)]
-            pick = idx[perm]
-        out: List[Tuple[GroupId, int, int, int]] = []
-        for t in range(int(pick.shape[0])):
-            y_bl = int(pick[t, 0].item())
-            x_bl = int(pick[t, 1].item())
-            out.append((gid, x_bl, y_bl, int(rot)))
-        return out
-
     def _build_edge_map(self, valid_map: torch.Tensor) -> torch.Tensor:
-        """B-1 edge sampling mask: edge = valid & dilate(~valid).
-
-        - valid_map is bool[H2,W2] of *placeable top-left* positions (footprint+clearance aware).
-        - edge_map marks valid positions adjacent to any invalid cell (3x3 neighborhood).
-        """
+        """Edge sampling mask: edge = valid & dilate(~valid)."""
         if (not isinstance(valid_map, torch.Tensor)) or valid_map.numel() == 0:
             return valid_map
         v = valid_map.to(dtype=torch.bool)
         inv = (~v).to(dtype=torch.float32).view(1, 1, int(v.shape[0]), int(v.shape[1]))
         kernel = torch.ones((1, 1, 3, 3), device=valid_map.device, dtype=inv.dtype)
-        # padding=1 keeps same H/W
         nbr = (F.conv2d(inv, kernel, padding=1) > 0).squeeze(0).squeeze(0)
         return v & nbr
 
+    def _sample_centers(
+        self,
+        *,
+        valid_map: torch.Tensor,
+        count: int,
+        gen: torch.Generator,
+    ) -> torch.Tensor:
+        """Sample up to *count* center positions from a center-based validity map.
+
+        Returns ``[M, 2]`` float tensor of ``(x_c, y_c)`` positions.
+        """
+        idx = torch.nonzero(valid_map, as_tuple=False)  # [M, 2] of (y, x)
+        if idx.numel() == 0:
+            return torch.empty((0, 2), dtype=torch.float32, device=valid_map.device)
+        M = int(idx.shape[0])
+        if M > count:
+            perm = torch.randperm(M, generator=gen, device=valid_map.device)[:count]
+            idx = idx[perm]
+        # Convert (y, x) -> (x_c, y_c) with +0.5 offset for center of grid cell
+        centers = torch.stack([idx[:, 1].float(), idx[:, 0].float()], dim=-1)
+        return centers
+
+    def _dedup_centers(
+        self,
+        tagged: List[Tuple[int, torch.Tensor]],
+        q: float,
+    ) -> List[Tuple[int, torch.Tensor]]:
+        """Deduplicate (source_tag, center_tensor) pairs by quantised center."""
+        if q <= 0:
+            return tagged
+        seen: set = set()
+        unique: List[Tuple[int, torch.Tensor]] = []
+        for src, center in tagged:
+            qx = int(round(float(center[0].item()) / q))
+            qy = int(round(float(center[1].item()) / q))
+            key = (qx, qy)
+            if key not in seen:
+                seen.add(key)
+                unique.append((src, center))
+        return unique
+
     def _generate(
-        self, env: FactoryLayoutEnv, next_group_id: GroupId
-    ) -> Tuple[List[Tuple[GroupId, int, int, int]], torch.Tensor]:
+        self, env: FactoryLayoutEnv, gid: GroupId
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Generate candidate center poses and validity mask.
+
+        Returns:
+            poses: ``[K, 2]`` float tensor of center coordinates.
+            mask:  ``[K]`` bool tensor.
+        """
         device = env.device
-        group = env.group_specs[next_group_id]
-        rotations = (0, 90, 180, 270) if group.rotatable else (0,)
-        valid_by_rotation = {r: self._build_rotation_valid_map(env, gid=next_group_id, rotation=r) for r in rotations}
-        edge_by_rotation = {r: self._build_edge_map(valid_by_rotation[r]) for r in rotations}
+        spec = env.group_specs[gid]
+        state = env.get_state()
+
+        # Unified center-based validity map (all orientations OR'd).
+        center_map = spec.placeable_center_map(state, gid)
+        edge_map = self._build_edge_map(center_map)
         gen = self._torch_gen(env=env)
         q = float(self.quant_step) if self.quant_step is not None else 1.0
 
-        # B-1: sample mostly from edge of valid map, and fill the rest from valid interior.
         total_k = max(1, int(self.k * self.oversample_factor))
         edge_ratio = max(0.0, min(1.0, float(self.edge_ratio)))
         n_edge = int(round(float(total_k) * edge_ratio))
-        n_fill = int(total_k - n_edge)
+        n_fill = total_k - n_edge
 
-        rotation_list = list(rotations)
-        per_rotation_edge = max(1, int(round(float(max(1, n_edge)) / float(max(1, len(rotation_list))))))
-        per_rotation_fill = max(1, int(round(float(max(1, n_fill)) / float(max(1, len(rotation_list))))))
+        edge_centers = self._sample_centers(valid_map=edge_map, count=n_edge, gen=gen)
+        fill_centers = self._sample_centers(valid_map=center_map, count=n_fill, gen=gen)
 
-        edge_pool: List[Tuple[GroupId, int, int, int]] = []
-        fill_pool: List[Tuple[GroupId, int, int, int]] = []
-        for rotation in rotation_list:
-            edge_pool.extend(self._sample_from_valid(env=env, gid=next_group_id, rot=int(rotation), valid_map=edge_by_rotation[int(rotation)], count=per_rotation_edge, gen=gen))
-            fill_pool.extend(self._sample_from_valid(env=env, gid=next_group_id, rot=int(rotation), valid_map=valid_by_rotation[int(rotation)], count=per_rotation_fill, gen=gen))
+        # Tag: 0 = edge, 1 = fill.  Build combined list for dedup.
+        raw_tagged: List[Tuple[int, torch.Tensor]] = []
+        for i in range(int(edge_centers.shape[0])):
+            raw_tagged.append((0, edge_centers[i]))
+        for i in range(int(fill_centers.shape[0])):
+            raw_tagged.append((1, fill_centers[i]))
 
-        # Trim to targets (keep edge first)
-        edge_pool = edge_pool[: int(n_edge)]
-        fill_pool = fill_pool[: int(n_fill)]
+        unique_tagged = self._dedup_centers(raw_tagged, q)
 
-        raw_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
-        raw_tagged.extend((0, c) for c in edge_pool)
-        raw_tagged.extend((1, c) for c in fill_pool)
+        # No explicit placeable_batch check needed: candidates come from
+        # the center_map which guarantees at least one orientation is valid.
+        # Any false-positives from the integer center shift are handled by
+        # cost_batch (returns inf for non-placeable) and resolve_action.
 
-        unique_tagged = self._dedup_tagged(raw_tagged, q, group)
-        valid_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
-        if unique_tagged:
-            xyrot = torch.tensor(
-                [[int(c[1]), int(c[2]), int(c[3])] for _, c in unique_tagged],
-                dtype=torch.long,
-                device=device,
-            )
-            placeable = self._validate_with_maps(xyrot, valid_by_rotation)
-            for i, tagged in enumerate(unique_tagged):
-                if bool(placeable[i].item()):
-                    valid_tagged.append(tagged)
-        # Keep order: edge candidates first, then fill. No scoring in v3.
-        # Concrete rot/mirror resolution is handled by env.resolve_action() at step time.
-        final: List[Tuple[GroupId, int, int, int]] = [c for _src, c in valid_tagged][: int(self.k)]
+        # Keep order: edge first, then fill.  Trim to K.
+        final = [c for _src, c in unique_tagged][:self.k]
+
+        poses = torch.zeros((self.k, 2), dtype=torch.float32, device=device)
         mask = torch.zeros((self.k,), dtype=torch.bool, device=device)
-        if final:
-            mask[: len(final)] = True
-        if len(final) < self.k:
-            final.extend(self._pad_candidates(next_group_id, self.k - len(final)))
-        return final, mask
+        for i, c in enumerate(final):
+            poses[i] = c
+            mask[i] = True
+        return poses, mask
 
 
 if __name__ == "__main__":
@@ -360,7 +262,7 @@ if __name__ == "__main__":
     else:
         plot_layout(engine, action_space=None)
 
-    print("GreedyAdapter demo")
+    print("GreedyV3Adapter demo")
     print(" env=", ENV_JSON, "device=", device, "k=", 50)
     print(" valid_actions=", valid, "first_valid_action=", a)
     print(f" reset_ms={dt_reset_ms:.3f} step_ms={dt_step_ms:.3f}")

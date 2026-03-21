@@ -49,6 +49,10 @@ BEAM_WIDTH: int = 8
 BEAM_DEPTH: int = 5
 BEAM_EXPANSION_TOPK: int = 16
 
+# Orientation search: search에서 각 center position마다 여러 orientation 시도
+ORIENTATION_SEARCH: bool = True
+MAX_ORIENTATION_BRANCHES: int = 3
+
 # Top-K tracking: search 중 최고 결과 K개 저장
 TRACK_TOP_K: int = 5  # 0이면 비활성화
 TRACK_VERBOSE: bool = True  # 리스트 변경 시 print
@@ -103,6 +107,8 @@ def main() -> None:
                 rollout_depth=int(ROLLOUT_DEPTH),
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
+                orientation_search=ORIENTATION_SEARCH,
+                max_orientation_branches=MAX_ORIENTATION_BRANCHES,
             )
         )
     elif SEARCH_MODE == "beam":
@@ -113,6 +119,8 @@ def main() -> None:
                 expansion_topk=BEAM_EXPANSION_TOPK,
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
+                orientation_search=ORIENTATION_SEARCH,
+                max_orientation_branches=MAX_ORIENTATION_BRANCHES,
             )
         )
     else:
@@ -265,7 +273,7 @@ def main() -> None:
     # routes = planner.plan_all()
 
     # Preview before saving (interactive; close the window to continue).
-    plot_layout(adapter, action_space=None, routes= None, backend="plotly")
+    plot_layout(adapter, action_space=None, routes= None, backend="matplotlib")
 
     save_layout(
         adapter,

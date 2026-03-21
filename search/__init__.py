@@ -1,9 +1,10 @@
-from .base import BaseSearch, SearchProgress, SearchResult, TopKTracker
+from .base import BaseSearch, BaseSearchConfig, SearchProgress, SearchResult, TopKTracker
 from .mcts import MCTSConfig, MCTSSearch
 from .beam import BeamConfig, BeamSearch
 
 __all__ = [
     "BaseSearch",
+    "BaseSearchConfig",
     "SearchProgress",
     "SearchResult",
     "TopKTracker",
