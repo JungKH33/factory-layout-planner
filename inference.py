@@ -58,6 +58,8 @@ MAX_ORIENTATIONS: int = 3
 TRACK_TOP_K: int = 5  # 0이면 비활성화
 TRACK_VERBOSE: bool = True  # 리스트 변경 시 print
 
+BACKEND_SELECTION: str = "benchmark"  # "static" | "benchmark"
+
 SHOW_FLOW: bool = True
 SHOW_SCORE: bool = True
 SHOW_MASKS: bool = True
@@ -74,7 +76,7 @@ def main() -> None:
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device("cpu")
-    loaded = load_env(ENV_JSON, device=device)
+    loaded = load_env(ENV_JSON, device=device, backend_selection=BACKEND_SELECTION)
     engine = loaded.env
     engine.log = True
 

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 from ..action import GroupId
 from ..placement.base import GroupSpec
+
+logger = logging.getLogger(__name__)
 
 
 class GridMaps:
@@ -24,10 +29,15 @@ class GridMaps:
         device: torch.device,
         forbidden_areas: List[Dict[str, Any]],
         zone_constraints: Dict[str, Dict[str, Any]],
+        backend_selection: str = "static",
     ) -> None:
         self._H = int(grid_height)
         self._W = int(grid_width)
         self._device = torch.device(device)
+        self._backend_selection = backend_selection  # "static" | "benchmark"
+        # Populated by _resolve_backends_static / _resolve_backends_benchmark
+        # key: (operation, spec_class_type) → backend name
+        self._backends: Dict[Tuple[str, type], str] = {}
 
         self._static_invalid = self._build_static_invalid(
             self._H,
@@ -268,13 +278,13 @@ class GridMaps:
             "call bind_group_specs()/_build_zone_invalid_cache() before placement checks"
         )
 
-    def _select_map_backend(self, *, is_rectangular: bool) -> str:
-        if not bool(is_rectangular):
-            return "conv"
-        return "conv" if self._device.type == "cuda" else "prefixsum"
+    def _select_map_backend(self, *, gid: GroupId) -> str:
+        spec_type = type(self._group_specs[gid])
+        return self._backends[("map", spec_type)]
 
-    def _select_batch_backend(self, *, is_rectangular: bool) -> str:
-        return "prefixsum" if bool(is_rectangular) else "gather"
+    def _select_batch_backend(self, *, gid: GroupId) -> str:
+        spec_type = type(self._group_specs[gid])
+        return self._backends[("batch", spec_type)]
 
     def is_placeable(
         self,
@@ -289,7 +299,7 @@ class GridMaps:
     ) -> bool:
         body_map = body_map.to(device=self._device, dtype=torch.bool)
         clearance_map = clearance_map.to(device=self._device, dtype=torch.bool)
-        backend = self._select_batch_backend(is_rectangular=is_rectangular)
+        backend = self._select_batch_backend(gid=gid)
         if backend == "prefixsum":
             result = self._is_placeable_prefixsum(
                 gid=gid,
@@ -718,7 +728,7 @@ class GridMaps:
         is_rectangular: bool,
     ) -> torch.Tensor:
         """Vectorized placeability check. Returns [N] bool."""
-        backend = self._select_batch_backend(is_rectangular=is_rectangular)
+        backend = self._select_batch_backend(gid=gid)
         if backend == "prefixsum":
             result = self._is_placeable_batch_prefixsum(
                 gid=gid,
@@ -769,7 +779,7 @@ class GridMaps:
         if valid_h <= 0 or valid_w <= 0:
             return result
 
-        backend = self._select_map_backend(is_rectangular=is_rectangular)
+        backend = self._select_map_backend(gid=gid)
         if backend == "prefixsum":
             valid_mask = self._is_placeable_map_prefixsum(
                 gid=gid,
@@ -795,6 +805,258 @@ class GridMaps:
     def bind_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> None:
         self._group_specs = group_specs
         self._build_zone_invalid_cache()
+        if self._backend_selection == "benchmark":
+            self._resolve_backends_benchmark()
+        else:
+            self._resolve_backends_static()
+
+    # ------------------------------------------------------------------
+    # Backend resolve (static / benchmark)
+    # ------------------------------------------------------------------
+
+    _STATIC_BACKEND_DEFAULTS: Dict[str, Dict[str, str]] = {
+        "StaticRectSpec": {"map_cpu": "prefixsum", "map_cuda": "conv", "batch": "prefixsum"},
+        "StaticIrregularSpec": {"map_cpu": "conv", "map_cuda": "conv", "batch": "gather"},
+    }
+
+    # Valid backend candidates per spec class.
+    # prefixsum assumes body fills entire bounding rect — unsafe for irregular shapes.
+    _BACKEND_CANDIDATES: Dict[str, Dict[str, List[str]]] = {
+        "StaticRectSpec": {"map": ["conv", "prefixsum"], "batch": ["prefixsum", "gather"]},
+        "StaticIrregularSpec": {"map": ["conv"], "batch": ["gather"]},
+    }
+
+    def _discover_spec_types(self) -> Dict[type, Tuple[GroupId, GroupSpec]]:
+        """Collect unique spec class types with a representative (gid, spec) each."""
+        found: Dict[type, Tuple[GroupId, GroupSpec]] = {}
+        for gid, spec in self._group_specs.items():
+            st = type(spec)
+            if st not in found:
+                found[st] = (gid, spec)
+        return found
+
+    def _resolve_backends_static(self) -> None:
+        spec_types = self._discover_spec_types()
+        logger.info("=== collision backend selection (mode=static) ===")
+        logger.info("  device=%s  grid=%dx%d", self._device.type, self._H, self._W)
+        logger.info("  scanning group specs for shape types ...")
+        for st, (gid, _spec) in spec_types.items():
+            logger.info("    found %-24s (e.g. gid=%r)", st.__name__, gid)
+
+        logger.info("  using predefined backend rules (no benchmark)")
+
+        map_key = "map_cuda" if self._device.type == "cuda" else "map_cpu"
+        self._backends = {}
+        for st in spec_types:
+            name = st.__name__
+            defaults = self._STATIC_BACKEND_DEFAULTS.get(name)
+            if defaults is None:
+                raise ValueError(
+                    f"no static backend defaults for spec type {name!r}; "
+                    "add an entry to _STATIC_BACKEND_DEFAULTS or use backend_selection='benchmark'"
+                )
+            self._backends[("map", st)] = defaults[map_key]
+            self._backends[("batch", st)] = defaults["batch"]
+
+        self._log_selected_backends()
+        logger.info("collision backend selection done")
+
+    def _get_candidates(self, spec_type: type) -> Dict[str, List[str]]:
+        """Return valid backend candidates for a spec class type."""
+        name = spec_type.__name__
+        candidates = self._BACKEND_CANDIDATES.get(name)
+        if candidates is not None:
+            return candidates
+        # Unknown spec type: fall back to safest backends only.
+        return {"map": ["conv"], "batch": ["gather"]}
+
+    def _resolve_backends_benchmark(self) -> None:
+        spec_types = self._discover_spec_types()
+        warmup = 3
+        rounds = 10
+
+        logger.info("=== collision backend selection (mode=benchmark) ===")
+        logger.info("  device=%s  grid=%dx%d", self._device.type, self._H, self._W)
+        logger.info("  scanning group specs for shape types ...")
+        for st, (gid, _spec) in spec_types.items():
+            logger.info("    found %-24s (e.g. gid=%r)", st.__name__, gid)
+
+        logger.info(
+            "  benchmarking each backend per shape type (warmup=%d, rounds=%d) ...",
+            warmup, rounds,
+        )
+
+        # results: {(op, spec_type): {backend: (mean, std)}}
+        results: Dict[Tuple[str, type], Dict[str, Tuple[float, float]]] = {}
+        self._backends = {}
+
+        for st, (gid, spec) in spec_types.items():
+            candidates = self._get_candidates(st)
+            map_candidates = candidates["map"]
+            batch_candidates = candidates["batch"]
+
+            body_map, clearance_map, clearance_origin, _is_rect = self._get_bench_tensors(spec)
+            kh, kw = int(clearance_map.shape[0]), int(clearance_map.shape[1])
+            valid_h = self._H - kh + 1
+            valid_w = self._W - kw + 1
+
+            # --- map backends ---
+            map_results: Dict[str, Tuple[float, float]] = {}
+            if len(map_candidates) == 1:
+                # Single valid backend — no benchmark needed.
+                self._backends[("map", st)] = map_candidates[0]
+            elif valid_h > 0 and valid_w > 0:
+                for backend in map_candidates:
+                    times = self._bench_map(
+                        gid=gid,
+                        body_map=body_map,
+                        clearance_map=clearance_map,
+                        clearance_origin=clearance_origin,
+                        valid_h=valid_h,
+                        valid_w=valid_w,
+                        backend=backend,
+                        warmup=warmup,
+                        rounds=rounds,
+                    )
+                    map_results[backend] = (float(np.mean(times)), float(np.std(times)))
+            results[("map", st)] = map_results
+
+            # --- batch backends ---
+            batch_results: Dict[str, Tuple[float, float]] = {}
+            if len(batch_candidates) == 1:
+                # Single valid backend — no benchmark needed.
+                self._backends[("batch", st)] = batch_candidates[0]
+            else:
+                n_candidates = min(valid_h * valid_w, 2000) if valid_h > 0 and valid_w > 0 else 100
+                for backend in batch_candidates:
+                    times = self._bench_batch(
+                        gid=gid,
+                        body_map=body_map,
+                        clearance_map=clearance_map,
+                        clearance_origin=clearance_origin,
+                        n_candidates=n_candidates,
+                        backend=backend,
+                        warmup=warmup,
+                        rounds=rounds,
+                    )
+                    batch_results[backend] = (float(np.mean(times)), float(np.std(times)))
+            results[("batch", st)] = batch_results
+
+        # Log results and select best
+        logger.info("  benchmark results - mean (+-std) ms:")
+        for (op, st), backend_times in sorted(results.items(), key=lambda x: (x[0][0], x[0][1].__name__)):
+            if not backend_times:
+                # Single candidate — already assigned, no benchmark data.
+                chosen = self._backends.get((op, st), "?")
+                logger.info("    %-5s %-24s | %s (only valid backend)", op, st.__name__, chosen)
+                continue
+            parts = []
+            for b, (mean, std) in backend_times.items():
+                parts.append(f"{b} {mean:.3f} (+-{std:.3f})")
+            logger.info("    %-5s %-24s | %s", op, st.__name__, " | ".join(parts))
+            best = min(backend_times, key=lambda b: backend_times[b][0])
+            self._backends[(op, st)] = best
+
+        self._log_selected_backends()
+        logger.info("collision backend selection done")
+
+    def _log_selected_backends(self) -> None:
+        logger.info("  selected collision backends:")
+        for (op, st) in sorted(self._backends, key=lambda k: (k[0], k[1].__name__)):
+            logger.info("    %-5s %-24s | %s", op, st.__name__, self._backends[(op, st)])
+
+    def _get_bench_tensors(
+        self, spec: GroupSpec,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]:
+        """Get a representative (body_map, clearance_map, clearance_origin, is_rectangular) from spec."""
+        orient = spec.orientations[0]
+        shape_key = getattr(orient, "shape_key", None)
+        if shape_key is not None:
+            return spec.shape_tensors(shape_key)
+        # Fallback: create dummy rect tensors
+        w = getattr(spec, "width", 10)
+        h = getattr(spec, "height", 10)
+        body = torch.ones((int(h), int(w)), dtype=torch.bool, device=self._device)
+        return body, body.clone(), (0, 0), True
+
+    def _bench_map(
+        self,
+        *,
+        gid: GroupId,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+        valid_h: int,
+        valid_w: int,
+        backend: str,
+        warmup: int,
+        rounds: int,
+    ) -> List[float]:
+        fn = self._is_placeable_map_conv if backend == "conv" else self._is_placeable_map_prefixsum
+        kwargs = dict(
+            gid=gid,
+            body_map=body_map.to(device=self._device, dtype=torch.bool),
+            clearance_map=clearance_map.to(device=self._device, dtype=torch.bool),
+            clearance_origin=clearance_origin,
+            valid_h=valid_h,
+            valid_w=valid_w,
+        )
+        is_cuda = self._device.type == "cuda"
+        for _ in range(warmup):
+            fn(**kwargs)
+            if is_cuda:
+                torch.cuda.synchronize()
+        times = []
+        for _ in range(rounds):
+            t0 = time.perf_counter()
+            fn(**kwargs)
+            if is_cuda:
+                torch.cuda.synchronize()
+            times.append((time.perf_counter() - t0) * 1000.0)
+        return times
+
+    def _bench_batch(
+        self,
+        *,
+        gid: GroupId,
+        body_map: torch.Tensor,
+        clearance_map: torch.Tensor,
+        clearance_origin: Tuple[int, int],
+        n_candidates: int,
+        backend: str,
+        warmup: int,
+        rounds: int,
+    ) -> List[float]:
+        fn = self._is_placeable_batch_prefixsum if backend == "prefixsum" else self._is_placeable_batch_gather
+        # Generate random valid positions within grid
+        bh, bw = int(body_map.shape[0]), int(body_map.shape[1])
+        pad_left, pad_bottom = int(clearance_origin[0]), int(clearance_origin[1])
+        kh, kw = int(clearance_map.shape[0]), int(clearance_map.shape[1])
+        max_x = max(1, self._W - bw - (kw - bw) + 1)
+        max_y = max(1, self._H - bh - (kh - bh) + 1)
+        x_bl = torch.randint(pad_left, max(pad_left + 1, max_x), (n_candidates,), device=self._device)
+        y_bl = torch.randint(pad_bottom, max(pad_bottom + 1, max_y), (n_candidates,), device=self._device)
+        kwargs = dict(
+            gid=gid,
+            x_bl=x_bl,
+            y_bl=y_bl,
+            body_map=body_map.to(device=self._device, dtype=torch.bool),
+            clearance_map=clearance_map.to(device=self._device, dtype=torch.bool),
+            clearance_origin=clearance_origin,
+        )
+        is_cuda = self._device.type == "cuda"
+        for _ in range(warmup):
+            fn(**kwargs)
+            if is_cuda:
+                torch.cuda.synchronize()
+        times = []
+        for _ in range(rounds):
+            t0 = time.perf_counter()
+            fn(**kwargs)
+            if is_cuda:
+                torch.cuda.synchronize()
+            times.append((time.perf_counter() - t0) * 1000.0)
+        return times
 
     def copy(self) -> "GridMaps":
         out = object.__new__(GridMaps)
@@ -822,6 +1084,8 @@ class GridMaps:
         out._mask_linear_offsets_cache = self._mask_linear_offsets_cache
         out._occ_invalid_ps = self._occ_invalid_ps
         out._clear_invalid_ps = self._clear_invalid_ps
+        out._backend_selection = self._backend_selection
+        out._backends = self._backends
         return out
 
     def restore(self, src: "GridMaps") -> None:

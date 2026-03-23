@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,6 +55,7 @@ class FactoryLayoutEnv(gym.Env):
         reward_scale: float = 100.0,
         penalty_weight: float = 50000.0,
         log: bool = False,
+        backend_selection: str = "static",
     ):
         super().__init__()
         self.grid_width = int(grid_width)
@@ -78,12 +80,24 @@ class FactoryLayoutEnv(gym.Env):
         self.node_ids: List[GroupId] = sorted(self.group_specs.keys(), key=lambda x: str(x))
         self.gid_to_idx: Dict[GroupId, int] = {gid: i for i, gid in enumerate(self.node_ids)}
 
+        # Log env info
+        if self.device.type == "cuda":
+            dev_name = torch.cuda.get_device_name(self.device)
+        else:
+            dev_name = platform.processor() or platform.machine()
+        n_flows = sum(len(v) for v in self.group_flow.values())
+        logger.info("=== env initialized ===")
+        logger.info("  device: %s - %s", self.device.type, dev_name)
+        logger.info("  grid: %dx%d", self.grid_width, self.grid_height)
+        logger.info("  groups: %d  flows: %d", len(self.group_specs), n_flows)
+
         maps = GridMaps(
             grid_height=self.grid_height,
             grid_width=self.grid_width,
             device=self.device,
             forbidden_areas=self.forbidden_areas,
             zone_constraints=self.zone_constraints,
+            backend_selection=backend_selection,
         )
         flow = FlowGraph(self.group_flow, device=self.device)
         self._state = EnvState.empty(

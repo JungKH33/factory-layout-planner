@@ -38,6 +38,7 @@ def load_env(
     json_path: str,
     *,
     device: torch.device | None = None,
+    backend_selection: str = "static",
 ) -> LoadedEnv:
     """Load a FactoryLayoutEnv from a JSON spec file."""
     path = Path(json_path)
@@ -200,8 +201,10 @@ def load_env(
         group_flow=flow,
         forbidden_areas=forbidden_areas,
         zone_constraints=zone_constraints,
+        device=device,
         reward_scale=float(env_cfg.get("reward_scale", 100.0)),
         penalty_weight=float(env_cfg.get("penalty_weight", 50000.0)),
+        backend_selection=backend_selection,
     )
 
     reset_cfg = data.get("reset", {})
