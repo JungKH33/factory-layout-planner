@@ -21,7 +21,7 @@ from envs.action_space import ActionSpace as CandidateSet
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "envs/env_configs/mixed_01.json"
+ENV_JSON: str = "envs/env_configs/basic_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import torch
@@ -12,15 +12,11 @@ from ...base import BaseAdapter
 
 
 class GreedyV4Adapter(BaseAdapter):
-    """Coarse-grid adapter: Discrete(K) actions over grid-cell-partitioned candidates.
+    """Cell-capped top-K adapter with coarse-cell annotations.
 
-    Divides the placeable center map into coarse cells of ``cell_size`` grid
-    units.  Within each cell, candidates are scored and the top
-    ``top_per_cell`` are retained.  The final action space is the union of
-    per-cell top candidates, trimmed to K.
-
-    Designed as a stepping-stone for RL: an RL policy selects a coarse cell,
-    then the adapter supplies the precise position within that cell.
+    Scores every valid center from ``placeable_center_map`` in one
+    ``cost_batch`` call, keeps the best ``top_per_cell`` centers per coarse
+    cell, then interleaves those per-cell rankings until K actions are filled.
 
     Observation includes:
     - ``action_costs``: ``[K]`` float — incremental cost per candidate
@@ -36,6 +32,7 @@ class GreedyV4Adapter(BaseAdapter):
         *,
         k: int = 50,
         cell_size: int = 10,
+        top_per_cell: int = 3,
         quant_step: Optional[float] = None,
         random_seed: Optional[int] = None,
         expand_orientations: bool = False,
@@ -45,7 +42,14 @@ class GreedyV4Adapter(BaseAdapter):
         super().__init__(expand_orientations=expand_orientations, max_orientations=max_orientations)
         self.k = int(k)
         self.cell_size = int(cell_size)
+        self.top_per_cell = int(top_per_cell)
         self.quant_step = float(quant_step) if quant_step is not None else None
+        if self.k <= 0:
+            raise ValueError("k must be > 0")
+        if self.cell_size <= 0:
+            raise ValueError("cell_size must be > 0")
+        if self.top_per_cell <= 0:
+            raise ValueError("top_per_cell must be > 0")
         self._rng = random.Random(random_seed)
 
         self.action_space = gym.spaces.Discrete(self.k)
@@ -125,14 +129,15 @@ class GreedyV4Adapter(BaseAdapter):
     def _generate(
         self, env: FactoryLayoutEnv, gid: GroupId
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Generate candidates partitioned by coarse grid cells.
+        """Generate per-cell top-N candidates with coarse-cell annotations.
 
         Steps:
         1. ``placeable_center_map`` → all valid center positions
         2. ``cost_batch`` → score all valid centers in one call
         3. (optional) quantize-dedup by ``quant_step``
-        4. ``topk(K)`` → pick K lowest-cost centers globally
-        5. Compute cell membership for each selected candidate
+        4. Keep the best ``top_per_cell`` centers in each coarse cell
+        5. Round-robin interleave per-cell rankings until K candidates are filled
+        6. Compute coarse-cell metadata for observations
 
         Returns:
             poses:         [K, 2] center coordinates
@@ -176,9 +181,8 @@ class GreedyV4Adapter(BaseAdapter):
         if self.quant_step is not None and self.quant_step > 0:
             f_centers, f_costs, f_cells = self._quant_dedup(f_centers, f_costs, f_cells)
 
-        # Global top-K
-        pick = min(self.k, int(f_costs.shape[0]))
-        _, topk_idx = torch.topk(f_costs, k=pick, largest=False)
+        selected_idx = self._select_top_per_cell(f_costs, f_cells)
+        pick = min(self.k, int(selected_idx.shape[0]))
 
         # Build output
         poses = torch.zeros((self.k, 2), dtype=torch.float32, device=device)
@@ -186,13 +190,61 @@ class GreedyV4Adapter(BaseAdapter):
         cell_ids = torch.zeros((self.k,), dtype=torch.int64, device=device)
         out_costs = torch.full((self.k,), float("inf"), dtype=torch.float32, device=device)
 
-        poses[:pick] = f_centers[topk_idx]
-        mask[:pick] = True
-        cell_ids[:pick] = f_cells[topk_idx]
-        out_costs[:pick] = f_costs[topk_idx]
+        if pick > 0:
+            chosen = selected_idx[:pick]
+            poses[:pick] = f_centers[chosen]
+            mask[:pick] = True
+            cell_ids[:pick] = f_cells[chosen]
+            out_costs[:pick] = f_costs[chosen]
 
         cell_features = self._build_cell_features(all_costs, flat_cell, finite_mask, H_c, W_c, device)
         return poses, mask, cell_ids, cell_features, out_costs
+
+    def _select_top_per_cell(
+        self,
+        costs: torch.Tensor,
+        cells: torch.Tensor,
+    ) -> torch.Tensor:
+        """Select up to ``top_per_cell`` entries per cell, then round-robin trim.
+
+        Cells are ordered by their best candidate cost so higher-quality cells
+        contribute earlier when the union exceeds ``k``.
+        """
+        if costs.numel() == 0:
+            return torch.zeros((0,), dtype=torch.long, device=cells.device)
+
+        unique_cells = torch.unique(cells, sorted=True)
+        per_cell: List[torch.Tensor] = []
+        for cell_id in unique_cells.tolist():
+            idx = torch.where(cells == int(cell_id))[0]
+            if idx.numel() == 0:
+                continue
+            take = min(self.top_per_cell, int(idx.shape[0]))
+            _, local_top = torch.topk(costs[idx], k=take, largest=False)
+            chosen = idx[local_top]
+            if chosen.numel() > 1:
+                chosen = chosen[torch.argsort(costs[chosen])]
+            per_cell.append(chosen)
+
+        if not per_cell:
+            return torch.zeros((0,), dtype=torch.long, device=cells.device)
+
+        per_cell.sort(key=lambda picked: (float(costs[picked[0]].item()), int(cells[picked[0]].item())))
+        selected: List[int] = []
+        rank = 0
+        while len(selected) < self.k:
+            any_added = False
+            for picked in per_cell:
+                if rank < int(picked.shape[0]):
+                    selected.append(int(picked[rank].item()))
+                    any_added = True
+                    if len(selected) >= self.k:
+                        break
+            if not any_added:
+                break
+            rank += 1
+
+        return torch.tensor(selected, dtype=torch.long, device=cells.device)
 
     def _quant_dedup(
         self,
@@ -314,8 +366,7 @@ if __name__ == "__main__":
     engine.log = False
 
     adapter = GreedyV4Adapter(
-        k=50, cell_size=10, top_per_cell=3,
-        oversample_factor=2, random_seed=0,
+        k=50, cell_size=10, top_per_cell=3, quant_step=10.0, random_seed=0,
     )
 
     t0 = time.perf_counter()
@@ -329,7 +380,7 @@ if __name__ == "__main__":
     a = int(torch.where(candidates.mask)[0][0].item()) if valid > 0 else 0
 
     print("GreedyV4Adapter demo")
-    print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3")
+    print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3  quant_step=10.0")
     print(f"  valid_actions={valid}  first_valid_action={a}")
     if obs.get("cell_features") is not None:
         cf = obs["cell_features"]
