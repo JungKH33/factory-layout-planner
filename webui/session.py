@@ -422,6 +422,7 @@ class SessionManager:
                     pw_c=search_params.get('pw_c', 1.5),
                     pw_alpha=search_params.get('pw_alpha', 0.5),
                     pw_min_children=search_params.get('pw_min_children', 1),
+                    cache_decision_state=search_params.get('cache_decision_state', True),
                 )
             )
         elif req.search_mode == "beam":
@@ -430,6 +431,7 @@ class SessionManager:
                     beam_width=search_params.get('beam_width', 8),
                     depth=search_params.get('depth', 5),
                     expansion_topk=search_params.get('expansion_topk', 16),
+                    cache_decision_state=search_params.get('cache_decision_state', False),
                 )
             )
         else:

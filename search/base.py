@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from agents.base import Agent, BaseAdapter
 from envs.state import EnvState
@@ -29,6 +30,21 @@ class SearchProgress:
 
 # Type alias for progress callback
 ProgressCallback = Callable[[SearchProgress], None]
+
+
+@dataclass
+class SearchSnapshot:
+    """Restorable engine + adapter state for a searched node."""
+    engine_state: EnvState
+    adapter_state: Dict[str, object]
+
+
+@dataclass
+class DecisionCache:
+    """Cached decision artifacts for one concrete environment state."""
+    snapshot: SearchSnapshot
+    obs: Dict[str, Any]
+    action_space: CandidateSet
 
 
 @dataclass(frozen=True)
@@ -67,6 +83,67 @@ class BaseSearch(ABC):
         """Emit progress update if callback is set."""
         if self._progress_callback is not None:
             self._progress_callback(progress)
+
+    def _capture_snapshot(
+        self,
+        *,
+        engine,
+        adapter: BaseAdapter,
+    ) -> SearchSnapshot:
+        """Capture engine + adapter state after a decision has been built."""
+        return SearchSnapshot(
+            engine_state=engine.get_state().copy(),
+            adapter_state=adapter.get_state_copy(),
+        )
+
+    def _restore_snapshot(
+        self,
+        *,
+        engine,
+        adapter: BaseAdapter,
+        snapshot: SearchSnapshot,
+    ) -> None:
+        """Restore engine + adapter state captured by ``_capture_snapshot``."""
+        engine.set_state(snapshot.engine_state)
+        adapter.set_state(snapshot.adapter_state)
+
+    def _capture_decision_cache(
+        self,
+        *,
+        engine,
+        adapter: BaseAdapter,
+        obs: Dict[str, Any],
+        action_space: CandidateSet,
+    ) -> DecisionCache:
+        """Capture a search state together with its built observation/action space."""
+        return DecisionCache(
+            snapshot=self._capture_snapshot(engine=engine, adapter=adapter),
+            obs=dict(obs),
+            action_space=action_space,
+        )
+
+    def _empty_action_space(self, *, device: torch.device) -> CandidateSet:
+        """Return an empty action space for terminal search nodes."""
+        return CandidateSet(
+            poses=torch.zeros((0, 2), dtype=torch.float32, device=device),
+            mask=torch.zeros((0,), dtype=torch.bool, device=device),
+        )
+
+    def _capture_terminal_cache(
+        self,
+        *,
+        engine,
+        adapter: BaseAdapter,
+    ) -> DecisionCache:
+        """Capture terminal engine state with an empty decision payload."""
+        return DecisionCache(
+            snapshot=SearchSnapshot(
+                engine_state=engine.get_state().copy(),
+                adapter_state={},
+            ),
+            obs={},
+            action_space=self._empty_action_space(device=adapter.device),
+        )
     
     @abstractmethod
     def select(

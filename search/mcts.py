@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 
 import numpy as np
 import torch
 
 from envs.env import FactoryLayoutEnv
-from envs.state import EnvState
 from agents.base import Agent, BaseAdapter
 from envs.action_space import ActionSpace as CandidateSet
-from search.base import BaseSearch, BaseSearchConfig, SearchProgress, SearchResult, TopKTracker
+from search.base import (
+    BaseSearch,
+    BaseSearchConfig,
+    DecisionCache,
+    SearchProgress,
+    SearchResult,
+    TopKTracker,
+)
 
 @dataclass(frozen=True)
 class MCTSConfig(BaseSearchConfig):
@@ -35,6 +41,7 @@ class MCTSConfig(BaseSearchConfig):
     pw_c: float = 1.5
     pw_alpha: float = 0.5
     pw_min_children: int = 1
+    cache_decision_state: bool = True
     # Top-K tracking: 0이면 비활성화
     track_top_k: int = 0
     track_verbose: bool = False  # True면 리스트 변경 시 print
@@ -44,15 +51,15 @@ class _Node:
     def __init__(
         self,
         *,
-        engine_state: EnvState,
-        action_space: CandidateSet,
+        decision_cache: DecisionCache,
         priors: torch.Tensor,  # float32 [N]
         action: Optional[int] = None,
         reward: float = 0.0,
         terminal: bool = False,
     ):
-        self.engine_state = engine_state
-        self.action_space = action_space
+        self.decision_cache = decision_cache
+        self.obs = decision_cache.obs
+        self.action_space = decision_cache.action_space
         self.priors = priors
         self.action = action
         self.reward = float(reward)
@@ -62,7 +69,7 @@ class _Node:
         self.total_value = 0.0
         self.children: Dict[int, "_Node"] = {}
 
-        valid = action_space.mask
+        valid = self.action_space.mask
         self.valid_actions = [i for i in range(int(valid.shape[0])) if bool(valid[i].item())]
 
     def _allowed_children(self, cfg: MCTSConfig) -> int:
@@ -156,13 +163,17 @@ class MCTSSearch(BaseSearch):
         engine = getattr(adapter, "engine", None)
         if engine is None:
             raise ValueError("MCTSSearch requires adapter.engine. Bind adapter to env before search.")
-        root_state = self._get_engine_state(engine=engine, adapter=adapter)
+        root_cache = self._capture_decision_cache(
+            engine=engine,
+            adapter=adapter,
+            obs=obs,
+            action_space=root_action_space,
+        )
 
         priors = self._safe_priors(agent=agent, adapter=adapter, obs=obs, action_space=root_action_space)
         priors = self._apply_root_dirichlet(priors=priors, mask=root_action_space.mask)
         root = _Node(
-            engine_state=root_state,
-            action_space=root_action_space,
+            decision_cache=root_cache,
             priors=priors,
             action=None,
             reward=0.0,
@@ -185,7 +196,7 @@ class MCTSSearch(BaseSearch):
                     self._emit_mcts_progress(root, sim + 1, num_sims, n_actions, mask_np)
 
         if not root.children:
-            self._set_engine_state(engine=engine, adapter=adapter, engine_state=root_state)
+            self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
             return 0
 
         best_action: int
@@ -208,7 +219,7 @@ class MCTSSearch(BaseSearch):
                     p = w / s
                     idx = int(torch.multinomial(p, num_samples=1).item())
                     best_action = int(acts[idx])
-        self._set_engine_state(engine=engine, adapter=adapter, engine_state=root_state)
+        self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
         return int(best_action)
 
     def _emit_mcts_progress(
@@ -244,32 +255,6 @@ class MCTSSearch(BaseSearch):
         )
         self._emit_progress(progress)
 
-    def _get_engine_state(self, *, engine: FactoryLayoutEnv, adapter: BaseAdapter) -> EnvState:
-        """Snapshot current engine state.
-
-        The base implementation only copies the engine state.  Adapter state
-        (mask, action_poses, etc.) is intentionally NOT included – it is
-        always rebuilt via ``adapter.build_action_space()`` after restoration.
-        Subclasses may override to include adapter state if needed.
-        """
-        return engine.get_state().copy()
-
-    def _set_engine_state(
-        self,
-        *,
-        engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
-        engine_state: EnvState,
-    ) -> None:
-        """Restore engine to a previously captured state.
-
-        Only the engine state is restored.  Adapter state is NOT restored
-        here – callers must call ``adapter.build_action_space()`` afterwards
-        if they need a consistent adapter.  Subclasses may override to
-        include adapter restoration.
-        """
-        engine.set_state(engine_state)
-
     def _apply_action_index(
         self,
         *,
@@ -303,7 +288,7 @@ class MCTSSearch(BaseSearch):
             cost=cost,
             cum_reward=cum_reward,
             positions=positions,
-            engine_state=self._get_engine_state(engine=engine, adapter=adapter),
+            engine_state=engine.get_state().copy(),
         ))
 
     def _apply_root_dirichlet(self, *, priors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -402,7 +387,7 @@ class MCTSSearch(BaseSearch):
                 path_rewards.append(node.reward)
             else:
                 # Restore engine state only once, right before expansion.
-                self._set_engine_state(engine=engine, adapter=adapter, engine_state=node.engine_state)
+                self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node.decision_cache.snapshot)
 
                 cand = node.action_space
                 reward, terminated, truncated, _info = self._apply_action_index(
@@ -414,10 +399,8 @@ class MCTSSearch(BaseSearch):
                 terminal = bool(terminated or truncated)
 
                 if terminal:
-                    next_action_space = CandidateSet(
-                        poses=torch.zeros((0, 2), dtype=torch.float32, device=adapter.device),
-                        mask=torch.zeros((0,), dtype=torch.bool, device=adapter.device),
-                    )
+                    child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
+                    next_action_space = child_cache.action_space
                     priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
                 else:
                     obs2 = adapter.build_observation()
@@ -428,10 +411,15 @@ class MCTSSearch(BaseSearch):
                         obs=obs2,
                         action_space=next_action_space,
                     )
+                    child_cache = self._capture_decision_cache(
+                        engine=engine,
+                        adapter=adapter,
+                        obs=obs2,
+                        action_space=next_action_space,
+                    )
 
                 child = _Node(
-                    engine_state=self._get_engine_state(engine=engine, adapter=adapter),
-                    action_space=next_action_space,
+                    decision_cache=child_cache,
                     priors=priors,
                     action=int(action),
                     reward=float(reward),
@@ -451,15 +439,19 @@ class MCTSSearch(BaseSearch):
         leaf_value = 0.0
         if not node.terminal:
             if not bool(self.config.rollout_enabled):
-                # Leaf evaluation via value head.
-                self._set_engine_state(engine=engine, adapter=adapter, engine_state=node.engine_state)
-                obs_leaf = adapter.build_observation()
-                leaf_action_space = adapter.build_action_space()
-                leaf_value = float(agent.value(obs=obs_leaf, action_space=leaf_action_space))
+                if bool(self.config.cache_decision_state):
+                    leaf_value = float(agent.value(obs=node.obs, action_space=node.action_space))
+                else:
+                    self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node.decision_cache.snapshot)
+                    obs_leaf = adapter.build_observation()
+                    leaf_action_space = adapter.build_action_space()
+                    leaf_value = float(agent.value(obs=obs_leaf, action_space=leaf_action_space))
             else:
+                self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node.decision_cache.snapshot)
                 leaf_value = self._rollout(
                     engine=engine, adapter=adapter, agent=agent,
                     path_reward_offset=float(sum(path_rewards)),
+                    initial_cache=node.decision_cache if bool(self.config.cache_decision_state) else None,
                 )
 
         total = float(leaf_value)
@@ -478,13 +470,20 @@ class MCTSSearch(BaseSearch):
         adapter: BaseAdapter,
         agent: Agent,
         path_reward_offset: float = 0.0,
+        initial_cache: Optional[DecisionCache] = None,
     ) -> float:
         total = 0.0
         if not bool(self.config.rollout_enabled):
             return 0.0
+        cache = initial_cache
         for _ in range(int(self.config.rollout_depth)):
-            obs = adapter.build_observation()
-            action_space = adapter.build_action_space()
+            if cache is not None:
+                obs = cache.obs
+                action_space = cache.action_space
+                cache = None
+            else:
+                obs = adapter.build_observation()
+                action_space = adapter.build_action_space()
             if int(action_space.mask.to(torch.int64).sum().item()) == 0:
                 reward, terminated, truncated, _ = self._apply_action_index(
                     engine=engine,

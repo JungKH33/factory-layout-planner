@@ -458,6 +458,7 @@ async def _run_search_with_updates(
             pw_c=original_config.pw_c,
             pw_alpha=original_config.pw_alpha,
             pw_min_children=original_config.pw_min_children,
+            cache_decision_state=original_config.cache_decision_state,
             track_top_k=original_config.track_top_k,
             track_verbose=original_config.track_verbose,
         )

@@ -95,6 +95,7 @@ SEARCH_MODE: str = "mcts"  # "none" | "mcts"
 MCTS_SIMS: int = 100
 MCTS_ROLLOUT_ENABLED: bool = True
 ROLLOUT_DEPTH: int = 5
+MCTS_CACHE_DECISION_STATE: bool = True
 
 # Visualization
 SHOW_FLOW: bool = True
@@ -227,6 +228,7 @@ def main() -> None:
                 num_simulations=MCTS_SIMS,
                 rollout_enabled=MCTS_ROLLOUT_ENABLED,
                 rollout_depth=ROLLOUT_DEPTH,
+                cache_decision_state=MCTS_CACHE_DECISION_STATE,
             )
         )
         logger.info("Search: MCTS (sims=%s)", MCTS_SIMS)

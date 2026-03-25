@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
 
 from envs.env import FactoryLayoutEnv
-from envs.state import EnvState
 from agents.base import Agent, BaseAdapter
 from envs.action_space import ActionSpace as CandidateSet
-from search.base import BaseSearch, BaseSearchConfig, SearchProgress, SearchResult, TopKTracker
+from search.base import (
+    BaseSearch,
+    BaseSearchConfig,
+    SearchProgress,
+    SearchResult,
+    SearchSnapshot,
+    TopKTracker,
+)
 
 
 @dataclass(frozen=True)
@@ -18,8 +24,18 @@ class BeamConfig(BaseSearchConfig):
     beam_width: int = 8
     depth: int = 5
     expansion_topk: int = 16
+    cache_decision_state: bool = False
     track_top_k: int = 0  # 0이면 tracking 비활성화
     track_verbose: bool = False  # True면 리스트 변경 시 print
+
+
+@dataclass
+class _BeamItem:
+    cum_reward: float
+    first_action: int
+    snapshot: SearchSnapshot
+    obs: Optional[dict] = None
+    action_space: Optional[CandidateSet] = None
 
 
 class BeamSearch(BaseSearch):
@@ -49,7 +65,7 @@ class BeamSearch(BaseSearch):
         engine = getattr(adapter, "engine", None)
         if engine is None:
             raise ValueError("BeamSearch requires adapter.engine. Bind adapter to env before search.")
-        root_state = self._get_engine_state(engine=engine, adapter=adapter)
+        root_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
         total_depth = int(self.config.depth)
 
         # Only compute numpy arrays if callback is set (avoid overhead when not needed)
@@ -62,18 +78,24 @@ class BeamSearch(BaseSearch):
         else:
             root_action_scores = None  # type: ignore
 
-        # Each beam item: (cum_reward, first_action, engine_state)
-        beams: List[Tuple[float, int, EnvState]] = [(0.0, -1, root_state)]
+        beams: List[_BeamItem] = [
+            _BeamItem(
+                cum_reward=0.0,
+                first_action=-1,
+                snapshot=root_snapshot,
+                obs=obs,
+                action_space=root_action_space,
+            )
+        ]
 
         for depth in range(total_depth):
-            new_beams: List[Tuple[float, int, EnvState]] = []
-            for cum_reward, first_action, state in beams:
-                self._set_engine_state(engine=engine, adapter=adapter, engine_state=state)
+            new_beams: List[_BeamItem] = []
+            for beam in beams:
+                self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
 
-                # Use provided root action_space at depth=0 on root node to avoid rebuild mismatch.
-                if depth == 0 and state is root_state:
-                    obs_node = obs
-                    action_space = root_action_space
+                if beam.obs is not None and beam.action_space is not None:
+                    obs_node = beam.obs
+                    action_space = beam.action_space
                 else:
                     obs_node = adapter.build_observation()
                     action_space = adapter.build_action_space()
@@ -81,12 +103,14 @@ class BeamSearch(BaseSearch):
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
                     # Track terminal state (no valid actions = terminal)
-                    self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=cum_reward, is_terminal=True)
+                    self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=beam.cum_reward, is_terminal=True)
                     new_beams.append(
-                        (
-                            cum_reward,
-                            first_action if first_action >= 0 else 0,
-                            self._get_engine_state(engine=engine, adapter=adapter),
+                        _BeamItem(
+                            cum_reward=beam.cum_reward,
+                            first_action=beam.first_action if beam.first_action >= 0 else 0,
+                            snapshot=beam.snapshot,
+                            obs=obs_node,
+                            action_space=action_space,
                         )
                     )
                     continue
@@ -112,15 +136,42 @@ class BeamSearch(BaseSearch):
                     if not bool(valid_mask[a].item()):
                         continue
 
-                    self._set_engine_state(engine=engine, adapter=adapter, engine_state=state)
+                    self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
                     reward, terminated, truncated, _info = self._apply_action_index(
                         engine=engine, adapter=adapter,
                         action=int(a), action_space=action_space,
                     )
 
-                    new_cum = float(cum_reward) + float(reward)
-                    root_a = a if first_action < 0 else int(first_action)
-                    new_beams.append((new_cum, root_a, self._get_engine_state(engine=engine, adapter=adapter)))
+                    new_cum = float(beam.cum_reward) + float(reward)
+                    root_a = a if beam.first_action < 0 else int(beam.first_action)
+                    if terminated or truncated:
+                        child_snapshot = SearchSnapshot(
+                            engine_state=engine.get_state().copy(),
+                            adapter_state={},
+                        )
+                        child_obs = {}
+                        child_action_space = self._empty_action_space(device=adapter.device)
+                    else:
+                        if bool(self.config.cache_decision_state):
+                            child_obs = adapter.build_observation()
+                            child_action_space = adapter.build_action_space()
+                            child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                        else:
+                            child_snapshot = SearchSnapshot(
+                                engine_state=engine.get_state().copy(),
+                                adapter_state={},
+                            )
+                            child_obs = None
+                            child_action_space = None
+                    new_beams.append(
+                        _BeamItem(
+                            cum_reward=new_cum,
+                            first_action=root_a,
+                            snapshot=child_snapshot,
+                            obs=child_obs,
+                            action_space=child_action_space,
+                        )
+                    )
 
                     if terminated or truncated:
                         self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=new_cum, is_terminal=True)
@@ -128,51 +179,25 @@ class BeamSearch(BaseSearch):
             if not new_beams:
                 break
 
-            new_beams.sort(key=lambda t: t[0], reverse=True)
+            new_beams.sort(key=lambda item: item.cum_reward, reverse=True)
             beams = new_beams[: int(self.config.beam_width)]
 
             # Emit progress (only if callback is set)
             if has_callback:
                 # Update root action scores from current beams
-                for cum_reward, root_a, _ in beams:
-                    if root_a >= 0:
-                        if root_a not in root_action_scores or cum_reward > root_action_scores[root_a]:
-                            root_action_scores[root_a] = cum_reward
+                for beam in beams:
+                    if beam.first_action >= 0:
+                        if beam.first_action not in root_action_scores or beam.cum_reward > root_action_scores[beam.first_action]:
+                            root_action_scores[beam.first_action] = beam.cum_reward
 
                 self._emit_beam_progress(
                     depth + 1, total_depth, n_actions, mask_np, root_action_scores, beams
                 )
 
-        best = beams[0][1] if beams else 0
+        best = beams[0].first_action if beams else 0
 
-        self._set_engine_state(engine=engine, adapter=adapter, engine_state=root_state)
+        self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
         return int(best) if int(best) >= 0 else 0
-
-    def _get_engine_state(self, *, engine: FactoryLayoutEnv, adapter: BaseAdapter) -> EnvState:
-        """Snapshot current engine state.
-
-        The base implementation only copies the engine state.  Adapter state
-        (mask, action_poses, etc.) is intentionally NOT included – it is
-        always rebuilt via ``adapter.build_action_space()`` after restoration.
-        Subclasses may override to include adapter state if needed.
-        """
-        return engine.get_state().copy()
-
-    def _set_engine_state(
-        self,
-        *,
-        engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
-        engine_state: EnvState,
-    ) -> None:
-        """Restore engine to a previously captured state.
-
-        Only the engine state is restored.  Adapter state is NOT restored
-        here – callers must call ``adapter.build_action_space()`` afterwards
-        if they need a consistent adapter.  Subclasses may override to
-        include adapter restoration.
-        """
-        engine.set_state(engine_state)
 
     def _apply_action_index(
         self,
@@ -204,17 +229,17 @@ class BeamSearch(BaseSearch):
         n_actions: int,
         mask: np.ndarray,
         root_action_scores: Dict[int, float],
-        beams: List[Tuple[float, int, EnvState]],
+        beams: List[_BeamItem],
     ) -> None:
         """Emit progress for beam search."""
         # visits: count how many beams have each root action
         visits = np.zeros(n_actions, dtype=np.int32)
         values = np.zeros(n_actions, dtype=np.float32)
         
-        for cum_reward, root_a, _ in beams:
-            if 0 <= root_a < n_actions:
-                visits[root_a] += 1
-                values[root_a] = max(values[root_a], cum_reward)
+        for beam in beams:
+            if 0 <= beam.first_action < n_actions:
+                visits[beam.first_action] += 1
+                values[beam.first_action] = max(values[beam.first_action], beam.cum_reward)
         
         # Also include best scores from root_action_scores
         for root_a, score in root_action_scores.items():
@@ -254,7 +279,7 @@ class BeamSearch(BaseSearch):
             cost=cost,
             cum_reward=cum_reward,
             positions=positions,
-            engine_state=self._get_engine_state(engine=engine, adapter=adapter),
+            engine_state=engine.get_state().copy(),
         ))
 
 

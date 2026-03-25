@@ -46,9 +46,11 @@ MCTS_PW_ENABLED: bool = False
 MCTS_PW_C: float = 1.5
 MCTS_PW_ALPHA: float = 0.5
 MCTS_PW_MIN_CHILDREN: int = 1
+MCTS_CACHE_DECISION_STATE: bool = True
 BEAM_WIDTH: int = 8
 BEAM_DEPTH: int = 5
 BEAM_EXPANSION_TOPK: int = 16
+BEAM_CACHE_DECISION_STATE: bool = False
 
 # Orientation expansion: adapter가 (center, orientation) 쌍을 후보로 생성
 EXPAND_ORIENTATIONS: bool = False
@@ -113,6 +115,7 @@ def main() -> None:
                 num_simulations=MCTS_SIMS,
                 rollout_enabled=bool(MCTS_ROLLOUT_ENABLED),
                 rollout_depth=int(ROLLOUT_DEPTH),
+                cache_decision_state=bool(MCTS_CACHE_DECISION_STATE),
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
             )
@@ -123,6 +126,7 @@ def main() -> None:
                 beam_width=BEAM_WIDTH,
                 depth=BEAM_DEPTH,
                 expansion_topk=BEAM_EXPANSION_TOPK,
+                cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
             )
