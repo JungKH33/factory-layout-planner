@@ -9,13 +9,12 @@ import torch
 
 from envs.env import FactoryLayoutEnv
 from agents.base import Agent, BaseAdapter
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from search.base import (
     BaseSearch,
     BaseSearchConfig,
     DecisionCache,
     SearchProgress,
-    SearchResult,
     TopKTracker,
 )
 
@@ -41,6 +40,8 @@ class MCTSConfig(BaseSearchConfig):
     pw_c: float = 1.5
     pw_alpha: float = 0.5
     pw_min_children: int = 1
+    # Cache obs/action_space in each tree node to avoid rebuilding on revisit.
+    # True by default: MCTS revisits nodes many times, so caching pays off.
     cache_decision_state: bool = True
     # Top-K tracking: 0이면 비활성화
     track_top_k: int = 0
@@ -155,7 +156,7 @@ class MCTSSearch(BaseSearch):
         *,
         obs: dict,
         agent: Agent,
-        root_action_space: CandidateSet,
+        root_action_space: ActionSpace,
     ) -> int:
         adapter = self.adapter
         if adapter is None:
@@ -255,42 +256,6 @@ class MCTSSearch(BaseSearch):
         )
         self._emit_progress(progress)
 
-    def _apply_action_index(
-        self,
-        *,
-        engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
-        action: int,
-        action_space: CandidateSet,
-    ):
-        """Apply discrete action index via decode -> engine.step_action.
-
-        Returns (reward, terminated, truncated, info) — no observation.
-        Callers build observation via adapter.build_observation() only when needed.
-        """
-        try:
-            placement = adapter.decode_action(int(action), action_space)
-        except IndexError:
-            return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
-        except ValueError as e:
-            reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
-            return float(engine.failure_penalty()), False, True, {"reason": reason}
-        _, reward, terminated, truncated, info = engine.step_action(placement)
-        return float(reward), bool(terminated), bool(truncated), info
-
-    def _track_terminal(self, *, engine: FactoryLayoutEnv, adapter: BaseAdapter, cum_reward: float) -> None:
-        """Track terminal state if tracking is enabled."""
-        if self.top_tracker is None:
-            return
-        cost = engine.total_cost()
-        positions = {str(gid): p.position() for gid, p in engine.get_state().placements.items()}
-        self.top_tracker.add(SearchResult(
-            cost=cost,
-            cum_reward=cum_reward,
-            positions=positions,
-            engine_state=engine.get_state().copy(),
-        ))
-
     def _apply_root_dirichlet(self, *, priors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         eps = float(self.config.dirichlet_epsilon)
         c = float(self.config.dirichlet_concentration)
@@ -323,7 +288,7 @@ class MCTSSearch(BaseSearch):
         agent: Agent,
         adapter: BaseAdapter,
         obs: dict,
-        action_space: CandidateSet,
+        action_space: ActionSpace,
     ) -> torch.Tensor:
         pri = agent.policy(obs=obs, action_space=action_space)
         if not isinstance(pri, torch.Tensor):
@@ -433,7 +398,7 @@ class MCTSSearch(BaseSearch):
                 # Track terminal state (expansion 시점)
                 if child.terminal:
                     cum_reward = sum(path_rewards)
-                    self._track_terminal(engine=engine, adapter=adapter, cum_reward=cum_reward)
+                    self._track_terminal(engine=engine, cum_reward=cum_reward)
                 break
 
         leaf_value = 0.0
@@ -493,7 +458,7 @@ class MCTSSearch(BaseSearch):
                 )
                 total += float(reward)
                 # Track terminal during rollout (include tree path rewards)
-                self._track_terminal(engine=engine, adapter=adapter, cum_reward=path_reward_offset + total)
+                self._track_terminal(engine=engine, cum_reward=path_reward_offset + total)
                 break
 
             a = agent.select_action(obs=obs, action_space=action_space)
@@ -506,7 +471,7 @@ class MCTSSearch(BaseSearch):
             total += float(reward)
             if terminated or truncated:
                 # Track terminal during rollout (include tree path rewards)
-                self._track_terminal(engine=engine, adapter=adapter, cum_reward=path_reward_offset + total)
+                self._track_terminal(engine=engine, cum_reward=path_reward_offset + total)
                 break
         return float(total)
 

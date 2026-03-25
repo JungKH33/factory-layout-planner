@@ -10,8 +10,9 @@ import numpy as np
 import torch
 
 from agents.base import Agent, BaseAdapter
+from envs.env import FactoryLayoutEnv
 from envs.state import EnvState
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class DecisionCache:
     """Cached decision artifacts for one concrete environment state."""
     snapshot: SearchSnapshot
     obs: Dict[str, Any]
-    action_space: CandidateSet
+    action_space: ActionSpace
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,7 @@ class BaseSearch(ABC):
         engine,
         adapter: BaseAdapter,
         obs: Dict[str, Any],
-        action_space: CandidateSet,
+        action_space: ActionSpace,
     ) -> DecisionCache:
         """Capture a search state together with its built observation/action space."""
         return DecisionCache(
@@ -122,9 +123,9 @@ class BaseSearch(ABC):
             action_space=action_space,
         )
 
-    def _empty_action_space(self, *, device: torch.device) -> CandidateSet:
+    def _empty_action_space(self, *, device: torch.device) -> ActionSpace:
         """Return an empty action space for terminal search nodes."""
-        return CandidateSet(
+        return ActionSpace(
             poses=torch.zeros((0, 2), dtype=torch.float32, device=device),
             mask=torch.zeros((0,), dtype=torch.bool, device=device),
         )
@@ -145,13 +146,49 @@ class BaseSearch(ABC):
             action_space=self._empty_action_space(device=adapter.device),
         )
     
+    def _apply_action_index(
+        self,
+        *,
+        engine: FactoryLayoutEnv,
+        adapter: BaseAdapter,
+        action: int,
+        action_space: ActionSpace,
+    ):
+        """Apply discrete action index via decode -> engine.step_action.
+
+        Returns (reward, terminated, truncated, info) — no observation.
+        Callers build observation via adapter.build_observation() only when needed.
+        """
+        try:
+            placement = adapter.decode_action(int(action), action_space)
+        except IndexError:
+            return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
+        except ValueError as e:
+            reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
+            return float(engine.failure_penalty()), False, True, {"reason": reason}
+        _, reward, terminated, truncated, info = engine.step_action(placement)
+        return float(reward), bool(terminated), bool(truncated), info
+
+    def _track_terminal(self, *, engine: FactoryLayoutEnv, cum_reward: float) -> None:
+        """Record a terminal state in the top-K tracker (if enabled)."""
+        if self.top_tracker is None:
+            return
+        cost = engine.total_cost()
+        positions = {str(gid): p.position() for gid, p in engine.get_state().placements.items()}
+        self.top_tracker.add(SearchResult(
+            cost=cost,
+            cum_reward=cum_reward,
+            positions=positions,
+            engine_state=engine.get_state().copy(),
+        ))
+
     @abstractmethod
     def select(
         self,
         *,
         obs: dict,
         agent: Agent,
-        root_action_space: CandidateSet,
+        root_action_space: ActionSpace,
     ) -> int:
         """Select an action from action_space."""
         ...

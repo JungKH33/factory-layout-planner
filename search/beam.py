@@ -6,14 +6,12 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from envs.env import FactoryLayoutEnv
 from agents.base import Agent, BaseAdapter
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from search.base import (
     BaseSearch,
     BaseSearchConfig,
     SearchProgress,
-    SearchResult,
     SearchSnapshot,
     TopKTracker,
 )
@@ -24,6 +22,8 @@ class BeamConfig(BaseSearchConfig):
     beam_width: int = 8
     depth: int = 5
     expansion_topk: int = 16
+    # Cache obs/action_space per beam item. False by default: beam expands
+    # width * topk children per depth, so caching all items is memory-heavy.
     cache_decision_state: bool = False
     track_top_k: int = 0  # 0이면 tracking 비활성화
     track_verbose: bool = False  # True면 리스트 변경 시 print
@@ -35,7 +35,7 @@ class _BeamItem:
     first_action: int
     snapshot: SearchSnapshot
     obs: Optional[dict] = None
-    action_space: Optional[CandidateSet] = None
+    action_space: Optional[ActionSpace] = None
 
 
 class BeamSearch(BaseSearch):
@@ -57,7 +57,7 @@ class BeamSearch(BaseSearch):
         *,
         obs: dict,
         agent: Agent,
-        root_action_space: CandidateSet,
+        root_action_space: ActionSpace,
     ) -> int:
         adapter = self.adapter
         if adapter is None:
@@ -103,7 +103,7 @@ class BeamSearch(BaseSearch):
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
                     # Track terminal state (no valid actions = terminal)
-                    self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=beam.cum_reward, is_terminal=True)
+                    self._track_terminal(engine=engine, cum_reward=beam.cum_reward)
                     new_beams.append(
                         _BeamItem(
                             cum_reward=beam.cum_reward,
@@ -174,7 +174,7 @@ class BeamSearch(BaseSearch):
                     )
 
                     if terminated or truncated:
-                        self._track_if_terminal(engine=engine, adapter=adapter, cum_reward=new_cum, is_terminal=True)
+                        self._track_terminal(engine=engine, cum_reward=new_cum)
 
             if not new_beams:
                 break
@@ -198,29 +198,6 @@ class BeamSearch(BaseSearch):
 
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
         return int(best) if int(best) >= 0 else 0
-
-    def _apply_action_index(
-        self,
-        *,
-        engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
-        action: int,
-        action_space: CandidateSet,
-    ):
-        """Apply discrete action index via decode -> engine.step_action.
-
-        Returns (reward, terminated, truncated, info) — no observation.
-        Callers build observation via adapter.build_observation() only when needed.
-        """
-        try:
-            placement = adapter.decode_action(int(action), action_space)
-        except IndexError:
-            return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
-        except ValueError as e:
-            reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
-            return float(engine.failure_penalty()), False, True, {"reason": reason}
-        _, reward, terminated, truncated, info = engine.step_action(placement)
-        return float(reward), bool(terminated), bool(truncated), info
 
     def _emit_beam_progress(
         self,
@@ -262,25 +239,6 @@ class BeamSearch(BaseSearch):
         )
         self._emit_progress(progress)
 
-    def _track_if_terminal(
-        self,
-        *,
-        engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
-        cum_reward: float,
-        is_terminal: bool,
-    ) -> None:
-        """Track terminal state if tracking is enabled."""
-        if self.top_tracker is None or not is_terminal:
-            return
-        cost = engine.total_cost()
-        positions = {str(gid): p.position() for gid, p in engine.get_state().placements.items()}
-        self.top_tracker.add(SearchResult(
-            cost=cost,
-            cum_reward=cum_reward,
-            positions=positions,
-            engine_state=engine.get_state().copy(),
-        ))
 
 
 if __name__ == "__main__":
