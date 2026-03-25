@@ -15,7 +15,7 @@ from agents.placement.greedy import GreedyAdapter
 from envs.action import EnvAction
 from envs.env import FactoryLayoutEnv
 from envs.placement.static import StaticRectSpec
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from envs.visualizer import plot_layout, plot_flow_graph
 
 
@@ -93,7 +93,7 @@ def main():
     topk_obs, _ = env2.reset(options={"initial_placements": initial_placements, "remaining_order": remaining_order})
     cand = None
     if isinstance(topk_obs, dict) and ("action_mask" in topk_obs) and ("action_poses" in topk_obs):
-        cand = CandidateSet(
+        cand = ActionSpace(
             poses=topk_obs["action_poses"],
             mask=topk_obs["action_mask"],
             gid=engine.get_state().remaining[0] if engine.get_state().remaining else None,

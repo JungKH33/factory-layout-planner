@@ -85,7 +85,7 @@ class StepFrame:
     state: Any  # engine/wrapper state copy
     cost: float
     step_idx: int
-    action_space: Any = None  # Optional[CandidateSet]
+    action_space: Any = None  # Optional[ActionSpace]
     scores: Optional[np.ndarray] = None
     selected_action: Optional[int] = None
     value: Optional[float] = None
@@ -159,7 +159,7 @@ def extract_layout_data(
 
     Args:
         engine: FactoryLayoutEnv instance
-        action_space: Optional CandidateSet (with .poses, .mask, .gid)
+        action_space: Optional ActionSpace (with .poses, .mask, .gid)
         routes: Optional list of RouteResult from postprocess.pathfinder
     """
     state = engine.get_state()

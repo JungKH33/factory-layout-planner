@@ -189,7 +189,7 @@ if __name__ == "__main__":
     import networkx as nx
     import matplotlib.pyplot as plt
 
-    from envs.action_space import ActionSpace as CandidateSet
+    from envs.action_space import ActionSpace
     from envs.action import EnvAction
     from envs.env_loader import load_env
     from envs.visualizer import plot_layout
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     g = int(adapter.coarse_grid)
     idxs = torch.where(candidates.mask)[0]
     xy = candidates.poses[idxs]
-    cand0 = CandidateSet(
+    cand0 = ActionSpace(
         poses=xy,
         mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
         gid=candidates.gid,
@@ -327,7 +327,7 @@ if __name__ == "__main__":
         _plot_alphachip_graph({k: obs2[k] for k in obs2.keys()}, title="AlphaChip obs graph (after 1 step)")
         idxs2 = torch.where(candidates2.mask)[0]
         xy2 = candidates2.poses[idxs2]
-        cand1 = CandidateSet(
+        cand1 = ActionSpace(
             poses=xy2,
             mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
             gid=candidates2.gid,

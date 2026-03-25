@@ -9,7 +9,7 @@ from typing import Optional
 import torch
 from torch_geometric.data import Data
 
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from ...base import Agent
 
 from .model import AlphaChip
@@ -79,7 +79,7 @@ class AlphaChipAgent:
             logger.info("alphachip_agent checkpoint_meta=%s", meta)
 
     @torch.no_grad()
-    def policy(self, *, obs: dict, action_space: CandidateSet) -> torch.Tensor:
+    def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
         expected_n = int(self.coarse_grid * self.coarse_grid)
         n = int(action_space.mask.shape[0])
         if n != expected_n:
@@ -97,13 +97,13 @@ class AlphaChipAgent:
         scores = torch.softmax(logits, dim=-1)
         return scores
 
-    def select_action(self, *, obs: dict, action_space: CandidateSet) -> int:
+    def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         pol = self.policy(obs=obs, action_space=action_space)
         pol = pol.masked_fill(~action_space.mask, float("-inf"))
         return int(torch.argmax(pol).item()) if pol.numel() > 0 else 0
 
     @torch.no_grad()
-    def value(self, *, obs: dict, action_space: CandidateSet) -> float:
+    def value(self, *, obs: dict, action_space: ActionSpace) -> float:
         expected_n = int(self.coarse_grid * self.coarse_grid)
         n = int(action_space.mask.shape[0])
         if n != expected_n:

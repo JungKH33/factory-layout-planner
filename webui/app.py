@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 _search_executor = ThreadPoolExecutor(max_workers=2)
 logger = logging.getLogger(__name__)
 
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from agents.placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
 from agents.placement.alphachip import AlphaChipAdapter
 from agents.placement.maskplace import MaskPlaceAdapter

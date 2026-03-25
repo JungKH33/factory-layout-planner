@@ -543,7 +543,7 @@ class MatplotlibBackend(VisualizerBackend):
                 return None
             gid = cand.gid
             if gid is None:
-                raise ValueError("CandidateSet.gid is required for BL->center conversion.")
+                raise ValueError("ActionSpace.gid is required for BL->center conversion.")
             mask = cand.mask.detach().cpu().numpy().astype(bool)
             poses = cand.poses.detach().cpu().numpy()
             scores = np.asarray(frame.scores, dtype=np.float32)

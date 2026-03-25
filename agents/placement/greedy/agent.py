@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from ...base import Agent
 
 
@@ -18,7 +18,7 @@ class GreedyAgent:
 
     prior_temperature: float = 1.0
 
-    def policy(self, *, obs: dict, action_space: CandidateSet) -> torch.Tensor:
+    def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
         device = action_space.poses.device
         N = int(action_space.poses.shape[0])
         priors = torch.zeros((N,), dtype=torch.float32, device=device)
@@ -48,7 +48,7 @@ class GreedyAgent:
         priors[valid_idx] = probs
         return priors
 
-    def select_action(self, *, obs: dict, action_space: CandidateSet) -> int:
+    def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         N = int(action_space.poses.shape[0])
         if N <= 0:
             return 0
@@ -65,7 +65,7 @@ class GreedyAgent:
         best_k = int(torch.argmin(scores).item()) if scores.numel() > 0 else 0
         return int(valid_idx[best_k].item()) if int(valid_idx.numel()) > 0 else 0
 
-    def value(self, *, obs: dict, action_space: CandidateSet) -> float:
+    def value(self, *, obs: dict, action_space: ActionSpace) -> float:
         # Optional adapter-provided scalar estimate.
         v = obs.get("state_value", None)
         if isinstance(v, torch.Tensor) and v.numel() > 0:
@@ -80,7 +80,7 @@ if __name__ == "__main__":
 
     from envs.env_loader import load_env
     from agents.placement.greedy.adapter import GreedyAdapter
-    from envs.action_space import ActionSpace as CandidateSet
+    from envs.action_space import ActionSpace
 
     ENV_JSON = "envs/env_configs/basic_01.json"
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")

@@ -11,7 +11,7 @@ import torch
 
 from envs.env_loader import load_env
 from envs.state import EnvState
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from agents.placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
 from agents.placement.alphachip import AlphaChipAgent, AlphaChipAdapter
 from agents.placement.maskplace import MaskPlaceAgent, MaskPlaceAdapter
@@ -37,7 +37,7 @@ from webui.schemas import (
 class HistoryEntry:
     """A state checkpoint for undo/redo."""
     state: Dict[str, Any]
-    candidates: Optional[CandidateSet]
+    candidates: Optional[ActionSpace]
     scores: Optional[np.ndarray]
     value: float
     cost: float
@@ -60,7 +60,7 @@ class Session:
     truncated: bool = False
     
     # Current candidates
-    candidates: Optional[CandidateSet] = None
+    candidates: Optional[ActionSpace] = None
     scores: Optional[np.ndarray] = None
     value: float = 0.0
     
@@ -137,7 +137,7 @@ class Session:
         
         if isinstance(self.obs, dict) and "action_mask" in self.obs:
             if "action_poses" in self.obs:
-                self.candidates = CandidateSet(
+                self.candidates = ActionSpace(
                     poses=self.obs["action_poses"],
                     mask=self.obs["action_mask"],
                     gid=next_gid,

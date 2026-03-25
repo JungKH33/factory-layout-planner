@@ -37,7 +37,7 @@ def plot_layout(
 
     Args:
         env: FactoryLayoutEnv or wrapper
-        action_space: Optional CandidateSet
+        action_space: Optional ActionSpace
         routes: Optional list of RouteResult
         backend: 'matplotlib' (default) or 'plotly'
     """
@@ -66,7 +66,7 @@ def save_layout(
         show_flow: Show flow arrows
         show_score: Show cost text
         show_zones: Show constraint zone rects
-        action_space: Optional CandidateSet
+        action_space: Optional ActionSpace
         backend: 'matplotlib' (default) or 'plotly'
     """
     engine = getattr(env, "engine", env)

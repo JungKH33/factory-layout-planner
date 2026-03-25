@@ -623,7 +623,7 @@ class GreedyV2Adapter(BaseAdapter):
 if __name__ == "__main__":
     import torch
 
-    from envs.action_space import ActionSpace as CandidateSet
+    from envs.action_space import ActionSpace
     from envs.action import EnvAction
     from envs.env_loader import load_env
     from envs.visualizer import plot_layout

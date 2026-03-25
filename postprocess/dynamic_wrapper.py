@@ -24,7 +24,7 @@ import gymnasium as gym
 import torch
 
 from .dynamic_env import DynamicStorageEnv, PlacementResult
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 
 
 class DynamicStorageWrapper(gym.Env):
@@ -141,7 +141,7 @@ class DynamicStorageWrapper(gym.Env):
     
     # ========== Observation ==========
     
-    def build_action_space(self) -> CandidateSet:
+    def build_action_space(self) -> ActionSpace:
         """Build action-space from current dynamic env state."""
         self.mask = self.create_mask()
         if not isinstance(self.mask, torch.Tensor):
@@ -156,14 +156,14 @@ class DynamicStorageWrapper(gym.Env):
             raise ValueError(
                 f"action-space size mismatch: poses={int(poses_t.shape[0])}, mask={int(mask_t.shape[0])}"
             )
-        return CandidateSet(poses=poses_t, mask=mask_t, gid=self.current_gid())
+        return ActionSpace(poses=poses_t, mask=mask_t, gid=self.current_gid())
     
     # ========== Action Decode ==========
     
     def decode_action(
         self,
         action: int,
-        action_space: Optional[CandidateSet] = None,
+        action_space: Optional[ActionSpace] = None,
     ) -> Tuple[float, float, int, int, int]:
         """action (0~k-1) → (x_c, y_c, rot, 0, action).
 

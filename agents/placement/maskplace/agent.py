@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 from .model import MaskPlaceModel
 
 
@@ -32,7 +32,7 @@ class MaskPlaceAgent:
         self.model.eval()
 
     @torch.no_grad()
-    def policy(self, *, obs: dict, action_space: CandidateSet) -> torch.Tensor:
+    def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
         state = obs.get("state", None)
         if not isinstance(state, torch.Tensor):
             raise ValueError("MaskPlaceAgent requires obs['state'].")
@@ -56,14 +56,14 @@ class MaskPlaceAgent:
         return pri
 
     @torch.no_grad()
-    def select_action(self, *, obs: dict, action_space: CandidateSet) -> int:
+    def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         pri = self.policy(obs=obs, action_space=action_space)
         if pri.numel() == 0:
             return 0
         return int(torch.argmax(pri).item())
 
     @torch.no_grad()
-    def value(self, *, obs: dict, action_space: CandidateSet) -> float:
+    def value(self, *, obs: dict, action_space: ActionSpace) -> float:
         state = obs.get("state", None)
         if not isinstance(state, torch.Tensor):
             return 0.0

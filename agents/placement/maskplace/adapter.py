@@ -240,7 +240,7 @@ if __name__ == "__main__":
     import torch
     import matplotlib.pyplot as plt
 
-    from envs.action_space import ActionSpace as CandidateSet
+    from envs.action_space import ActionSpace
     from envs.action import EnvAction
     from envs.env_loader import load_env
     from envs.visualizer import plot_layout
@@ -266,7 +266,7 @@ if __name__ == "__main__":
     # For visualization, subsample valid points (224^2 can be large).
     idxs = torch.where(candidates.mask)[0][:5000]
     xy = candidates.poses[idxs]
-    cand0 = CandidateSet(
+    cand0 = ActionSpace(
         poses=xy,
         mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
         gid=candidates.gid,
@@ -284,7 +284,7 @@ if __name__ == "__main__":
     if int(candidates2.mask.shape[0]) > 0:
         idxs2 = torch.where(candidates2.mask)[0][:5000]
         xy2 = candidates2.poses[idxs2]
-        cand1 = CandidateSet(
+        cand1 = ActionSpace(
             poses=xy2,
             mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
             gid=candidates2.gid,

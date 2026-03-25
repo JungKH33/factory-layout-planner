@@ -17,7 +17,7 @@ from search.mcts import MCTSConfig, MCTSSearch
 
 from agents.registry import create as create_agent
 from agents.ordering import DifficultyOrderingAgent
-from envs.action_space import ActionSpace as CandidateSet
+from envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
@@ -202,7 +202,7 @@ def main() -> None:
                 state=state,
                 cost=float(engine.cost()),
                 step_idx=int(step),
-                action_space=action_space_obj if isinstance(action_space_obj, CandidateSet) else None,
+                action_space=action_space_obj if isinstance(action_space_obj, ActionSpace) else None,
                 scores=scores_obj if hasattr(scores_obj, "shape") else None,
                 selected_action=selected_action,
                 value=value,
