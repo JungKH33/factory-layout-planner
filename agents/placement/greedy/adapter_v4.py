@@ -20,8 +20,6 @@ class GreedyV4Adapter(BaseAdapter):
 
     Observation includes:
     - ``action_costs``: ``[K]`` float — incremental cost per candidate
-    - ``cell_features``: ``[H_c, W_c, C]`` float — per-cell feature map
-      (C channels: has_candidate, best_cost, candidate_count, mean_cost)
     - ``cell_indices``: ``[K]`` int — which coarse cell each action belongs to
     """
 
@@ -58,15 +56,12 @@ class GreedyV4Adapter(BaseAdapter):
         self.action_poses: Optional[torch.Tensor] = None   # float [K, 2]
         self.action_costs: Optional[torch.Tensor] = None    # float [K]
         self.cell_indices: Optional[torch.Tensor] = None    # int64 [K]
-        self.cell_features: Optional[torch.Tensor] = None   # float [H_c, W_c, C]
 
     def build_observation(self) -> Dict[str, Any]:
         self.mask = self.create_mask()
         obs: Dict[str, Any] = {}
         if isinstance(self.action_costs, torch.Tensor):
             obs["action_costs"] = self.action_costs
-        if isinstance(self.cell_features, torch.Tensor):
-            obs["cell_features"] = self.cell_features
         if isinstance(self.cell_indices, torch.Tensor):
             obs["cell_indices"] = self.cell_indices
         return obs
@@ -76,12 +71,9 @@ class GreedyV4Adapter(BaseAdapter):
         gid = self.current_gid()
         if gid is None:
             self.cell_indices = torch.zeros((self.k,), dtype=torch.int64, device=self.device)
-            self.cell_features = None
             return self._empty_orientation_output(self.k)
 
-        poses, mask, cell_ids, cell_feat, costs = self._generate(self.engine, gid)
-
-        self.cell_features = cell_feat
+        poses, mask, cell_ids, costs = self._generate(self.engine, gid)
 
         if self.expand_orientations:
             self.cell_indices = cell_ids
@@ -104,7 +96,6 @@ class GreedyV4Adapter(BaseAdapter):
         snap["action_poses"] = self.action_poses.clone() if isinstance(self.action_poses, torch.Tensor) else None
         snap["action_costs"] = self.action_costs.clone() if isinstance(self.action_costs, torch.Tensor) else None
         snap["cell_indices"] = self.cell_indices.clone() if isinstance(self.cell_indices, torch.Tensor) else None
-        snap["cell_features"] = self.cell_features.clone() if isinstance(self.cell_features, torch.Tensor) else None
         return snap
 
     def set_state(self, state: Dict[str, object]) -> None:
@@ -121,14 +112,12 @@ class GreedyV4Adapter(BaseAdapter):
         self.action_costs = ad.to(device=self.device, dtype=torch.float32).clone() if isinstance(ad, torch.Tensor) else None
         ci = state.get("cell_indices", None)
         self.cell_indices = ci.to(device=self.device, dtype=torch.int64).clone() if isinstance(ci, torch.Tensor) else None
-        cf = state.get("cell_features", None)
-        self.cell_features = cf.to(device=self.device, dtype=torch.float32).clone() if isinstance(cf, torch.Tensor) else None
 
     # ---- candidate generation ----
 
     def _generate(
         self, env: FactoryLayoutEnv, gid: GroupId
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Generate per-cell top-N candidates with coarse-cell annotations.
 
         Steps:
@@ -143,7 +132,6 @@ class GreedyV4Adapter(BaseAdapter):
             poses:         [K, 2] center coordinates
             mask:          [K] bool
             cell_indices:  [K] int64 — flat cell index per candidate
-            cell_features: [H_c, W_c, C] float — per-cell feature map
             costs:         [K] float — delta cost per candidate (inf for padding)
         """
         device = env.device
@@ -151,14 +139,13 @@ class GreedyV4Adapter(BaseAdapter):
         spec = env.group_specs[gid]
 
         center_map = spec.placeable_center_map(state, gid)
-        H, W = int(center_map.shape[0]), int(center_map.shape[1])
+        W = int(center_map.shape[1])
         cs = self.cell_size
-        H_c = (H + cs - 1) // cs
         W_c = (W + cs - 1) // cs
 
         all_yx = torch.nonzero(center_map, as_tuple=False)  # [M, 2] (y, x)
         if all_yx.numel() == 0:
-            return self._empty_generate(device, H_c, W_c)
+            return self._empty_generate(device)
 
         all_centers = torch.stack([all_yx[:, 1].float(), all_yx[:, 0].float()], dim=-1)  # [M, 2]
         flat_cell = (all_yx[:, 0] // cs) * W_c + (all_yx[:, 1] // cs)  # [M]
@@ -169,13 +156,17 @@ class GreedyV4Adapter(BaseAdapter):
         # Filter to finite costs
         finite_mask = torch.isfinite(all_costs)
         if not finite_mask.any():
-            cell_features = self._build_cell_features(all_costs, flat_cell, finite_mask, H_c, W_c, device)
-            return self._empty_generate(device, H_c, W_c)
+            return self._empty_generate(device)
 
-        finite_idx = torch.where(finite_mask)[0]
-        f_centers = all_centers[finite_idx]
-        f_costs = all_costs[finite_idx]
-        f_cells = flat_cell[finite_idx]
+        if bool(finite_mask.all()):
+            f_centers = all_centers
+            f_costs = all_costs
+            f_cells = flat_cell
+        else:
+            finite_idx = torch.where(finite_mask)[0]
+            f_centers = all_centers[finite_idx]
+            f_costs = all_costs[finite_idx]
+            f_cells = flat_cell[finite_idx]
 
         # Quantize-dedup: keep lowest cost per quantized bin
         if self.quant_step is not None and self.quant_step > 0:
@@ -197,8 +188,7 @@ class GreedyV4Adapter(BaseAdapter):
             cell_ids[:pick] = f_cells[chosen]
             out_costs[:pick] = f_costs[chosen]
 
-        cell_features = self._build_cell_features(all_costs, flat_cell, finite_mask, H_c, W_c, device)
-        return poses, mask, cell_ids, cell_features, out_costs
+        return poses, mask, cell_ids, out_costs
 
     def _select_top_per_cell(
         self,
@@ -273,68 +263,15 @@ class GreedyV4Adapter(BaseAdapter):
         keep = order[first_mask]
         return centers[keep], costs[keep], cells[keep]
 
-    def _build_cell_features(
-        self,
-        costs: torch.Tensor,
-        flat_cell: torch.Tensor,
-        finite_mask: torch.Tensor,
-        H_c: int,
-        W_c: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Build [H_c, W_c, 4] cell feature map.
-
-        Channels: has_candidate, best_cost, candidate_count, mean_cost.
-        Costs are normalized to [0, 1] range.
-        """
-        n_cells = H_c * W_c
-
-        if not finite_mask.any():
-            return torch.zeros((H_c, W_c, 4), dtype=torch.float32, device=device)
-
-        f_costs = costs[finite_mask]
-        f_cells = flat_cell[finite_mask].to(dtype=torch.long)
-
-        cand_count = torch.zeros(n_cells, dtype=torch.float32, device=device)
-        sum_cost = torch.zeros(n_cells, dtype=torch.float32, device=device)
-        best_cost = torch.full((n_cells,), float("inf"), dtype=torch.float32, device=device)
-
-        ones = torch.ones_like(f_costs)
-        cand_count.scatter_add_(0, f_cells, ones)
-        sum_cost.scatter_add_(0, f_cells, f_costs)
-        best_cost.scatter_reduce_(0, f_cells, f_costs, reduce="amin", include_self=False)
-
-        has_cand = (cand_count > 0).float()
-        best_cost = torch.where(torch.isfinite(best_cost), best_cost, torch.zeros_like(best_cost))
-        mean_cost = torch.where(cand_count > 0, sum_cost / cand_count, torch.zeros_like(sum_cost))
-
-        # Normalize
-        cost_min = f_costs.min()
-        cost_range = f_costs.max() - cost_min
-        if float(cost_range.item()) > 1e-8:
-            best_cost = (best_cost - cost_min) / cost_range
-            mean_cost = torch.where(has_cand.bool(), (mean_cost - cost_min) / cost_range, mean_cost)
-        else:
-            best_cost.zero_()
-            mean_cost.zero_()
-
-        max_count = cand_count.max().clamp(min=1.0)
-        cand_count_norm = cand_count / max_count
-
-        return torch.stack([has_cand, best_cost, cand_count_norm, mean_cost], dim=-1).view(H_c, W_c, 4)
-
     def _empty_generate(
         self,
         device: torch.device,
-        H_c: int,
-        W_c: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         poses = torch.zeros((self.k, 2), dtype=torch.float32, device=device)
         mask = torch.zeros((self.k,), dtype=torch.bool, device=device)
         cell_ids = torch.zeros((self.k,), dtype=torch.int64, device=device)
-        cell_feat = torch.zeros((H_c, W_c, 4), dtype=torch.float32, device=device)
         out_costs = torch.full((self.k,), float("inf"), dtype=torch.float32, device=device)
-        return poses, mask, cell_ids, cell_feat, out_costs
+        return poses, mask, cell_ids, out_costs
 
     def _remap_cell_indices_after_expansion(
         self,
@@ -382,9 +319,6 @@ if __name__ == "__main__":
     print("GreedyV4Adapter demo")
     print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3  quant_step=10.0")
     print(f"  valid_actions={valid}  first_valid_action={a}")
-    if obs.get("cell_features") is not None:
-        cf = obs["cell_features"]
-        print(f"  cell_features shape={tuple(cf.shape)}")
     if obs.get("cell_indices") is not None:
         ci = obs["cell_indices"]
         unique_cells = int(ci[:valid].unique().shape[0]) if valid > 0 else 0
