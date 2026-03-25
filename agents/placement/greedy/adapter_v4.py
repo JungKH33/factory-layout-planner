@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import gymnasium as gym
 import torch
@@ -199,41 +199,62 @@ class GreedyV4Adapter(BaseAdapter):
 
         Cells are ordered by their best candidate cost so higher-quality cells
         contribute earlier when the union exceeds ``k``.
+
+        Uses ``argsort`` to group by cell in O(M log M) instead of per-cell
+        ``torch.where`` loops which are O(cells * M).
         """
         if costs.numel() == 0:
             return torch.zeros((0,), dtype=torch.long, device=cells.device)
 
-        unique_cells = torch.unique(cells, sorted=True)
-        per_cell: List[torch.Tensor] = []
-        for cell_id in unique_cells.tolist():
-            idx = torch.where(cells == int(cell_id))[0]
-            if idx.numel() == 0:
-                continue
-            take = min(self.top_per_cell, int(idx.shape[0]))
-            _, local_top = torch.topk(costs[idx], k=take, largest=False)
-            chosen = idx[local_top]
-            if chosen.numel() > 1:
-                chosen = chosen[torch.argsort(costs[chosen])]
-            per_cell.append(chosen)
+        # Sort by (cell, cost) in one pass via composite key.
+        # Scale cell_id above cost range so primary sort is by cell.
+        cost_range = costs.max() - costs.min() + 1.0
+        sort_key = cells.float() * cost_range + costs
+        order = torch.argsort(sort_key)
 
-        if not per_cell:
-            return torch.zeros((0,), dtype=torch.long, device=cells.device)
+        sorted_cells = cells[order]
+        unique_cells, counts = torch.unique_consecutive(sorted_cells, return_counts=True)
 
-        per_cell.sort(key=lambda picked: (float(costs[picked[0]].item()), int(cells[picked[0]].item())))
-        selected: List[int] = []
-        rank = 0
-        while len(selected) < self.k:
-            any_added = False
-            for picked in per_cell:
-                if rank < int(picked.shape[0]):
-                    selected.append(int(picked[rank].item()))
-                    any_added = True
-                    if len(selected) >= self.k:
-                        break
-            if not any_added:
+        tpc = self.top_per_cell
+        n_cells = int(unique_cells.shape[0])
+
+        # Per-cell top-N: slice each contiguous group (already cost-sorted)
+        # and collect into a [n_cells, tpc] padded matrix for vectorized round-robin.
+        per_cell_idx = torch.full(
+            (n_cells, tpc), -1, dtype=torch.long, device=cells.device
+        )
+        per_cell_len = torch.zeros(n_cells, dtype=torch.long, device=cells.device)
+        best_cost = torch.full((n_cells,), float("inf"), dtype=costs.dtype, device=cells.device)
+
+        offset = 0
+        for i, cnt in enumerate(counts.tolist()):
+            take = min(tpc, int(cnt))
+            per_cell_idx[i, :take] = order[offset : offset + take]
+            per_cell_len[i] = take
+            best_cost[i] = costs[order[offset]]
+            offset += cnt
+
+        # Sort cells by best candidate cost (ascending) for round-robin priority
+        cell_order = torch.argsort(best_cost)
+        per_cell_idx = per_cell_idx[cell_order]
+        per_cell_len = per_cell_len[cell_order]
+
+        # Round-robin interleave: rank 0 from all cells, then rank 1, etc.
+        selected = []
+        for rank in range(tpc):
+            has_rank = per_cell_len > rank
+            if not has_rank.any():
                 break
-            rank += 1
+            batch = per_cell_idx[has_rank, rank]
+            for idx_val in batch.tolist():
+                selected.append(idx_val)
+                if len(selected) >= self.k:
+                    break
+            if len(selected) >= self.k:
+                break
 
+        if not selected:
+            return torch.zeros((0,), dtype=torch.long, device=cells.device)
         return torch.tensor(selected, dtype=torch.long, device=cells.device)
 
     def _quant_dedup(
@@ -291,7 +312,7 @@ class GreedyV4Adapter(BaseAdapter):
 if __name__ == "__main__":
     import torch
 
-    from envs.action_space import ActionSpace as CandidateSet
+    from envs.action_space import ActionSpace
     from envs.action import EnvAction
     from envs.env_loader import load_env
     from envs.visualizer import plot_layout
