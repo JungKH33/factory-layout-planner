@@ -99,7 +99,7 @@ MCTS_CACHE_DECISION_STATE: bool = True
 
 # Visualization
 SHOW_FLOW: bool = True
-SHOW_SCORE: bool = True
+SHOW_SCORE: bool = False
 SHOW_MASKS: bool = True
 
 logger = logging.getLogger(__name__)

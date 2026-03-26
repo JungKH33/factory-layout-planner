@@ -68,7 +68,7 @@ def _default_layer_visibility(constraint_names: list = ()) -> dict:
     vis = {
         "forbidden_areas": True,
         "invalid_mask": False,
-        "clearance_mask": False,
+        "clearance_mask": True,
         "flow": True,
         "score": True,
         "action_space": True,
@@ -90,8 +90,8 @@ def _legend_proxies(constraint_names: list = ()) -> list:
     proxies = [
         patches.Patch(facecolor="#d62728", edgecolor="#d62728", alpha=0.15, label="forbidden_areas"),
         patches.Patch(facecolor="#8b0000", edgecolor="#8b0000", alpha=0.10, label="invalid_mask"),
-        patches.Patch(facecolor="#ff6b6b", edgecolor="#ff6b6b", alpha=0.10, label="clearance_mask"),
-        Line2D([0], [0], color="blue", lw=1.5, alpha=0.3, label="flow"),
+        patches.Patch(facecolor="lightgray", edgecolor="gray", alpha=0.30, label="clearance_mask"),
+        Line2D([0], [0], color="blue", lw=1.8, alpha=0.45, label="flow"),
         Line2D([0], [0], color="black", lw=0.0, marker="s", markersize=8, label="score"),
         Line2D([0], [0], color="green", lw=0.0, marker="o", markersize=6, alpha=0.65, label="action_space"),
         Line2D([0], [0], color="orange", lw=2.0, alpha=0.8, label="routes"),
@@ -260,17 +260,18 @@ def _draw_layout_from_data(
         ax.add_patch(p)
         forbidden_artists.append(p)
 
-    # --- masks (start hidden) ---
+    # --- masks (visibility follows _default_layer_visibility) ---
+    layer_vis = _default_layer_visibility()
     if data.invalid_mask is not None:
         mi = _plot_mask(ax, data.invalid_mask, color="#8b0000", alpha=1)
         if mi is not None:
-            mi.set_visible(False)
+            mi.set_visible(layer_vis.get("invalid_mask", False))
             misc_artists["invalid_mask"].append(mi)
 
     if data.clearance_mask is not None:
-        mc = _plot_mask(ax, data.clearance_mask, color="#ff6b6b", alpha=1)
+        mc = _plot_mask(ax, data.clearance_mask, color="lightgray", alpha=0.3)
         if mc is not None:
-            mc.set_visible(False)
+            mc.set_visible(layer_vis.get("clearance_mask", False))
             misc_artists["clearance_mask"].append(mc)
 
     # --- placed facilities ---
@@ -279,19 +280,34 @@ def _draw_layout_from_data(
             patch = patches.Polygon(
                 fac.body_polygon_abs, closed=True,
                 linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
+                zorder=3,
             )
             if fac.clearance_polygon_abs:
                 cl_patch = patches.Polygon(
                     fac.clearance_polygon_abs, closed=True,
-                    linewidth=0.8, edgecolor="#ff6b6b", facecolor="none",
-                    linestyle="--", alpha=0.5,
+                    linewidth=1, edgecolor="gray", facecolor="lightgray",
+                    alpha=0.3, linestyle="--", zorder=2,
                 )
                 ax.add_patch(cl_patch)
         else:
             patch = patches.Rectangle(
                 (fac.x_bl, fac.y_bl), fac.w, fac.h,
                 linewidth=1.2, edgecolor="black", facecolor="orange", alpha=0.6,
+                zorder=3,
             )
+            has_cl = (fac.clearance_left or fac.clearance_right
+                      or fac.clearance_bottom or fac.clearance_top)
+            if has_cl:
+                cl_x = fac.x_bl - fac.clearance_left
+                cl_y = fac.y_bl - fac.clearance_bottom
+                cl_w = fac.w + fac.clearance_left + fac.clearance_right
+                cl_h = fac.h + fac.clearance_bottom + fac.clearance_top
+                cl_rect = patches.Rectangle(
+                    (cl_x, cl_y), cl_w, cl_h,
+                    linewidth=1, edgecolor="gray", facecolor="lightgray",
+                    alpha=0.3, linestyle="--", zorder=2,
+                )
+                ax.add_patch(cl_rect)
         ax.add_patch(patch)
         ax.text(fac.x_c, fac.y_c, str(fac.gid), ha="center", va="center", fontsize=8)
 
@@ -309,7 +325,7 @@ def _draw_layout_from_data(
             "",
             xy=arrow.dst_xy,
             xytext=arrow.src_xy,
-            arrowprops=dict(arrowstyle="-|>", color="blue", lw=0.8, alpha=0.3),
+            arrowprops=dict(arrowstyle="-|>", color="blue", lw=1.0, alpha=0.45),
         )
         misc_artists["flow"].append(ann)
 
@@ -459,6 +475,8 @@ class MatplotlibBackend(VisualizerBackend):
 
         if not show_masks:
             for a in groups.get("forbidden_areas", []):
+                a.set_visible(False)
+            for a in groups.get("clearance_mask", []):
                 a.set_visible(False)
         if not show_flow:
             for a in groups.get("flow", []):

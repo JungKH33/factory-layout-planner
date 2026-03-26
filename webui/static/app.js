@@ -47,7 +47,7 @@ function getColors() {
                 selected: '#ff7f0e',
             },
             text: '#ffffff',
-            flow: 'rgba(96, 165, 250, 0.6)',
+            flow: 'rgba(96, 165, 250, 0.75)',
             forbidden: 'rgba(255, 100, 100, 0.2)',
             constraintZone: 'rgba(30, 144, 255, 0.15)',
         };
@@ -66,7 +66,7 @@ function getColors() {
             selected: '#ff7f0e',
         },
         text: '#000000',
-        flow: 'rgba(31, 119, 180, 0.5)',
+        flow: 'rgba(31, 119, 180, 0.65)',
         forbidden: 'rgba(255, 0, 0, 0.15)',
         constraintZone: 'rgba(30, 144, 255, 0.12)',
     };
@@ -873,7 +873,7 @@ function drawFlow(scaleX, scaleY) {
     if (!currentState.flow_edges) return;
     
     ctx.strokeStyle = COLORS.flow;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.8;
     
     currentState.flow_edges.forEach(edge => {
         // Only draw if both endpoints are placed

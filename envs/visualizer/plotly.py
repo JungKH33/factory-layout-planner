@@ -282,7 +282,7 @@ class PlotlyBackend(VisualizerBackend):
                 if fac.clearance_polygon_abs:
                     fig.add_trace(_build_polygon_trace(
                         go, fac.clearance_polygon_abs,
-                        color="#ff6b6b", alpha=0.0,
+                        color="#999999", alpha=0.0,
                         name="clearance", showlegend=False,
                         line_dash="dash",
                     ))
@@ -328,7 +328,7 @@ class PlotlyBackend(VisualizerBackend):
                     x=[arrow.src_xy[0], arrow.dst_xy[0]],
                     y=[arrow.src_xy[1], arrow.dst_xy[1]],
                     mode="lines",
-                    line=dict(color="rgba(0,0,255,0.3)", width=1),
+                    line=dict(color="rgba(0,0,255,0.45)", width=1.2),
                     name="flow",
                     legendgroup="flow",
                     showlegend=first_flow,
@@ -342,7 +342,7 @@ class PlotlyBackend(VisualizerBackend):
                     x=arrow.dst_xy[0], y=arrow.dst_xy[1],
                     xref="x", yref="y",
                     showarrow=True, arrowhead=3, arrowsize=1,
-                    arrowwidth=1, arrowcolor="rgba(0,0,255,0.3)",
+                    arrowwidth=1.2, arrowcolor="rgba(0,0,255,0.45)",
                 ))
 
             # Ports

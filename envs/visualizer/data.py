@@ -26,6 +26,10 @@ class FacilityData:
     y_c: float
     body_polygon_abs: Optional[List[Tuple[float, float]]] = None
     clearance_polygon_abs: Optional[List[Tuple[float, float]]] = None
+    clearance_left: int = 0
+    clearance_right: int = 0
+    clearance_bottom: int = 0
+    clearance_top: int = 0
     entries: List[Tuple[float, float]] = field(default_factory=list)
     exits: List[Tuple[float, float]] = field(default_factory=list)
 
@@ -179,6 +183,10 @@ def extract_layout_data(
             y_c=float(p.y_c),
             body_polygon_abs=getattr(p, "body_polygon_abs", None),
             clearance_polygon_abs=getattr(p, "clearance_polygon_abs", None),
+            clearance_left=int(getattr(p, "clearance_left", 0)),
+            clearance_right=int(getattr(p, "clearance_right", 0)),
+            clearance_bottom=int(getattr(p, "clearance_bottom", 0)),
+            clearance_top=int(getattr(p, "clearance_top", 0)),
             entries=list(getattr(p, "entries", [])),
             exits=list(getattr(p, "exits", [])),
         ))
