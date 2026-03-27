@@ -71,70 +71,83 @@ class _Node:
         self.children: Dict[int, "_Node"] = {}
 
         valid = self.action_space.mask
-        self.valid_actions = [i for i in range(int(valid.shape[0])) if bool(valid[i].item())]
+        self.valid_actions = torch.where(valid.to(dtype=torch.bool, device=priors.device).view(-1))[0].to(dtype=torch.long)
 
     def _allowed_children(self, cfg: MCTSConfig) -> int:
         if not cfg.pw_enabled:
-            return len(self.valid_actions)
-        if not self.valid_actions:
+            return int(self.valid_actions.numel())
+        if int(self.valid_actions.numel()) == 0:
             return 0
         n = max(1, int(self.visits))
         k = int(math.ceil(float(cfg.pw_c) * (float(n) ** float(cfg.pw_alpha))))
         k = max(int(cfg.pw_min_children), k)
-        return min(len(self.valid_actions), k)
+        return min(int(self.valid_actions.numel()), k)
 
     def _best_unexpanded_action_by_prior(self) -> int:
         """Pick an unexpanded action with highest prior (deterministic PW expansion)."""
-        best_act = -1
-        best_p = float("-inf")
-        for act in self.valid_actions:
-            if act in self.children:
-                continue
-            p = float(self.priors[act].item()) if act < int(self.priors.shape[0]) else 0.0
-            if p > best_p:
-                best_p = p
-                best_act = act
-        return best_act
+        acts = self.valid_actions
+        if int(acts.numel()) == 0:
+            return -1
+        if not self.children:
+            return int(acts[int(torch.argmax(self.priors.index_select(0, acts)).item())].item())
+        child_acts = torch.tensor(sorted(int(a) for a in self.children.keys()), dtype=torch.long, device=acts.device)
+        pos = torch.searchsorted(acts, child_acts)
+        expanded = torch.zeros((int(acts.shape[0]),), dtype=torch.bool, device=acts.device)
+        expanded[pos] = True
+        pri = self.priors.index_select(0, acts).masked_fill(expanded, float("-inf"))
+        if not torch.isfinite(pri).any():
+            return -1
+        return int(acts[int(torch.argmax(pri).item())].item())
 
     def best_action(self, c_puct: float) -> int:
-        if not self.valid_actions:
+        acts = self.valid_actions
+        if int(acts.numel()) == 0:
             return -1
 
         fpu_val = (self.total_value / self.visits) if self.visits > 0 else 0.0
-        best_score = float("-inf")
-        best_act = -1
-        for act in self.valid_actions:
-            if act in self.children:
-                child = self.children[act]
-                q = child.total_value / max(1, child.visits)
-                n = child.visits
-            else:
-                q = fpu_val
-                n = 0
-            p = float(self.priors[act].item()) if act < int(self.priors.shape[0]) else 0.0
-            u = float(c_puct) * p * math.sqrt(self.visits + 1) / (1 + n)
-            score = float(q) + float(u)
-            if score > best_score:
-                best_score = score
-                best_act = act
-        return best_act
+        pri = self.priors.index_select(0, acts)
+        q = torch.full_like(pri, float(fpu_val))
+        n = torch.zeros((int(acts.shape[0]),), dtype=torch.float32, device=acts.device)
+        if self.children:
+            sorted_children = sorted((int(a), child) for a, child in self.children.items())
+            child_acts = torch.tensor([a for a, _child in sorted_children], dtype=torch.long, device=acts.device)
+            pos = torch.searchsorted(acts, child_acts)
+            child_q = torch.tensor(
+                [float(child.total_value / max(1, child.visits)) for _a, child in sorted_children],
+                dtype=torch.float32,
+                device=acts.device,
+            )
+            child_n = torch.tensor(
+                [float(child.visits) for _a, child in sorted_children],
+                dtype=torch.float32,
+                device=acts.device,
+            )
+            q[pos] = child_q
+            n[pos] = child_n
+        u = float(c_puct) * pri * math.sqrt(self.visits + 1) / (1.0 + n)
+        score = q + u
+        return int(acts[int(torch.argmax(score).item())].item())
 
     def best_action_expanded(self, c_puct: float) -> int:
         """PUCT over expanded children only (used after PW saturation)."""
         if not self.children:
             return -1
-        best_score = float("-inf")
-        best_act = -1
-        for act, child in self.children.items():
-            q = child.total_value / max(1, child.visits)
-            n = child.visits
-            p = float(self.priors[int(act)].item()) if int(act) < int(self.priors.shape[0]) else 0.0
-            u = float(c_puct) * p * math.sqrt(self.visits + 1) / (1 + n)
-            score = float(q) + float(u)
-            if score > best_score:
-                best_score = score
-                best_act = int(act)
-        return best_act
+        sorted_children = sorted((int(a), child) for a, child in self.children.items())
+        child_acts = torch.tensor([a for a, _child in sorted_children], dtype=torch.long, device=self.priors.device)
+        q = torch.tensor(
+            [float(child.total_value / max(1, child.visits)) for _a, child in sorted_children],
+            dtype=torch.float32,
+            device=self.priors.device,
+        )
+        n = torch.tensor(
+            [float(child.visits) for _a, child in sorted_children],
+            dtype=torch.float32,
+            device=self.priors.device,
+        )
+        p = self.priors.index_select(0, child_acts)
+        u = float(c_puct) * p * math.sqrt(self.visits + 1) / (1.0 + n)
+        score = q + u
+        return int(child_acts[int(torch.argmax(score).item())].item())
 
 
 class MCTSSearch(BaseSearch):
