@@ -130,8 +130,6 @@ class EnvState:
         if is_new:
             self.placed_nodes_order.append(gid)
             self.flow.invalidate_on_nodes_changed()
-        else:
-            self.flow.clear_flow_port_pairs()
         if gid in self.remaining:
             self.remaining.remove(gid)
 
@@ -204,12 +202,21 @@ class EnvState:
     def clear_flow_port_pairs(self) -> None:
         self.flow.clear_flow_port_pairs()
 
-    def set_flow_port_pairs(self, pairs: Dict[Tuple[GroupId, GroupId], list]) -> None:
-        self.flow.set_flow_port_pairs(pairs)
+    def set_flow_port_pairs(
+        self,
+        pairs: Dict[Tuple[GroupId, GroupId], list],
+        *,
+        nodes: Optional[List[GroupId]] = None,
+    ) -> None:
+        self.flow.set_flow_port_pairs(pairs, nodes=nodes)
 
     @property
     def flow_port_pairs(self) -> Dict[Tuple[GroupId, GroupId], list]:
         return self.flow.flow_port_pairs
+
+    @property
+    def flow_port_pairs_nodes_key(self) -> Tuple[GroupId, ...]:
+        return self.flow.flow_port_pairs_nodes_key
 
     def is_placeable(
         self,

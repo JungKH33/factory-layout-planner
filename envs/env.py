@@ -177,8 +177,141 @@ class FactoryLayoutEnv(gym.Env):
             return t.to(dtype=torch.long).view(-1)
         return torch.tensor([int(v)], dtype=torch.long, device=self.device)
 
-    def _rebuild_flow_port_pairs(self) -> None:
-        """Rebuild per-edge port pair cache for visualization.
+    def _flow_pair_list(
+        self,
+        *,
+        src_row: int,
+        dst_row: int,
+        exit_argmin: int,
+        entry_argmin: int,
+        placed_entries: torch.Tensor,
+        placed_exits: torch.Tensor,
+        placed_entries_mask: torch.Tensor,
+        placed_exits_mask: torch.Tensor,
+        exit_modes: Optional[torch.Tensor],
+        entry_modes: Optional[torch.Tensor],
+    ) -> list:
+        src_exit_mean = exit_modes is not None and bool(exit_modes[src_row].item())
+        dst_entry_mean = entry_modes is not None and bool(entry_modes[dst_row].item())
+
+        if src_exit_mean:
+            e_idxs = [int(j.item()) for j in torch.where(placed_exits_mask[src_row])[0]]
+        else:
+            e_idxs = [int(exit_argmin)]
+
+        if dst_entry_mean:
+            n_idxs = [int(j.item()) for j in torch.where(placed_entries_mask[dst_row])[0]]
+        else:
+            n_idxs = [int(entry_argmin)]
+
+        pair_list = []
+        for ei in e_idxs:
+            ex = (float(placed_exits[src_row, ei, 0].item()), float(placed_exits[src_row, ei, 1].item()))
+            for ni in n_idxs:
+                en = (float(placed_entries[dst_row, ni, 0].item()), float(placed_entries[dst_row, ni, 1].item()))
+                pair_list.append((ex, en))
+        return pair_list
+
+    def _try_update_flow_port_pairs_incremental(
+        self,
+        *,
+        updated_gid: GroupId,
+        flow_comp: FlowReward,
+        placed_nodes: List[GroupId],
+        placed_entries: torch.Tensor,
+        placed_exits: torch.Tensor,
+        placed_entries_mask: torch.Tensor,
+        placed_exits_mask: torch.Tensor,
+        flow_w: torch.Tensor,
+        exit_modes: Optional[torch.Tensor],
+        entry_modes: Optional[torch.Tensor],
+    ) -> None:
+        nodes_key = tuple(placed_nodes)
+        if updated_gid not in nodes_key:
+            raise KeyError(f"updated_gid={updated_gid!r} not found in placed_nodes")
+        prev_key = self._state.flow_port_pairs_nodes_key
+        updated_row = int(placed_nodes.index(updated_gid))
+
+        is_append = (
+            len(nodes_key) == len(prev_key) + 1
+            and nodes_key[:-1] == prev_key
+            and nodes_key[-1] == updated_gid
+        )
+        is_refresh = nodes_key == prev_key
+        if not (is_append or is_refresh):
+            raise RuntimeError(
+                "flow_port_pairs incremental update requires append-only growth "
+                f"or in-place refresh: prev={prev_key!r} current={nodes_key!r} updated_gid={updated_gid!r}"
+            )
+
+        if is_append:
+            pairs: Dict[Tuple[GroupId, GroupId], list] = dict(self._state.flow_port_pairs)
+        else:
+            pairs = {
+                key: value
+                for key, value in self._state.flow_port_pairs.items()
+                if key[0] != updated_gid and key[1] != updated_gid
+            }
+
+        _, out_c_idx, out_p_idx = flow_comp._reduce_distance(
+            candidate_ports=placed_exits[updated_row:updated_row + 1],
+            candidate_mask=placed_exits_mask[updated_row:updated_row + 1],
+            target_ports=placed_entries,
+            target_mask=placed_entries_mask,
+            target_weight=flow_w[updated_row:updated_row + 1, :],
+            c_modes=exit_modes[updated_row:updated_row + 1] if exit_modes is not None else None,
+            t_modes=entry_modes,
+        )
+        _, in_c_idx, in_p_idx = flow_comp._reduce_distance(
+            candidate_ports=placed_exits,
+            candidate_mask=placed_exits_mask,
+            target_ports=placed_entries[updated_row:updated_row + 1],
+            target_mask=placed_entries_mask[updated_row:updated_row + 1],
+            target_weight=flow_w[:, updated_row:updated_row + 1],
+            c_modes=exit_modes,
+            t_modes=entry_modes[updated_row:updated_row + 1] if entry_modes is not None else None,
+        )
+        if out_c_idx is None or out_p_idx is None or in_c_idx is None or in_p_idx is None:
+            raise RuntimeError(
+                f"flow_port_pairs incremental update failed to compute argmin indices for gid={updated_gid!r}"
+            )
+
+        for dst_row, dst_gid in enumerate(placed_nodes):
+            if float(flow_w[updated_row, dst_row].item()) <= 0.0:
+                continue
+            pairs[(updated_gid, dst_gid)] = self._flow_pair_list(
+                src_row=updated_row,
+                dst_row=dst_row,
+                exit_argmin=int(out_c_idx[0, dst_row].item()),
+                entry_argmin=int(out_p_idx[0, dst_row].item()),
+                placed_entries=placed_entries,
+                placed_exits=placed_exits,
+                placed_entries_mask=placed_entries_mask,
+                placed_exits_mask=placed_exits_mask,
+                exit_modes=exit_modes,
+                entry_modes=entry_modes,
+            )
+
+        for src_row, src_gid in enumerate(placed_nodes):
+            if src_row == updated_row or float(flow_w[src_row, updated_row].item()) <= 0.0:
+                continue
+            pairs[(src_gid, updated_gid)] = self._flow_pair_list(
+                src_row=src_row,
+                dst_row=updated_row,
+                exit_argmin=int(in_c_idx[src_row, 0].item()),
+                entry_argmin=int(in_p_idx[src_row, 0].item()),
+                placed_entries=placed_entries,
+                placed_exits=placed_exits,
+                placed_entries_mask=placed_entries_mask,
+                placed_exits_mask=placed_exits_mask,
+                exit_modes=exit_modes,
+                entry_modes=entry_modes,
+            )
+
+        self._state.set_flow_port_pairs(pairs, nodes=placed_nodes)
+
+    def _update_flow_port_pairs(self, *, updated_gid: GroupId) -> None:
+        """Update per-edge port pair cache for visualization.
 
         For min-mode ports: store the single argmin pair.
         For mean-mode ports: store all valid ports (cartesian product).
@@ -194,7 +327,10 @@ class FactoryLayoutEnv(gym.Env):
         exit_modes, entry_modes = self._reward._port_mode_tensors(
             placed_nodes, placed_entries.device,
         )
-        _, c_idx, p_idx = flow_comp.score(
+        self._try_update_flow_port_pairs_incremental(
+            updated_gid=updated_gid,
+            flow_comp=flow_comp,
+            placed_nodes=placed_nodes,
             placed_entries=placed_entries,
             placed_exits=placed_exits,
             placed_entries_mask=placed_entries_mask,
@@ -202,41 +338,7 @@ class FactoryLayoutEnv(gym.Env):
             flow_w=flow_w,
             exit_modes=exit_modes,
             entry_modes=entry_modes,
-            return_argmin=True,
         )
-        if c_idx is None or p_idx is None:
-            self._state.clear_flow_port_pairs()
-            return
-
-        pairs: Dict[Tuple[GroupId, GroupId], list] = {}
-        for m, src_gid in enumerate(placed_nodes):
-            src_exit_mean = exit_modes is not None and bool(exit_modes[m].item())
-            for t, dst_gid in enumerate(placed_nodes):
-                if float(flow_w[m, t].item()) <= 0.0:
-                    continue
-                dst_entry_mean = entry_modes is not None and bool(entry_modes[t].item())
-
-                if src_exit_mean:
-                    e_idxs = [int(j) for j in range(int(placed_exits_mask.shape[1]))
-                              if bool(placed_exits_mask[m, j].item())]
-                else:
-                    e_idxs = [int(c_idx[m, t].item())]
-
-                if dst_entry_mean:
-                    n_idxs = [int(j) for j in range(int(placed_entries_mask.shape[1]))
-                              if bool(placed_entries_mask[t, j].item())]
-                else:
-                    n_idxs = [int(p_idx[m, t].item())]
-
-                pair_list = []
-                for ei in e_idxs:
-                    ex = (float(placed_exits[m, ei, 0].item()), float(placed_exits[m, ei, 1].item()))
-                    for ni in n_idxs:
-                        en = (float(placed_entries[t, ni, 0].item()), float(placed_entries[t, ni, 1].item()))
-                        pair_list.append((ex, en))
-                pairs[(src_gid, dst_gid)] = pair_list
-
-        self._state.set_flow_port_pairs(pairs)
 
     @property
     def reward_composer(self) -> RewardComposer:
@@ -342,7 +444,7 @@ class FactoryLayoutEnv(gym.Env):
         placement: GroupPlacement,
     ) -> None:
         self._state.place(gid=gid, placement=placement)
-        self._rebuild_flow_port_pairs()
+        self._update_flow_port_pairs(updated_gid=gid)
 
     def apply_dynamic_placement(self, gid: GroupId, placement: object) -> None:
         """Apply a pre-resolved dynamic placement object (DynamicPlacement-compatible)."""
@@ -517,7 +619,7 @@ class FactoryLayoutEnv(gym.Env):
             gid=gid_eff,
             placement=placement,
         )
-        self._rebuild_flow_port_pairs()
+        self._update_flow_port_pairs(updated_gid=gid_eff)
 
         reward = float(self._reward.to_reward(delta))
         terminated = len(self._state.remaining) == 0
