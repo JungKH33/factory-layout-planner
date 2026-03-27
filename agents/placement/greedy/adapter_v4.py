@@ -220,19 +220,17 @@ class GreedyV4Adapter(BaseAdapter):
 
         # Per-cell top-N: slice each contiguous group (already cost-sorted)
         # and collect into a [n_cells, tpc] padded matrix for vectorized round-robin.
-        per_cell_idx = torch.full(
-            (n_cells, tpc), -1, dtype=torch.long, device=cells.device
-        )
-        per_cell_len = torch.zeros(n_cells, dtype=torch.long, device=cells.device)
-        best_cost = torch.full((n_cells,), float("inf"), dtype=costs.dtype, device=cells.device)
+        start = torch.cumsum(counts, dim=0) - counts
+        rank = torch.arange(tpc, device=cells.device, dtype=torch.long)
+        take = torch.clamp(counts, max=tpc)
+        valid_rank = rank.unsqueeze(0) < take.unsqueeze(1)
+        gather_pos = start.unsqueeze(1) + rank.unsqueeze(0)
 
-        offset = 0
-        for i, cnt in enumerate(counts.tolist()):
-            take = min(tpc, int(cnt))
-            per_cell_idx[i, :take] = order[offset : offset + take]
-            per_cell_len[i] = take
-            best_cost[i] = costs[order[offset]]
-            offset += cnt
+        per_cell_idx = torch.full((n_cells, tpc), -1, dtype=torch.long, device=cells.device)
+        if bool(valid_rank.any()):
+            per_cell_idx[valid_rank] = order[gather_pos[valid_rank]]
+        per_cell_len = take
+        best_cost = costs[order[start]]
 
         # Sort cells by best candidate cost (ascending) for round-robin priority
         cell_order = torch.argsort(best_cost)
@@ -240,22 +238,14 @@ class GreedyV4Adapter(BaseAdapter):
         per_cell_len = per_cell_len[cell_order]
 
         # Round-robin interleave: rank 0 from all cells, then rank 1, etc.
-        selected = []
-        for rank in range(tpc):
-            has_rank = per_cell_len > rank
-            if not has_rank.any():
-                break
-            batch = per_cell_idx[has_rank, rank]
-            for idx_val in batch.tolist():
-                selected.append(idx_val)
-                if len(selected) >= self.k:
-                    break
-            if len(selected) >= self.k:
-                break
+        valid_rr = (torch.arange(tpc, device=cells.device, dtype=torch.long).unsqueeze(1) < per_cell_len.unsqueeze(0))
+        selected = per_cell_idx.transpose(0, 1)[valid_rr]
 
-        if not selected:
+        if int(selected.numel()) == 0:
             return torch.zeros((0,), dtype=torch.long, device=cells.device)
-        return torch.tensor(selected, dtype=torch.long, device=cells.device)
+        if int(selected.shape[0]) > self.k:
+            selected = selected[:self.k]
+        return selected
 
     def _quant_dedup(
         self,
