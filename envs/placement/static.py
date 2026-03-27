@@ -131,6 +131,31 @@ class StaticSpec(GroupSpec):
             self._orient_entry_off_t.append(et)
             self._orient_exit_off_t.append(xt)
 
+        V = len(orientations)
+        P_ent = max((int(t.shape[0]) for t in self._orient_entry_off_t), default=0)
+        P_ext = max((int(t.shape[0]) for t in self._orient_exit_off_t), default=0)
+        self._all_entry_offsets = torch.zeros((V, P_ent, 2), dtype=torch.float32, device=self.device)
+        self._all_entry_mask = torch.zeros((V, P_ent), dtype=torch.bool, device=self.device)
+        self._all_exit_offsets = torch.zeros((V, P_ext, 2), dtype=torch.float32, device=self.device)
+        self._all_exit_mask = torch.zeros((V, P_ext), dtype=torch.bool, device=self.device)
+        for i, (et, xt) in enumerate(zip(self._orient_entry_off_t, self._orient_exit_off_t)):
+            p_e = int(et.shape[0])
+            if p_e > 0:
+                self._all_entry_offsets[i, :p_e] = et
+                self._all_entry_mask[i, :p_e] = True
+            p_x = int(xt.shape[0])
+            if p_x > 0:
+                self._all_exit_offsets[i, :p_x] = xt
+                self._all_exit_mask[i, :p_x] = True
+        self._all_body_w = torch.tensor(
+            [float(vi.body_w) for vi in orientations],
+            dtype=torch.float32, device=self.device,
+        )
+        self._all_body_h = torch.tensor(
+            [float(vi.body_h) for vi in orientations],
+            dtype=torch.float32, device=self.device,
+        )
+
     @property
     def orientations(self) -> List[Orientation]:
         """All unique (rotation, mirror) orientations for this spec."""
@@ -258,64 +283,6 @@ class StaticSpec(GroupSpec):
     def _exits_from_center(self, x_c: float, y_c: float, rotation: int, *, mirror: bool = False) -> List[Tuple[float, float]]:
         return self._ports_from_center(x_c, y_c, rotation, self.exits_rel, mirror=mirror)
 
-    def _rotation_idx(self, rotation: torch.Tensor) -> torch.Tensor:
-        r = torch.remainder(rotation, 360)
-        if torch.any((r % 90) != 0):
-            raise ValueError("rotation must be multiples of 90")
-        if not bool(self.rotatable):
-            return torch.zeros_like(r, dtype=torch.long)
-        return (r // 90).to(dtype=torch.long)
-
-    def _wh_for_rotation(self, rot_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        w_choices = torch.tensor(
-            [float(self.width), float(self.height), float(self.width), float(self.height)],
-            dtype=torch.float32, device=self.device,
-        )
-        h_choices = torch.tensor(
-            [float(self.height), float(self.width), float(self.height), float(self.width)],
-            dtype=torch.float32, device=self.device,
-        )
-        return w_choices[rot_idx], h_choices[rot_idx]
-
-    @staticmethod
-    def _offsets_rotation(base: torch.Tensor) -> torch.Tensor:
-        dx = base[:, 0]
-        dy = base[:, 1]
-        r0 = torch.stack([dx, dy], dim=1)
-        r90 = torch.stack([dy, -dx], dim=1)
-        r180 = torch.stack([-dx, -dy], dim=1)
-        r270 = torch.stack([-dy, dx], dim=1)
-        return torch.stack([r0, r90, r180, r270], dim=0)  # [4,N,2]
-
-    def _ports_batch(
-        self,
-        ports_rel: List[Tuple[float, float]],
-        center: torch.Tensor,
-        rot_idx: torch.Tensor,
-        *,
-        mirror: bool = False,
-    ) -> torch.Tensor:
-        M = int(center.shape[0])
-        if not ports_rel:
-            return torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
-        base = torch.tensor(ports_rel, dtype=torch.float32, device=self.device)
-        half_wh = torch.tensor(
-            [self.width / 2.0, self.height / 2.0],
-            dtype=torch.float32, device=self.device,
-        )
-        center_offsets = base - half_wh
-        if mirror:
-            center_offsets = center_offsets.clone()
-            center_offsets[:, 0] = -center_offsets[:, 0]
-        rot_offsets = self._offsets_rotation(center_offsets)
-        return center[:, None, :] + rot_offsets[rot_idx]
-
-    def _entries_batch(self, center: torch.Tensor, rot_idx: torch.Tensor, *, mirror: bool = False) -> torch.Tensor:
-        return self._ports_batch(self.entries_rel, center, rot_idx, mirror=mirror)
-
-    def _exits_batch(self, center: torch.Tensor, rot_idx: torch.Tensor, *, mirror: bool = False) -> torch.Tensor:
-        return self._ports_batch(self.exits_rel, center, rot_idx, mirror=mirror)
-
     # ----- shape key / tensors -----
 
     @staticmethod
@@ -368,6 +335,12 @@ class StaticSpec(GroupSpec):
             self._orient_entry_off_t[i] = t.to(device)
         for i, t in enumerate(self._orient_exit_off_t):
             self._orient_exit_off_t[i] = t.to(device)
+        self._all_entry_offsets = self._all_entry_offsets.to(device)
+        self._all_entry_mask = self._all_entry_mask.to(device)
+        self._all_exit_offsets = self._all_exit_offsets.to(device)
+        self._all_exit_mask = self._all_exit_mask.to(device)
+        self._all_body_w = self._all_body_w.to(device)
+        self._all_body_h = self._all_body_h.to(device)
         moved: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
         for key, (body_map, clearance_map, clearance_origin, is_rectangular) in self._shape_tensors_by_key.items():
             moved[key] = (
@@ -564,6 +537,11 @@ class StaticSpec(GroupSpec):
     ) -> torch.Tensor:
         """Vectorized incremental cost for batch of center positions.
 
+        Two-phase approach:
+          Phase 1 — per-orientation placeability loop (shape-dependent, unavoidable).
+          Phase 2 — flatten all valid (position, orientation) pairs, build features
+                    via gather on padded offset tables, single ``delta_batch`` call.
+
         Returns:
             per_orientation=False (default): ``[N]`` float — min cost across
                 all orientations (inf where nothing is placeable).
@@ -576,80 +554,71 @@ class StaticSpec(GroupSpec):
             if per_orientation:
                 return torch.zeros((0, V), dtype=torch.float32, device=self.device)
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
-        if per_orientation:
-            result = torch.full((N, V), float('inf'), dtype=torch.float32, device=self.device)
-        else:
-            result = torch.full((N,), float('inf'), dtype=torch.float32, device=self.device)
+
         x_c = poses[:, 0]
         y_c = poses[:, 1]
-        needed = reward.required()
+
+        # Phase 1: placeability check per orientation
+        ok = torch.zeros((N, V), dtype=torch.bool, device=self.device)
         for i, vi in enumerate(self._orientations):
             body_map, clearance_map, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
             x_bl = torch.round(x_c - vi.body_w / 2.0).to(torch.long)
             y_bl = torch.round(y_c - vi.body_h / 2.0).to(torch.long)
-            ok = state.is_placeable_batch(
+            ok[:, i] = state.is_placeable_batch(
                 gid=gid,
                 x_bl=x_bl, y_bl=y_bl,
                 body_map=body_map, clearance_map=clearance_map,
                 clearance_origin=clearance_origin, is_rectangular=is_rectangular,
             )
-            if not ok.any():
-                continue
-            idx = torch.where(ok)[0]
-            features = self._build_orientation_features(vi, i, poses[idx], needed)
-            scores = reward.delta_batch(state, gid=gid, **features)
-            if per_orientation:
-                result[idx, i] = scores
-            else:
-                result[idx] = torch.min(result[idx], scores)
-        return result
 
-    def _build_orientation_features(
-        self,
-        vi: StaticOrientation,
-        vi_idx: int,
-        center: torch.Tensor,
-        needed: set,
-    ) -> Dict[str, torch.Tensor]:
-        M = int(center.shape[0])
-        out: Dict[str, torch.Tensor] = {}
-        x_c = center[:, 0]
-        y_c = center[:, 1]
-        x_bl = torch.round(x_c - vi.body_w / 2.0).to(torch.long)
-        y_bl = torch.round(y_c - vi.body_h / 2.0).to(torch.long)
-        x_c_s = x_bl.to(torch.float32) + vi.body_w / 2.0
-        y_c_s = y_bl.to(torch.float32) + vi.body_h / 2.0
-        if "min_x" in needed:
-            out["min_x"] = x_bl.to(torch.float32)
-        if "max_x" in needed:
-            out["max_x"] = x_bl.to(torch.float32) + float(vi.body_w)
-        if "min_y" in needed:
-            out["min_y"] = y_bl.to(torch.float32)
-        if "max_y" in needed:
-            out["max_y"] = y_bl.to(torch.float32) + float(vi.body_h)
-        if "entries" in needed:
-            eo = self._orient_entry_off_t[vi_idx]
-            if eo.shape[0] > 0:
+        result = torch.full((N, V), float('inf'), dtype=torch.float32, device=self.device)
+        valid_n, valid_v = torch.where(ok)
+        M = int(valid_n.shape[0])
+
+        if M > 0:
+            # Phase 2: vectorized feature build + single delta_batch
+            needed = reward.required()
+            bw = self._all_body_w[valid_v]
+            bh = self._all_body_h[valid_v]
+            cx = poses[valid_n, 0]
+            cy = poses[valid_n, 1]
+            x_bl_f = torch.round(cx - bw / 2.0)
+            y_bl_f = torch.round(cy - bh / 2.0)
+            x_c_s = x_bl_f + bw / 2.0
+            y_c_s = y_bl_f + bh / 2.0
+
+            features: Dict[str, torch.Tensor] = {}
+            if "min_x" in needed:
+                features["min_x"] = x_bl_f
+            if "max_x" in needed:
+                features["max_x"] = x_bl_f + bw
+            if "min_y" in needed:
+                features["min_y"] = y_bl_f
+            if "max_y" in needed:
+                features["max_y"] = y_bl_f + bh
+            if "entries" in needed or "exits" in needed:
                 c = torch.stack([x_c_s, y_c_s], dim=1)
-                out["entries"] = c[:, None, :] + eo[None, :, :]
-                out["entries_mask"] = torch.ones(
-                    (M, eo.shape[0]), dtype=torch.bool, device=self.device,
-                )
-            else:
-                out["entries"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
-                out["entries_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
-        if "exits" in needed:
-            xo = self._orient_exit_off_t[vi_idx]
-            if xo.shape[0] > 0:
-                c = torch.stack([x_c_s, y_c_s], dim=1)
-                out["exits"] = c[:, None, :] + xo[None, :, :]
-                out["exits_mask"] = torch.ones(
-                    (M, xo.shape[0]), dtype=torch.bool, device=self.device,
-                )
-            else:
-                out["exits"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
-                out["exits_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
-        return out
+            if "entries" in needed:
+                if self._all_entry_offsets.shape[1] > 0:
+                    features["entries"] = c[:, None, :] + self._all_entry_offsets[valid_v]
+                    features["entries_mask"] = self._all_entry_mask[valid_v]
+                else:
+                    features["entries"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
+                    features["entries_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
+            if "exits" in needed:
+                if self._all_exit_offsets.shape[1] > 0:
+                    features["exits"] = c[:, None, :] + self._all_exit_offsets[valid_v]
+                    features["exits_mask"] = self._all_exit_mask[valid_v]
+                else:
+                    features["exits"] = torch.empty((M, 0, 2), dtype=torch.float32, device=self.device)
+                    features["exits_mask"] = torch.empty((M, 0), dtype=torch.bool, device=self.device)
+
+            scores = reward.delta_batch(state, gid=gid, **features)
+            result[valid_n, valid_v] = scores
+
+        if per_orientation:
+            return result
+        return result.min(dim=1).values
 
 
 # ---------------------------------------------------------------------------

@@ -21,9 +21,9 @@ from envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "envs/env_configs/clearance_03.json"
+ENV_JSON: str = "envs/env_configs/mixed_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -77,7 +77,7 @@ def main() -> None:
             format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cpu")
+    #device = torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device, backend_selection=BACKEND_SELECTION)
     engine = loaded.env
     engine.log = True
