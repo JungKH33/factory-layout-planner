@@ -55,8 +55,8 @@ def main():
     }
 
     initial_placements = {
-        "A": EnvAction(gid="A", x_c=90.0, y_c=20.0, variant_index=0),
-        "B": EnvAction(gid="B", x_c=90.0, y_c=40.0, variant_index=0),
+        "A": EnvAction(group_id="A", x_center=90.0, y_center=20.0, variant_index=0),
+        "B": EnvAction(group_id="B", x_center=90.0, y_center=40.0, variant_index=0),
     }
     remaining_order = ["C", "A", "B"]
 
@@ -94,8 +94,8 @@ def main():
     cand = None
     if isinstance(topk_obs, dict) and ("action_mask" in topk_obs) and ("action_poses" in topk_obs):
         cand = ActionSpace(
-            poses=topk_obs["action_poses"],
-            mask=topk_obs["action_mask"],
+            centers=topk_obs["action_poses"],
+            valid_mask=topk_obs["action_mask"],
             gid=engine.get_state().remaining[0] if engine.get_state().remaining else None,
         )
     plot_layout(env2, action_space=cand, backend=backend)

@@ -81,7 +81,7 @@ class AlphaChipAgent:
     @torch.no_grad()
     def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
         expected_n = int(self.coarse_grid * self.coarse_grid)
-        n = int(action_space.mask.shape[0])
+        n = int(action_space.valid_mask.shape[0])
         if n != expected_n:
             raise ValueError(
                 f"AlphaChipAgent(policy) requires coarse actionspace: expected N={expected_n}, got N={n}. "
@@ -90,7 +90,7 @@ class AlphaChipAgent:
 
         data = _obs_to_pyg_data(obs)
         # AlphaChip expects int32 mask with batch dim [1, A].
-        mask_flat = action_space.mask.view(1, -1).to(dtype=torch.int32, device=self.device)
+        mask_flat = action_space.valid_mask.view(1, -1).to(dtype=torch.int32, device=self.device)
         logits_flat, _value = self.model(data, mask_flat=mask_flat, is_eval=True)  # [1, A]
         logits = logits_flat[0].to(dtype=torch.float32)
         # Convert to non-negative scores for downstream (MCTS expects non-negative).
@@ -99,13 +99,13 @@ class AlphaChipAgent:
 
     def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         pol = self.policy(obs=obs, action_space=action_space)
-        pol = pol.masked_fill(~action_space.mask, float("-inf"))
+        pol = pol.masked_fill(~action_space.valid_mask, float("-inf"))
         return int(torch.argmax(pol).item()) if pol.numel() > 0 else 0
 
     @torch.no_grad()
     def value(self, *, obs: dict, action_space: ActionSpace) -> float:
         expected_n = int(self.coarse_grid * self.coarse_grid)
-        n = int(action_space.mask.shape[0])
+        n = int(action_space.valid_mask.shape[0])
         if n != expected_n:
             raise ValueError(
                 f"AlphaChipAgent(value) requires coarse actionspace: expected N={expected_n}, got N={n}. "
@@ -113,7 +113,7 @@ class AlphaChipAgent:
             )
 
         data = _obs_to_pyg_data(obs)
-        mask_flat = action_space.mask.view(1, -1).to(dtype=torch.int32, device=self.device)
+        mask_flat = action_space.valid_mask.view(1, -1).to(dtype=torch.int32, device=self.device)
         _logits_flat, value_t = self.model(data, mask_flat=mask_flat, is_eval=True)
         return float(value_t.view(-1)[0].item()) if isinstance(value_t, torch.Tensor) and value_t.numel() > 0 else 0.0
 
@@ -142,5 +142,5 @@ if __name__ == "__main__":
 
     print("alphachip_agent demo")
     print(" env=", ENV_JSON, "device=", dev, "next_gid=", (env.get_state().remaining[0] if env.get_state().remaining else None))
-    print(" action=", a, "valid=", int(action_space.mask.sum().item()))
+    print(" action=", a, "valid=", int(action_space.valid_mask.sum().item()))
     print(f" elapsed_ms={dt_ms:.2f}")

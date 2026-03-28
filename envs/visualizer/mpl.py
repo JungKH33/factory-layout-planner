@@ -309,7 +309,7 @@ def _draw_layout_from_data(
                 )
                 ax.add_patch(cl_rect)
         ax.add_patch(patch)
-        ax.text(fac.x_c, fac.y_c, str(fac.gid), ha="center", va="center", fontsize=8)
+        ax.text(fac.x_center, fac.y_center, str(fac.group_id), ha="center", va="center", fontsize=8)
 
     # --- action space candidates ---
     if data.candidates_xy:
@@ -559,11 +559,11 @@ class MatplotlibBackend(VisualizerBackend):
             cand = frame.action_space
             if cand is None or frame.scores is None or frame.selected_action is None:
                 return None
-            gid = cand.gid
+            gid = cand.group_id
             if gid is None:
-                raise ValueError("ActionSpace.gid is required for BL->center conversion.")
-            mask = cand.mask.detach().cpu().numpy().astype(bool)
-            poses = cand.poses.detach().cpu().numpy()
+                raise ValueError("ActionSpace.group_id is required for BL->center conversion.")
+            mask = cand.valid_mask.detach().cpu().numpy().astype(bool)
+            poses = cand.centers.detach().cpu().numpy()
             scores = np.asarray(frame.scores, dtype=np.float32)
             if scores.shape[0] != poses.shape[0]:
                 raise ValueError(f"scores length {scores.shape[0]} != action_space {poses.shape[0]}")
@@ -656,7 +656,7 @@ class MatplotlibBackend(VisualizerBackend):
                 sel_score = float(scores[sel]) if 0 <= sel < len(scores) else float("nan")
                 parts.append(f"selected_action={sel}")
                 parts.append(f"selected_policy={sel_score:.6f}")
-                parts.append(f"valid={int(f.action_space.mask.to(torch.int64).sum().item())}")
+                parts.append(f"valid={int(f.action_space.valid_mask.to(torch.int64).sum().item())}")
             info_text.set_text(" | ".join(parts))
             fig.canvas.draw_idle()
 

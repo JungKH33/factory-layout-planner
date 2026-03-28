@@ -295,14 +295,14 @@ class PlotlyBackend(VisualizerBackend):
             first_fac = False
             # Label
             fig.add_trace(go.Scatter(
-                x=[fac.x_c], y=[fac.y_c],
+                x=[fac.x_center], y=[fac.y_center],
                 mode="text",
-                text=[str(fac.gid)],
+                text=[str(fac.group_id)],
                 textfont=dict(size=10, color="black"),
                 showlegend=False,
                 legendgroup="facilities",
                 hoverinfo="text",
-                hovertext=f"{fac.gid} ({fac.w}x{fac.h})",
+                hovertext=f"{fac.group_id} ({fac.w}x{fac.h})",
             ))
 
         # --- Action space candidates ---

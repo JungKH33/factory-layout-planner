@@ -66,18 +66,18 @@ def load_env(
         entries_raw = obj.get("entries_rel")
         exits_raw = obj.get("exits_rel")
         if entries_raw is not None:
-            entries = [(float(p[0]), float(p[1])) for p in entries_raw]
+            entry_points = [(float(p[0]), float(p[1])) for p in entries_raw]
         else:
             ent_x = float(obj.get("ent_rel_x", default_w / 2.0))
             ent_y = float(obj.get("ent_rel_y", default_h / 2.0))
-            entries = [(ent_x, ent_y)]
+            entry_points = [(ent_x, ent_y)]
         if exits_raw is not None:
-            exits = [(float(p[0]), float(p[1])) for p in exits_raw]
+            exit_points = [(float(p[0]), float(p[1])) for p in exits_raw]
         else:
             exi_x = float(obj.get("exi_rel_x", default_w / 2.0))
             exi_y = float(obj.get("exi_rel_y", default_h / 2.0))
-            exits = [(exi_x, exi_y)]
-        return entries, exits
+            exit_points = [(exi_x, exi_y)]
+        return entry_points, exit_points
 
     def _parse_clearance_lrtb(obj: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
         """Parse clearance LRTB from a group or variant dict."""
@@ -181,7 +181,7 @@ def load_env(
 
                 variant_defs.append(vdef)
 
-            # Update top-level entries/exits to first variant for backward compat
+            # Update top-level entry_points/exit_points to first variant for backward compat
             entries_rel = variant_defs[0]["entries_rel"]
             exits_rel = variant_defs[0]["exits_rel"]
             if group_type == "rect":
@@ -302,18 +302,18 @@ def load_env(
         for gid, pose in reset_cfg["initial_placements"].items():
             if not (isinstance(pose, list) and len(pose) in (2, 3, 4)):
                 raise ValueError(
-                    f"initial_placements[{gid}] must be [x_c, y_c], "
-                    f"[x_c, y_c, variant_index], or "
-                    f"[x_c, y_c, variant_index, source_index], got: {pose}"
+                    f"initial_placements[{gid}] must be [x_center, y_center], "
+                    f"[x_center, y_center, variant_index], or "
+                    f"[x_center, y_center, variant_index, source_index], got: {pose}"
                 )
             try:
-                x_c = float(pose[0])
-                y_c = float(pose[1])
+                x_center = float(pose[0])
+                y_center = float(pose[1])
             except Exception as e:
-                raise ValueError(f"initial_placements[{gid}]: x_c/y_c must be numbers, got: {pose}") from e
+                raise ValueError(f"initial_placements[{gid}]: x_center/y_center must be numbers, got: {pose}") from e
             vi = int(pose[2]) if len(pose) > 2 and pose[2] is not None else None
             si = int(pose[3]) if len(pose) > 3 and pose[3] is not None else None
-            ip[gid] = EnvAction(gid=gid, x_c=x_c, y_c=y_c, variant_index=vi, source_index=si)
+            ip[gid] = EnvAction(group_id=gid, x_center=x_center, y_center=y_center, variant_index=vi, source_index=si)
         reset_kwargs["initial_placements"] = ip
     if "remaining_order" in reset_cfg and reset_cfg["remaining_order"] is not None:
         reset_kwargs["remaining_order"] = list(reset_cfg["remaining_order"])

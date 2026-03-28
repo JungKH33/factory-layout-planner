@@ -59,7 +59,7 @@ class DynamicStorageWrapper(gym.Env):
         self.observation_space = gym.spaces.Dict({})
         
         # 현재 후보들
-        self.action_poses: Optional[torch.Tensor] = None  # [k, 2] float (x_c, y_c)
+        self.action_poses: Optional[torch.Tensor] = None  # [k, 2] float (x_center, y_center)
         self._action_rots: Optional[torch.Tensor] = None  # [k] int (rotation for decode)
         self.mask: Optional[torch.Tensor] = None  # [k] bool
         
@@ -74,7 +74,7 @@ class DynamicStorageWrapper(gym.Env):
         """현재 배치 대상 그룹 gid."""
         if self.dynamic_env.config is None:
             return None
-        return str(self.dynamic_env.config.gid)
+        return str(self.dynamic_env.config.group_id)
     
     # ========== Action-Space Generation ==========
     
@@ -154,9 +154,9 @@ class DynamicStorageWrapper(gym.Env):
             raise ValueError(f"action_poses must have shape [N,2], got {tuple(poses_t.shape)}")
         if int(poses_t.shape[0]) != int(mask_t.shape[0]):
             raise ValueError(
-                f"action-space size mismatch: poses={int(poses_t.shape[0])}, mask={int(mask_t.shape[0])}"
+                f"action-space size mismatch: centers={int(poses_t.shape[0])}, valid_mask={int(mask_t.shape[0])}"
             )
-        return ActionSpace(poses=poses_t, mask=mask_t, gid=self.current_gid())
+        return ActionSpace(centers=poses_t, valid_mask=mask_t, group_id=self.current_gid())
     
     # ========== Action Decode ==========
     
@@ -165,10 +165,10 @@ class DynamicStorageWrapper(gym.Env):
         action: int,
         action_space: Optional[ActionSpace] = None,
     ) -> Tuple[float, float, int, int, int]:
-        """action (0~k-1) → (x_c, y_c, rot, 0, action).
+        """action (0~k-1) → (x_center, y_center, rot, 0, action).
 
         Returns:
-            (x_c, y_c, rot, 0, action_idx)
+            (x_center, y_center, rot, 0, action_idx)
         """
         del action_space
         a = int(action)

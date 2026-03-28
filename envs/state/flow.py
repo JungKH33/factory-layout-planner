@@ -130,9 +130,9 @@ class FlowGraph:
 
     @staticmethod
     def _ports_from_placement(placement: object, *, kind: str) -> List[Tuple[float, float]]:
-        x_c = float(getattr(placement, "x_c", 0.0))
-        y_c = float(getattr(placement, "y_c", 0.0))
-        fallback = (x_c, y_c)
+        x_center = float(getattr(placement, "x_center", 0.0))
+        y_center = float(getattr(placement, "y_center", 0.0))
+        fallback = (x_center, y_center)
         src = getattr(placement, kind, None)
         if torch.is_tensor(src):
             t = src.to(dtype=torch.float32).view(-1, 2)
@@ -199,25 +199,25 @@ class FlowGraph:
         nodes_key = tuple(nodes)
         if gid not in nodes_key:
             raise ValueError(f"upsert_io: gid={gid!r} not in nodes")
-        entries = self._ports_from_placement(placement, kind="entries")
-        exits = self._ports_from_placement(placement, kind="exits")
+        entry_points = self._ports_from_placement(placement, kind="entry_points")
+        exit_points = self._ports_from_placement(placement, kind="exit_points")
 
         row = self._row_by_gid.get(gid, None)
         if row is None:
             row = len(self._row_by_gid)
             self._row_by_gid[gid] = int(row)
-        self._ensure_io_capacity(rows=len(nodes_key), emax=len(entries), xmax=len(exits))
+        self._ensure_io_capacity(rows=len(nodes_key), emax=len(entry_points), xmax=len(exit_points))
 
         r = int(row)
         self.placed_entries[r].zero_()
         self.placed_exits[r].zero_()
         self.placed_entries_mask[r].zero_()
         self.placed_exits_mask[r].zero_()
-        for j, (x, y) in enumerate(entries):
+        for j, (x, y) in enumerate(entry_points):
             self.placed_entries[r, j, 0] = float(x)
             self.placed_entries[r, j, 1] = float(y)
             self.placed_entries_mask[r, j] = True
-        for j, (x, y) in enumerate(exits):
+        for j, (x, y) in enumerate(exit_points):
             self.placed_exits[r, j, 0] = float(x)
             self.placed_exits[r, j, 1] = float(y)
             self.placed_exits_mask[r, j] = True

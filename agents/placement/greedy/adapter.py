@@ -18,7 +18,7 @@ class GreedyAdapter(BaseAdapter):
     Notes:
     - Candidate coordinates are bottom-left integer coordinates (engine contract).
     - `action_mask` is torch.BoolTensor[K] (True means valid).
-    - `action_poses` is torch.FloatTensor[K,2] of (x_c, y_c) center coordinates.
+    - `action_poses` is torch.FloatTensor[K,2] of (x_center, y_center) center coordinates.
     """
 
     metadata = {"render_modes": []}
@@ -180,10 +180,10 @@ class GreedyAdapter(BaseAdapter):
         for src, c in candidates:
             _, x_bl, y_bl, rotation = c
             w, h = group.rotated_size(int(rotation))
-            x_c = float(x_bl) + float(w) / 2.0
-            y_c = float(y_bl) + float(h) / 2.0
-            qx = int(round(x_c / q))
-            qy = int(round(y_c / q))
+            x_center = float(x_bl) + float(w) / 2.0
+            y_center = float(y_bl) + float(h) / 2.0
+            qx = int(round(x_center / q))
+            qy = int(round(y_center / q))
             key = (qx, qy)
             if key not in seen:
                 seen.add(key)
@@ -225,11 +225,11 @@ class GreedyAdapter(BaseAdapter):
             if shape_key in seen_shape:
                 continue
             seen_shape.add(shape_key)
-            body_map, clearance_map, clearance_origin, is_rectangular = spec.shape_tensors(shape_key)
-            m = state.is_placeable_map(
+            body_mask, clearance_mask, clearance_origin, is_rectangular = spec.shape_tensors(shape_key)
+            m = state.placeable_map(
                 gid=gid,
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
                 is_rectangular=is_rectangular,
             )
@@ -513,8 +513,8 @@ if __name__ == "__main__":
     candidates = adapter.build_action_space()
     dt_reset_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid = int(candidates.mask.sum().item())
-    a = int(torch.where(candidates.mask)[0][0].item()) if valid > 0 else 0
+    valid = int(candidates.valid_mask.sum().item())
+    a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
 
     # Plot: initial candidates (interactive; close to continue)
     plot_layout(engine, action_space=candidates)
@@ -527,7 +527,7 @@ if __name__ == "__main__":
     dt_step_ms = (time.perf_counter() - t1) * 1000.0
 
     # Plot: after 1 placement + new candidates (if any)
-    if int(candidates2.mask.shape[0]) > 0:
+    if int(candidates2.valid_mask.shape[0]) > 0:
         plot_layout(engine, action_space=candidates2)
     else:
         plot_layout(engine, action_space=None)

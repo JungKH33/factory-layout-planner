@@ -106,7 +106,7 @@ class DynamicStorageEnv(gym.Env):
         # 현재 배치 중인 그룹 (첫 번째로 시작)
         self._current_config_idx = 0
         self.config = configs[0] if configs else None
-        self.gid = self.config.gid if self.config else None
+        self.group_id = self.config.group_id if self.config else None
         self.allow_rotation = self.config.rotatable if self.config else False
         
         # Reward 관련 (env 레벨)
@@ -184,13 +184,13 @@ class DynamicStorageEnv(gym.Env):
     @property
     def remaining(self) -> List[str]:
         """남은 그룹 ID 리스트 (wrapper 호환)."""
-        return [c.gid for c in self._remaining_configs]
+        return [c.group_id for c in self._remaining_configs]
     
     @property
     def placed(self) -> Set[str]:
         """배치 완료된 그룹 ID set."""
-        all_gids = {c.gid for c in self.configs}
-        remaining_gids = {c.gid for c in self._remaining_configs}
+        all_gids = {c.group_id for c in self.configs}
+        remaining_gids = {c.group_id for c in self._remaining_configs}
         return all_gids - remaining_gids
     
     # ========== Size/Clearance by rotation ==========
@@ -465,8 +465,8 @@ class DynamicStorageEnv(gym.Env):
             pcy = placement.y_bl + ph / 2.0
             centers_p.append((pcx, pcy))
             
-            w_out.append(float(self.group_flow.get(self.gid, {}).get(p, 0.0)))
-            w_in.append(float(self.group_flow.get(p, {}).get(self.gid, 0.0)))
+            w_out.append(float(self.group_flow.get(self.group_id, {}).get(p, 0.0)))
+            w_in.append(float(self.group_flow.get(p, {}).get(self.group_id, 0.0)))
         
         if not centers_p:
             return torch.zeros(N, dtype=torch.float32, device=self.device)
@@ -741,12 +741,12 @@ class DynamicStorageEnv(gym.Env):
         # config 업데이트 + 파생값 재계산
         if self._remaining_configs:
             self.config = self._remaining_configs[0]
-            self.gid = self.config.gid
+            self.group_id = self.config.group_id
             self.allow_rotation = self.config.rotatable
             self._setup_for_current_config()
         else:
             self.config = None
-            self.gid = None
+            self.group_id = None
     
     # ========== Gym API ==========
     
@@ -754,7 +754,7 @@ class DynamicStorageEnv(gym.Env):
         """시작점 선택 후 확장 배치."""
         grid_x, grid_y, rot = self.decode_action(int(action))
         world_x, world_y = self.grid_to_world(grid_x, grid_y, rot)
-        gid_before = self.gid
+        gid_before = self.group_id
         
         if not self.is_placeable(world_x, world_y, rot):
             return self._build_obs(), -1.0, False, False, {
@@ -812,7 +812,7 @@ class DynamicStorageEnv(gym.Env):
             else:
                 # 다음 그룹 설정
                 self.config = self._remaining_configs[0]
-                self.gid = self.config.gid
+                self.group_id = self.config.group_id
                 self.allow_rotation = self.config.rotatable
                 # 새 그룹에 맞게 재설정 + placed_cells 리셋
                 self._placed_cells = 0
@@ -872,7 +872,7 @@ class DynamicStorageEnv(gym.Env):
         
         if self._remaining_configs:
             self.config = self._remaining_configs[0]
-            self.gid = self.config.gid
+            self.group_id = self.config.group_id
             self.allow_rotation = self.config.rotatable
             self._setup_for_current_config()
         

@@ -7,11 +7,11 @@ import torch
 
 
 # ---------------------------------------------------------------------------
-# Variant — one distinct placement form (source shape × rotation × mirror)
+# GroupVariant — one distinct placement form (source shape × rotation × mirror)
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class Variant:
+class GroupVariant:
     """One placement variant with precomputed body geometry.
 
     A variant is a unique (source_shape, rotation, mirror) combination —
@@ -22,8 +22,8 @@ class Variant:
     source_index: int        # which original shape definition (0 for single-shape)
     rotation: int            # 0, 90, 180, 270
     mirror: bool
-    body_w: int              # rotated body width  (grid cells)
-    body_h: int              # rotated body height (grid cells)
+    body_width: int          # rotated body width  (grid cells)
+    body_height: int         # rotated body height (grid cells)
     entry_offsets: Tuple[Tuple[float, float], ...]   # center-relative
     exit_offsets: Tuple[Tuple[float, float], ...]     # center-relative
 
@@ -46,7 +46,7 @@ class GroupSpec:
         return str(getattr(self, "_exit_port_mode", "min"))
 
     @property
-    def variants(self) -> List[Variant]:
+    def variants(self) -> List[GroupVariant]:
         """All unique placement variants for this spec."""
         return []
 
@@ -76,8 +76,8 @@ class GroupSpec:
     def placeable_batch(self, *args, **kwargs):
         raise NotImplementedError(f"{type(self).__name__}.placeable_batch() is not implemented")
 
-    def cost_batch(self, *args, **kwargs):
-        raise NotImplementedError(f"{type(self).__name__}.cost_batch() is not implemented")
+    def score_batch(self, *args, **kwargs):
+        raise NotImplementedError(f"{type(self).__name__}.score_batch() is not implemented")
 
 
 @dataclass
@@ -89,19 +89,19 @@ class GroupPlacement:
     non-default 필드를 추가하려면 parent에 default가 없어야 함).
     """
 
-    x_c: float
-    y_c: float
-    entries: List[Tuple[float, float]]
-    exits: List[Tuple[float, float]]
+    x_center: float
+    y_center: float
+    entry_points: List[Tuple[float, float]]
+    exit_points: List[Tuple[float, float]]
     min_x: float
     max_x: float
     min_y: float
     max_y: float
-    body_map: torch.Tensor
-    clearance_map: torch.Tensor
+    body_mask: torch.Tensor
+    clearance_mask: torch.Tensor
     clearance_origin: Tuple[int, int]
     is_rectangular: bool
 
     def position(self) -> Tuple[float, float]:
-        """Return center position tuple (x_c, y_c)."""
-        return float(self.x_c), float(self.y_c)
+        """Return center position tuple (x_center, y_center)."""
+        return float(self.x_center), float(self.y_center)

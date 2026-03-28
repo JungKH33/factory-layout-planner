@@ -71,8 +71,8 @@ class BeamSearch(BaseSearch):
         # Only compute numpy arrays if callback is set (avoid overhead when not needed)
         has_callback = self._progress_callback is not None
         if has_callback:
-            n_actions = int(root_action_space.mask.shape[0])
-            mask_np = root_action_space.mask.detach().cpu().numpy().astype(bool)
+            n_actions = int(root_action_space.valid_mask.shape[0])
+            mask_np = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
             # Track scores for each root action (for progress reporting)
             root_action_scores: Dict[int, float] = {}
         else:
@@ -99,7 +99,7 @@ class BeamSearch(BaseSearch):
                 else:
                     obs_node = adapter.build_observation()
                     action_space = adapter.build_action_space()
-                valid_mask = action_space.mask
+                valid_mask = action_space.valid_mask
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
                     # Track terminal state (no valid actions = terminal)
@@ -264,12 +264,12 @@ if __name__ == "__main__":
     search.set_adapter(adapter)
 
     t0 = time.perf_counter()
-    next_gid = root_action_space.gid
+    next_gid = root_action_space.group_id
     a = search.select(obs=obs, agent=agent, root_action_space=root_action_space)
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid_n = int(root_action_space.mask.sum().item())
-    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0]
+    valid_n = int(root_action_space.valid_mask.sum().item())
+    pose = root_action_space.centers[a].tolist() if int(root_action_space.centers.shape[0]) > 0 else [0, 0]
 
     print("search.beam demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)

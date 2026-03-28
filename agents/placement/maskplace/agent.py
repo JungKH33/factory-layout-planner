@@ -41,10 +41,10 @@ class MaskPlaceAgent:
             st = st.view(1, -1)
 
         probs, _value = self.model(st)
-        device = action_space.poses.device
+        device = action_space.centers.device
         pri = probs[0].to(device=device, dtype=torch.float32).view(-1)
 
-        mask = action_space.mask.to(device=device, dtype=torch.bool).view(-1)
+        mask = action_space.valid_mask.to(device=device, dtype=torch.bool).view(-1)
         if int(mask.numel()) != int(pri.numel()):
             # last resort: no masking
             mask = torch.ones_like(pri, dtype=torch.bool, device=device)

@@ -86,28 +86,28 @@ class BaseAdapter(ABC):
     def decode_action(self, action: int, action_space: ActionSpace) -> EnvAction:
         """Decode action index to EnvAction using action-space poses table."""
         a = self.validate_action_index(action, action_space)
-        pose = action_space.poses[a]
-        gid = action_space.gid
+        pose = action_space.centers[a]
+        gid = action_space.group_id
         if gid is None:
-            raise ValueError("action_space.gid is required to decode EnvAction")
+            raise ValueError("action_space.group_id is required to decode EnvAction")
         variant_index = None
         if action_space.variant_indices is not None:
             variant_index = int(action_space.variant_indices[a].item())
         return EnvAction(
-            gid=gid,
-            x_c=float(pose[0].item()),
-            y_c=float(pose[1].item()),
+            group_id=gid,
+            x_center=float(pose[0].item()),
+            y_center=float(pose[1].item()),
             variant_index=variant_index,
         )
 
     def num_valid_actions(self, action_space: ActionSpace) -> int:
         """Return number of valid actions in given action-space."""
-        mask = action_space.mask.to(dtype=torch.bool, device=self.device).view(-1)
+        mask = action_space.valid_mask.to(dtype=torch.bool, device=self.device).view(-1)
         return int(mask.to(torch.int64).sum().item())
 
     def validate_action_index(self, action: int, action_space: ActionSpace) -> int:
         """Validate action index against action-space range and mask."""
-        mask = action_space.mask.to(dtype=torch.bool, device=self.device).view(-1)
+        mask = action_space.valid_mask.to(dtype=torch.bool, device=self.device).view(-1)
         n_actions = int(mask.shape[0])
         valid_n = int(mask.to(torch.int64).sum().item())
         if n_actions <= 0 or valid_n <= 0:
@@ -136,9 +136,9 @@ class BaseAdapter(ABC):
             p = eng.get_state().placements.get(gid, None)
             if p is None:
                 continue
-            x_c = float(getattr(p, "x_c", (float(getattr(p, "min_x", 0.0)) + float(getattr(p, "max_x", 0.0))) / 2.0))
-            y_c = float(getattr(p, "y_c", (float(getattr(p, "min_y", 0.0)) + float(getattr(p, "max_y", 0.0))) / 2.0))
-            parts.append(f"{gid}:{x_c:.4f}:{y_c:.4f}")
+            x_center = float(getattr(p, "x_center", (float(getattr(p, "min_x", 0.0)) + float(getattr(p, "max_x", 0.0))) / 2.0))
+            y_center = float(getattr(p, "y_center", (float(getattr(p, "min_y", 0.0)) + float(getattr(p, "max_y", 0.0))) / 2.0))
+            parts.append(f"{gid}:{x_center:.4f}:{y_center:.4f}")
         raw = "|".join(parts).encode("utf-8", errors="ignore")
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 
@@ -158,9 +158,9 @@ class BaseAdapter(ABC):
         Non-placeable variant slots are inf.
         """
         spec = self.engine.group_specs[gid]
-        return spec.cost_batch(
+        return spec.score_batch(
             gid=gid,
-            poses=poses,
+            centers=poses,
             state=self.engine.get_state(),
             reward=self.engine.reward_composer,
             per_variant=per_variant,
@@ -180,7 +180,7 @@ class BaseAdapter(ABC):
         top *k* by cost.  Sets ``self.action_poses``, ``self.action_costs``,
         and ``self.action_variant_indices``.
 
-        ``cost_batch(per_variant=True)`` already returns inf for
+        ``score_batch(per_variant=True)`` already returns inf for
         non-placeable variant slots, so no separate ``placeable_batch``
         call is needed.
 
@@ -275,7 +275,7 @@ class BaseAdapter(ABC):
             if vi_t.ndim == 1 and int(vi_t.shape[0]) == n_actions:
                 vi_indices = vi_t
 
-        return ActionSpace(poses=poses, mask=mask, gid=gid, variant_indices=vi_indices)
+        return ActionSpace(centers=poses, valid_mask=mask, group_id=gid, variant_indices=vi_indices)
 
     @abstractmethod
     def build_observation(self) -> Dict[str, Any]:

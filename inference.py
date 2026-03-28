@@ -224,8 +224,8 @@ def main() -> None:
                 step,
                 next_gid,
                 dbg.get("search", SEARCH_MODE),
-                float(action.x_c),
-                float(action.y_c),
+                float(action.x_center),
+                float(action.y_center),
             )
 
         if terminated or truncated:

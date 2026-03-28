@@ -361,12 +361,12 @@ if __name__ == "__main__":
         ("E", 250.0, 150.0, 0),   # E 그룹: center (250, 150)
     ]
 
-    for gid, x_c, y_c, oi in placements:
+    for gid, x_center, y_center, oi in placements:
         if gid in env.get_state().remaining:
             obs, reward, terminated, truncated, info = env.step_action(
-                EnvAction(gid=gid, x_c=x_c, y_c=y_c, variant_index=oi)
+                EnvAction(group_id=gid, x_center=x_center, y_center=y_center, variant_index=oi)
             )
-            print(f"    Placed {gid} at center ({x_c}, {y_c}) oi={oi} - reason: {info.get('reason')}")
+            print(f"    Placed {gid} at center ({x_center}, {y_center}) oi={oi} - reason: {info.get('reason')}")
     
     print(f"    Placed: {list(env.get_state().placed)}")
     print(f"    Remaining: {env.get_state().remaining}")

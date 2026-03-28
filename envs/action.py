@@ -10,8 +10,8 @@ GroupId = Union[int, str]
 class EnvAction:
     """Placement action: center coordinates.
 
-    - gid is required.
-    - x_c/y_c are center coordinates (float).
+    - group_id is required.
+    - x_center/y_center are center coordinates (float).
     - variant_index: if None the engine tries all variants and
       picks the cheapest placeable one via GroupSpec.resolve().
       If set, the engine uses that specific variant directly.
@@ -19,8 +19,8 @@ class EnvAction:
       considered during resolve(). Ignored when variant_index is set.
     """
 
-    gid: GroupId
-    x_c: float
-    y_c: float
+    group_id: GroupId
+    x_center: float
+    y_center: float
     variant_index: Optional[int] = None
     source_index: Optional[int] = None

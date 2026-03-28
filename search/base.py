@@ -126,8 +126,8 @@ class BaseSearch(ABC):
     def _empty_action_space(self, *, device: torch.device) -> ActionSpace:
         """Return an empty action space for terminal search nodes."""
         return ActionSpace(
-            poses=torch.zeros((0, 2), dtype=torch.float32, device=device),
-            mask=torch.zeros((0,), dtype=torch.bool, device=device),
+            centers=torch.zeros((0, 2), dtype=torch.float32, device=device),
+            valid_mask=torch.zeros((0,), dtype=torch.bool, device=device),
         )
 
     def _capture_terminal_cache(
@@ -199,7 +199,7 @@ class SearchResult:
     """하나의 완료된 배치 결과"""
     cost: float                                   # cost() 값 (낮을수록 좋음)
     cum_reward: float                             # 누적 reward
-    positions: Dict[str, Tuple[float, float]]     # {gid: (x_c, y_c)}
+    positions: Dict[str, Tuple[float, float]]     # {gid: (x_center, y_center)}
     engine_state: EnvState                        # env 복원용
 
 

@@ -17,21 +17,21 @@ import numpy as np
 
 @dataclass
 class FacilityData:
-    gid: str
+    group_id: str
     x_bl: float
     y_bl: float
     w: float
     h: float
-    x_c: float
-    y_c: float
+    x_center: float
+    y_center: float
     body_polygon_abs: Optional[List[Tuple[float, float]]] = None
     clearance_polygon_abs: Optional[List[Tuple[float, float]]] = None
     clearance_left: int = 0
     clearance_right: int = 0
     clearance_bottom: int = 0
     clearance_top: int = 0
-    entries: List[Tuple[float, float]] = field(default_factory=list)
-    exits: List[Tuple[float, float]] = field(default_factory=list)
+    entry_points: List[Tuple[float, float]] = field(default_factory=list)
+    exit_points: List[Tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -163,7 +163,7 @@ def extract_layout_data(
 
     Args:
         engine: FactoryLayoutEnv instance
-        action_space: Optional ActionSpace (with .poses, .mask, .gid)
+        action_space: Optional ActionSpace (with .centers, .valid_mask, .group_id)
         routes: Optional list of RouteResult from postprocess.pathfinder
     """
     state = engine.get_state()
@@ -174,21 +174,21 @@ def extract_layout_data(
     for gid in state.placed:
         p = state.placements[gid]
         facilities.append(FacilityData(
-            gid=str(gid),
+            group_id=str(gid),
             x_bl=float(getattr(p, "x_bl", p.min_x)),
             y_bl=float(getattr(p, "y_bl", p.min_y)),
             w=float(getattr(p, "w", p.max_x - p.min_x)),
             h=float(getattr(p, "h", p.max_y - p.min_y)),
-            x_c=float(p.x_c),
-            y_c=float(p.y_c),
+            x_center=float(p.x_center),
+            y_center=float(p.y_center),
             body_polygon_abs=getattr(p, "body_polygon_abs", None),
             clearance_polygon_abs=getattr(p, "clearance_polygon_abs", None),
             clearance_left=int(getattr(p, "clearance_left", 0)),
             clearance_right=int(getattr(p, "clearance_right", 0)),
             clearance_bottom=int(getattr(p, "clearance_bottom", 0)),
             clearance_top=int(getattr(p, "clearance_top", 0)),
-            entries=list(getattr(p, "entries", [])),
-            exits=list(getattr(p, "exits", [])),
+            entry_points=list(getattr(p, "entry_points", [])),
+            exit_points=list(getattr(p, "exit_points", [])),
         ))
 
     # --- Forbidden areas ---
@@ -262,7 +262,7 @@ def extract_layout_data(
                 if cached:
                     draw_pairs = cached
                 else:
-                    draw_pairs = [((src_p.x_c, src_p.y_c), (dst_p.x_c, dst_p.y_c))]
+                    draw_pairs = [((src_p.x_center, src_p.y_center), (dst_p.x_center, dst_p.y_center))]
                 for (sx, sy), (dx, dy) in draw_pairs:
                     flow_arrows.append(FlowArrow(
                         src_xy=(float(sx), float(sy)),
@@ -285,12 +285,12 @@ def extract_layout_data(
 
         for gid in state.placed:
             p = state.placements[gid]
-            for x, y in getattr(p, "entries", []):
+            for x, y in getattr(p, "entry_points", []):
                 if _coord_key(x, y) in active_entries:
                     ports.active_entries.append((float(x), float(y)))
                 else:
                     ports.inactive_entries.append((float(x), float(y)))
-            for x, y in getattr(p, "exits", []):
+            for x, y in getattr(p, "exit_points", []):
                 if _coord_key(x, y) in active_exits:
                     ports.active_exits.append((float(x), float(y)))
                 else:
@@ -302,7 +302,7 @@ def extract_layout_data(
     # --- Action space candidates ---
     candidates_xy: Optional[List[Tuple[float, float]]] = None
     if action_space is not None:
-        poses = action_space.poses[action_space.mask]
+        poses = action_space.centers[action_space.valid_mask]
         if int(poses.shape[0]) > 0:
             candidates_xy = []
             for row in poses.detach().cpu().tolist():

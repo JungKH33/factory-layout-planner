@@ -176,16 +176,16 @@ class RoutePlanner:
         if p is None:
             raise ValueError(f"placement missing for gid={gid!r}")
 
-        entries = list(getattr(p, "entries", []))
-        exits = list(getattr(p, "exits", []))
-        if entries:
-            entry = (int(round(float(entries[0][0]))), int(round(float(entries[0][1]))))
+        entry_points = list(getattr(p, "entry_points", []))
+        exit_points = list(getattr(p, "exit_points", []))
+        if entry_points:
+            entry = (int(round(float(entry_points[0][0]))), int(round(float(entry_points[0][1]))))
         else:
             cx = 0.5 * (float(getattr(p, "min_x")) + float(getattr(p, "max_x")))
             cy = 0.5 * (float(getattr(p, "min_y")) + float(getattr(p, "max_y")))
             entry = (int(round(cx)), int(round(cy)))
-        if exits:
-            exit_ = (int(round(float(exits[0][0]))), int(round(float(exits[0][1]))))
+        if exit_points:
+            exit_ = (int(round(float(exit_points[0][0]))), int(round(float(exit_points[0][1]))))
         else:
             cx = 0.5 * (float(getattr(p, "min_x")) + float(getattr(p, "max_x")))
             cy = 0.5 * (float(getattr(p, "min_y")) + float(getattr(p, "max_y")))
@@ -297,11 +297,11 @@ if __name__ == "__main__":
                 x, y = cx + dx, cy + dy
                 _x_c = float(x)
                 _y_c = float(y)
-                _gid_r, _pl_r = env.resolve_action(EnvAction(gid=gid, x_c=_x_c, y_c=_y_c))
+                _gid_r, _pl_r = env.resolve_action(EnvAction(group_id=gid, x_center=_x_c, y_center=_y_c))
                 if _pl_r is None:
                     continue
                 _obs, _reward, _terminated, _truncated, info = env.step_action(
-                    EnvAction(gid=gid, x_c=_x_c, y_c=_y_c)
+                    EnvAction(group_id=gid, x_center=_x_c, y_center=_y_c)
                 )
                 if info.get("reason") == "placed":
                     print(f"    {gid} at ({x}, {y})")

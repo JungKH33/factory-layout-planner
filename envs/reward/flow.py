@@ -9,7 +9,7 @@ import torch
 @dataclass
 class FlowReward:
     def required(self) -> set[str]:
-        return {"entries", "exits"}
+        return {"entry_points", "exit_points"}
 
     @staticmethod
     def _to_port_tensor(
@@ -309,7 +309,7 @@ class FlowCollisionReward:
     collision_weight: float = 10.0
 
     def required(self) -> set[str]:
-        return {"entries", "exits"}
+        return {"entry_points", "exit_points"}
 
     @staticmethod
     def _prefix(blocked: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

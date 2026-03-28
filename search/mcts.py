@@ -70,7 +70,7 @@ class _Node:
         self.total_value = 0.0
         self.children: Dict[int, "_Node"] = {}
 
-        valid = self.action_space.mask
+        valid = self.action_space.valid_mask
         self.valid_actions = torch.where(valid.to(dtype=torch.bool, device=priors.device).view(-1))[0].to(dtype=torch.long)
 
     def _allowed_children(self, cfg: MCTSConfig) -> int:
@@ -185,7 +185,7 @@ class MCTSSearch(BaseSearch):
         )
 
         priors = self._safe_priors(agent=agent, adapter=adapter, obs=obs, action_space=root_action_space)
-        priors = self._apply_root_dirichlet(priors=priors, mask=root_action_space.mask)
+        priors = self._apply_root_dirichlet(priors=priors, mask=root_action_space.valid_mask)
         root = _Node(
             decision_cache=root_cache,
             priors=priors,
@@ -197,8 +197,8 @@ class MCTSSearch(BaseSearch):
         # Only compute numpy arrays if callback is set (avoid overhead when not needed)
         has_callback = self._progress_callback is not None
         if has_callback:
-            n_actions = int(root_action_space.mask.shape[0])
-            mask_np = root_action_space.mask.detach().cpu().numpy().astype(bool)
+            n_actions = int(root_action_space.valid_mask.shape[0])
+            mask_np = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
 
         num_sims = int(self.config.num_simulations)
         for sim in range(num_sims):
@@ -307,20 +307,20 @@ class MCTSSearch(BaseSearch):
         if not isinstance(pri, torch.Tensor):
             raise TypeError("Agent.policy must return torch.Tensor")
         pri = pri.to(dtype=torch.float32, device=adapter.device).view(-1)
-        if int(pri.shape[0]) != int(action_space.mask.shape[0]):
-            out = torch.zeros((int(action_space.mask.shape[0]),), dtype=torch.float32, device=adapter.device)
-            valid = action_space.mask
+        if int(pri.shape[0]) != int(action_space.valid_mask.shape[0]):
+            out = torch.zeros((int(action_space.valid_mask.shape[0]),), dtype=torch.float32, device=adapter.device)
+            valid = action_space.valid_mask
             cnt = int(valid.to(torch.int64).sum().item())
             if cnt > 0:
                 out[valid] = 1.0 / float(cnt)
             return out
         pri = torch.clamp(pri, min=0.0)
-        pri = pri.masked_fill(~action_space.mask, 0.0)
+        pri = pri.masked_fill(~action_space.valid_mask, 0.0)
         s = float(pri.sum().item())
         if s > 0:
             pri = pri / s
         else:
-            valid = action_space.mask
+            valid = action_space.valid_mask
             cnt = int(valid.to(torch.int64).sum().item())
             if cnt > 0:
                 pri = torch.zeros_like(pri)
@@ -401,7 +401,7 @@ class MCTSSearch(BaseSearch):
                     priors=priors,
                     action=int(action),
                     reward=float(reward),
-                    terminal=terminal or (not terminal and int(next_action_space.mask.to(torch.int64).sum().item()) == 0),
+                    terminal=terminal or (not terminal and int(next_action_space.valid_mask.to(torch.int64).sum().item()) == 0),
                 )
                 node.children[int(action)] = child
                 node = child
@@ -462,7 +462,7 @@ class MCTSSearch(BaseSearch):
             else:
                 obs = adapter.build_observation()
                 action_space = adapter.build_action_space()
-            if int(action_space.mask.to(torch.int64).sum().item()) == 0:
+            if int(action_space.valid_mask.to(torch.int64).sum().item()) == 0:
                 reward, terminated, truncated, _ = self._apply_action_index(
                     engine=engine,
                     adapter=adapter,
@@ -513,12 +513,12 @@ if __name__ == "__main__":
     search.set_adapter(adapter)
 
     t0 = time.perf_counter()
-    next_gid = root_action_space.gid
+    next_gid = root_action_space.group_id
     a = search.select(obs=obs, agent=agent, root_action_space=root_action_space)
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid_n = int(root_action_space.mask.sum().item())
-    pose = root_action_space.poses[a].tolist() if int(root_action_space.poses.shape[0]) > 0 else [0, 0]
+    valid_n = int(root_action_space.valid_mask.sum().item())
+    pose = root_action_space.centers[a].tolist() if int(root_action_space.centers.shape[0]) > 0 else [0, 0]
 
     print("search.mcts demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)

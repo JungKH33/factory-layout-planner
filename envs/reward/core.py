@@ -194,10 +194,10 @@ class RewardComposer:
         state: "EnvState",
         *,
         gid: Optional["GroupId"] = None,
-        entries: Optional[torch.Tensor] = None,
-        exits: Optional[torch.Tensor] = None,
-        entries_mask: Optional[torch.Tensor] = None,
-        exits_mask: Optional[torch.Tensor] = None,
+        entry_points: Optional[torch.Tensor] = None,
+        exit_points: Optional[torch.Tensor] = None,
+        entry_mask: Optional[torch.Tensor] = None,
+        exit_mask: Optional[torch.Tensor] = None,
         min_x: Optional[torch.Tensor] = None,
         max_x: Optional[torch.Tensor] = None,
         min_y: Optional[torch.Tensor] = None,
@@ -225,7 +225,7 @@ class RewardComposer:
 
         m = 0
         device = placed_entries.device
-        for t in (entries, exits, min_x, max_x, min_y, max_y):
+        for t in (entry_points, exit_points, min_x, max_x, min_y, max_y):
             if t is not None:
                 m = int(t.shape[0])
                 device = t.device
@@ -238,8 +238,8 @@ class RewardComposer:
         grid_occ = self.components.get("grid_occupancy", None)
 
         if flow is not None or flow_collision is not None:
-            entries = _require(entries, "entries")
-            exits = _require(exits, "exits")
+            entry_points = _require(entry_points, "entry_points")
+            exit_points = _require(exit_points, "exit_points")
 
         # Build port mode tensors for candidate and placed facilities
         t_exit_modes, t_entry_modes = self._port_mode_tensors(placed_nodes, device)
@@ -260,10 +260,10 @@ class RewardComposer:
                 placed_exits_mask=placed_exits_mask,
                 w_out=w_out,
                 w_in=w_in,
-                candidate_entries=entries,
-                candidate_exits=exits,
-                candidate_entries_mask=entries_mask,
-                candidate_exits_mask=exits_mask,
+                candidate_entries=entry_points,
+                candidate_exits=exit_points,
+                candidate_entries_mask=entry_mask,
+                candidate_exits_mask=exit_mask,
                 c_exit_mode=c_exit_mode,
                 c_entry_mode=c_entry_mode,
                 t_entry_modes=t_entry_modes,
@@ -278,10 +278,10 @@ class RewardComposer:
                 placed_exits_mask=placed_exits_mask,
                 w_out=w_out,
                 w_in=w_in,
-                candidate_entries=entries,
-                candidate_exits=exits,
-                candidate_entries_mask=entries_mask,
-                candidate_exits_mask=exits_mask,
+                candidate_entries=entry_points,
+                candidate_exits=exit_points,
+                candidate_entries_mask=entry_mask,
+                candidate_exits_mask=exit_mask,
                 route_blocked=route_blocked,
                 c_exit_mode=c_exit_mode,
                 c_entry_mode=c_entry_mode,
@@ -335,10 +335,10 @@ class RewardComposer:
         return self.delta_batch(
             state,
             gid=gid,
-            entries=action_space.entries,
-            exits=action_space.exits,
-            entries_mask=action_space.entries_mask,
-            exits_mask=action_space.exits_mask,
+            entry_points=action_space.entry_points,
+            exit_points=action_space.exit_points,
+            entry_mask=action_space.entry_mask,
+            exit_mask=action_space.exit_mask,
             min_x=action_space.min_x,
             max_x=action_space.max_x,
             min_y=action_space.min_y,

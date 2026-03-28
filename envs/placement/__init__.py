@@ -1,4 +1,4 @@
-from .base import GroupSpec, GroupPlacement, Variant
+from .base import GroupSpec, GroupPlacement, GroupVariant
 from .static import (
     StaticSpec,
     StaticVariant,
@@ -12,7 +12,7 @@ from .dynamic import DynamicSpec, DynamicPlacement, DynamicPlanner
 __all__ = [
     "GroupPlacement",
     "GroupSpec",
-    "Variant",
+    "GroupVariant",
     "StaticSpec",
     "StaticVariant",
     "StaticRectSpec",

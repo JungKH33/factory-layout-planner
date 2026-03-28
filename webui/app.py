@@ -239,7 +239,7 @@ async def step(sid: str, req: StepRequest):
             adapter.bind(engine)
             obs_dec = adapter.build_observation(session.obs if isinstance(session.obs, dict) else {})
             candidates = adapter.build_candidates(obs_dec)
-            mask = candidates.mask.to(dtype=torch.bool, device=adapter.device).view(-1)
+            mask = candidates.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
             a = int(req.action)
 
             if int(mask.shape[0]) <= 0 or int(mask.to(torch.int64).sum().item()) == 0:

@@ -187,15 +187,15 @@ class GridMaps:
     def _get_mask_linear_offsets(
         self,
         *,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
         key = (
-            int(body_map.data_ptr()),
-            int(clearance_map.data_ptr()),
+            int(body_mask.data_ptr()),
+            int(clearance_mask.data_ptr()),
             int(pad_left),
             int(pad_bottom),
             int(self._W),
@@ -204,8 +204,8 @@ class GridMaps:
         if cached is not None:
             return cached
 
-        body_mask = body_map.to(device=self._device, dtype=torch.bool)
-        clearance_mask = clearance_map.to(device=self._device, dtype=torch.bool)
+        body_mask = body_mask.to(device=self._device, dtype=torch.bool)
+        clearance_mask = clearance_mask.to(device=self._device, dtype=torch.bool)
         body_y, body_x = torch.where(body_mask)
         clear_y, clear_x = torch.where(clearance_mask)
         body_offsets = body_y.to(dtype=torch.long) * int(self._W) + body_x.to(dtype=torch.long)
@@ -292,21 +292,21 @@ class GridMaps:
         gid: GroupId,
         x_bl: int,
         y_bl: int,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> bool:
-        body_map = body_map.to(device=self._device, dtype=torch.bool)
-        clearance_map = clearance_map.to(device=self._device, dtype=torch.bool)
+        body_mask = body_mask.to(device=self._device, dtype=torch.bool)
+        clearance_mask = clearance_mask.to(device=self._device, dtype=torch.bool)
         backend = self._select_batch_backend(gid=gid)
         if backend == "prefixsum":
             result = self._is_placeable_prefixsum(
                 gid=gid,
                 x_bl=int(x_bl),
                 y_bl=int(y_bl),
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
             )
         else:
@@ -314,8 +314,8 @@ class GridMaps:
                 gid=gid,
                 x_bl=int(x_bl),
                 y_bl=int(y_bl),
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
             )
         return result
@@ -326,14 +326,14 @@ class GridMaps:
         gid: GroupId,
         x_bl: int,
         y_bl: int,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
     ) -> bool:
-        bw = int(body_map.shape[1])
-        bh = int(body_map.shape[0])
-        kw = int(clearance_map.shape[1])
-        kh = int(clearance_map.shape[0])
+        bw = int(body_mask.shape[1])
+        bh = int(body_mask.shape[0])
+        kw = int(clearance_mask.shape[1])
+        kh = int(clearance_mask.shape[0])
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
         if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
@@ -387,14 +387,14 @@ class GridMaps:
         gid: GroupId,
         x_bl: int,
         y_bl: int,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
     ) -> bool:
-        bw = int(body_map.shape[1])
-        bh = int(body_map.shape[0])
-        kw = int(clearance_map.shape[1])
-        kh = int(clearance_map.shape[0])
+        bw = int(body_mask.shape[1])
+        bh = int(body_mask.shape[0])
+        kw = int(clearance_mask.shape[1])
+        kh = int(clearance_mask.shape[0])
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
         if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
@@ -424,8 +424,8 @@ class GridMaps:
         base_body = int(body_y0) * int(self._W) + int(body_x0)
         base_clear = int(pad_y0) * int(self._W) + int(pad_x0)
         body_offsets, pad_offsets = self._get_mask_linear_offsets(
-            body_map=body_map,
-            clearance_map=clearance_map,
+            body_mask=body_mask,
+            clearance_mask=clearance_mask,
             clearance_origin=clearance_origin,
         )
         body_idx = base_body + body_offsets
@@ -448,8 +448,8 @@ class GridMaps:
         self,
         *,
         gid: GroupId,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         valid_h: int,
         valid_w: int,
@@ -457,8 +457,8 @@ class GridMaps:
         invalid = self._static_invalid | self.occ_invalid | self._get_zone_invalid(gid)
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
-        body_kernel = body_map.to(device=self._device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-        clearance_kernel = clearance_map.to(device=self._device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        body_kernel = body_mask.to(device=self._device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        clearance_kernel = clearance_mask.to(device=self._device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
         inv_f = invalid.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         clear_f = self.clear_invalid.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
@@ -475,18 +475,18 @@ class GridMaps:
         self,
         *,
         gid: GroupId,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         valid_h: int,
         valid_w: int,
     ) -> torch.Tensor:
         static_ps = self._ensure_static_prefix_cache()
         occ_ps, clear_ps = self._ensure_runtime_prefix_cache()
-        body_h = int(body_map.shape[0])
-        body_w = int(body_map.shape[1])
-        kh = int(clearance_map.shape[0])
-        kw = int(clearance_map.shape[1])
+        body_height = int(body_mask.shape[0])
+        body_width = int(body_mask.shape[1])
+        kh = int(clearance_mask.shape[0])
+        kw = int(clearance_mask.shape[1])
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
         zone_ps = self._get_zone_invalid_ps(gid)
@@ -496,10 +496,10 @@ class GridMaps:
         pad_zone = self._window_sum(zone_ps, kh, kw)
         pad_hit = pad_static + pad_occ + pad_zone
 
-        body_static = self._window_sum(static_ps, body_h, body_w)
-        body_occ = self._window_sum(occ_ps, body_h, body_w)
-        body_zone = self._window_sum(zone_ps, body_h, body_w)
-        body_clear = self._window_sum(clear_ps, body_h, body_w)
+        body_static = self._window_sum(static_ps, body_height, body_width)
+        body_occ = self._window_sum(occ_ps, body_height, body_width)
+        body_zone = self._window_sum(zone_ps, body_height, body_width)
+        body_clear = self._window_sum(clear_ps, body_height, body_width)
 
         body_hit = (
             body_static[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
@@ -515,8 +515,8 @@ class GridMaps:
         gid: GroupId,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
     ) -> torch.Tensor:
         if x_bl.shape != y_bl.shape:
@@ -528,10 +528,10 @@ class GridMaps:
         if result.numel() == 0:
             return result
 
-        bw = int(body_map.shape[1])
-        bh = int(body_map.shape[0])
-        kw = int(clearance_map.shape[1])
-        kh = int(clearance_map.shape[0])
+        bw = int(body_mask.shape[1])
+        bh = int(body_mask.shape[0])
+        kw = int(clearance_mask.shape[1])
+        kh = int(clearance_mask.shape[0])
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
         if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
@@ -631,8 +631,8 @@ class GridMaps:
         gid: GroupId,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
     ) -> torch.Tensor:
         if x_bl.shape != y_bl.shape:
@@ -644,10 +644,10 @@ class GridMaps:
         if result.numel() == 0:
             return result
 
-        bw = int(body_map.shape[1])
-        bh = int(body_map.shape[0])
-        kw = int(clearance_map.shape[1])
-        kh = int(clearance_map.shape[0])
+        bw = int(body_mask.shape[1])
+        bh = int(body_mask.shape[0])
+        kw = int(clearance_mask.shape[1])
+        kh = int(clearance_mask.shape[0])
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
         if bw <= 0 or bh <= 0 or kw <= 0 or kh <= 0:
@@ -686,8 +686,8 @@ class GridMaps:
         base_clear = (y_valid - pad_bottom) * int(self._W) + (x_valid - pad_left)
 
         body_offsets, pad_offsets = self._get_mask_linear_offsets(
-            body_map=body_map,
-            clearance_map=clearance_map,
+            body_mask=body_mask,
+            clearance_mask=clearance_mask,
             clearance_origin=clearance_origin,
         )
         static_f = self._static_invalid.reshape(-1)
@@ -722,8 +722,8 @@ class GridMaps:
         gid: GroupId,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> torch.Tensor:
@@ -734,8 +734,8 @@ class GridMaps:
                 gid=gid,
                 x_bl=x_bl,
                 y_bl=y_bl,
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
             )
         else:
@@ -743,27 +743,27 @@ class GridMaps:
                 gid=gid,
                 x_bl=x_bl,
                 y_bl=y_bl,
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
             )
         return result
 
-    def is_placeable_map(
+    def placeable_map(
         self,
         *,
         gid: GroupId,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> torch.Tensor:
-        body_map = body_map.to(device=self._device, dtype=torch.bool)
-        clearance_map = clearance_map.to(device=self._device, dtype=torch.bool)
-        h = int(body_map.shape[0])
-        w = int(body_map.shape[1])
-        kh = int(clearance_map.shape[0])
-        kw = int(clearance_map.shape[1])
+        body_mask = body_mask.to(device=self._device, dtype=torch.bool)
+        clearance_mask = clearance_mask.to(device=self._device, dtype=torch.bool)
+        h = int(body_mask.shape[0])
+        w = int(body_mask.shape[1])
+        kh = int(clearance_mask.shape[0])
+        kw = int(clearance_mask.shape[1])
         pad_left = int(clearance_origin[0])
         pad_bottom = int(clearance_origin[1])
 
@@ -783,8 +783,8 @@ class GridMaps:
         if backend == "prefixsum":
             valid_mask = self._is_placeable_map_prefixsum(
                 gid=gid,
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
                 valid_h=valid_h,
                 valid_w=valid_w,
@@ -792,8 +792,8 @@ class GridMaps:
         else:
             valid_mask = self._is_placeable_map_conv(
                 gid=gid,
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
                 valid_h=valid_h,
                 valid_w=valid_w,
@@ -895,8 +895,8 @@ class GridMaps:
             map_candidates = candidates["map"]
             batch_candidates = candidates["batch"]
 
-            body_map, clearance_map, clearance_origin, _is_rect = self._get_bench_tensors(spec)
-            kh, kw = int(clearance_map.shape[0]), int(clearance_map.shape[1])
+            body_mask, clearance_mask, clearance_origin, _is_rect = self._get_bench_tensors(spec)
+            kh, kw = int(clearance_mask.shape[0]), int(clearance_mask.shape[1])
             valid_h = self._H - kh + 1
             valid_w = self._W - kw + 1
 
@@ -909,8 +909,8 @@ class GridMaps:
                 for backend in map_candidates:
                     times = self._bench_map(
                         gid=gid,
-                        body_map=body_map,
-                        clearance_map=clearance_map,
+                        body_mask=body_mask,
+                        clearance_mask=clearance_mask,
                         clearance_origin=clearance_origin,
                         valid_h=valid_h,
                         valid_w=valid_w,
@@ -931,8 +931,8 @@ class GridMaps:
                 for backend in batch_candidates:
                     times = self._bench_batch(
                         gid=gid,
-                        body_map=body_map,
-                        clearance_map=clearance_map,
+                        body_mask=body_mask,
+                        clearance_mask=clearance_mask,
                         clearance_origin=clearance_origin,
                         n_candidates=n_candidates,
                         backend=backend,
@@ -968,7 +968,7 @@ class GridMaps:
     def _get_bench_tensors(
         self, spec: GroupSpec,
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]:
-        """Get a representative (body_map, clearance_map, clearance_origin, is_rectangular) from spec."""
+        """Get a representative (body_mask, clearance_mask, clearance_origin, is_rectangular) from spec."""
         vi = spec.variants[0]
         shape_key = getattr(vi, "shape_key", None)
         if shape_key is not None:
@@ -983,8 +983,8 @@ class GridMaps:
         self,
         *,
         gid: GroupId,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         valid_h: int,
         valid_w: int,
@@ -995,8 +995,8 @@ class GridMaps:
         fn = self._is_placeable_map_conv if backend == "conv" else self._is_placeable_map_prefixsum
         kwargs = dict(
             gid=gid,
-            body_map=body_map.to(device=self._device, dtype=torch.bool),
-            clearance_map=clearance_map.to(device=self._device, dtype=torch.bool),
+            body_mask=body_mask.to(device=self._device, dtype=torch.bool),
+            clearance_mask=clearance_mask.to(device=self._device, dtype=torch.bool),
             clearance_origin=clearance_origin,
             valid_h=valid_h,
             valid_w=valid_w,
@@ -1019,8 +1019,8 @@ class GridMaps:
         self,
         *,
         gid: GroupId,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         n_candidates: int,
         backend: str,
@@ -1029,9 +1029,9 @@ class GridMaps:
     ) -> List[float]:
         fn = self._is_placeable_batch_prefixsum if backend == "prefixsum" else self._is_placeable_batch_gather
         # Generate random valid positions within grid
-        bh, bw = int(body_map.shape[0]), int(body_map.shape[1])
+        bh, bw = int(body_mask.shape[0]), int(body_mask.shape[1])
         pad_left, pad_bottom = int(clearance_origin[0]), int(clearance_origin[1])
-        kh, kw = int(clearance_map.shape[0]), int(clearance_map.shape[1])
+        kh, kw = int(clearance_mask.shape[0]), int(clearance_mask.shape[1])
         max_x = max(1, self._W - bw - (kw - bw) + 1)
         max_y = max(1, self._H - bh - (kh - bh) + 1)
         x_bl = torch.randint(pad_left, max(pad_left + 1, max_x), (n_candidates,), device=self._device)
@@ -1040,8 +1040,8 @@ class GridMaps:
             gid=gid,
             x_bl=x_bl,
             y_bl=y_bl,
-            body_map=body_map.to(device=self._device, dtype=torch.bool),
-            clearance_map=clearance_map.to(device=self._device, dtype=torch.bool),
+            body_mask=body_mask.to(device=self._device, dtype=torch.bool),
+            clearance_mask=clearance_mask.to(device=self._device, dtype=torch.bool),
             clearance_origin=clearance_origin,
         )
         is_cuda = self._device.type == "cuda"
@@ -1157,8 +1157,8 @@ class GridMaps:
         bbox_max_y: float,
         x_bl: int,
         y_bl: int,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> None:
@@ -1180,14 +1180,14 @@ class GridMaps:
 
         self._paint_mask(
             dst=self.occ_invalid,
-            mask=body_map,
+            mask=body_mask,
             x0=int(x_bl),
             y0=int(y_bl),
             is_rectangular=is_rectangular,
         )
         self._paint_mask(
             dst=self.clear_invalid,
-            mask=clearance_map,
+            mask=clearance_mask,
             x0=int(x_bl) - int(clearance_origin[0]),
             y0=int(y_bl) - int(clearance_origin[1]),
             is_rectangular=is_rectangular,

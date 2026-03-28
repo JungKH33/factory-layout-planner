@@ -15,7 +15,7 @@ class GreedyV4Adapter(BaseAdapter):
     """Cell-capped top-K adapter with coarse-cell annotations.
 
     Scores every valid center from ``placeable_center_map`` in one
-    ``cost_batch`` call, keeps the best ``top_per_cell`` centers per coarse
+    ``score_batch`` call, keeps the best ``top_per_cell`` centers per coarse
     cell, then interleaves those per-cell rankings until K actions are filled.
 
     Observation includes:
@@ -122,7 +122,7 @@ class GreedyV4Adapter(BaseAdapter):
 
         Steps:
         1. ``placeable_center_map`` → all valid center positions
-        2. ``cost_batch`` → score all valid centers in one call
+        2. ``score_batch`` → score all valid centers in one call
         3. (optional) quantize-dedup by ``quant_step``
         4. Keep the best ``top_per_cell`` centers in each coarse cell
         5. Round-robin interleave per-cell rankings until K candidates are filled
@@ -195,7 +195,7 @@ class GreedyV4Adapter(BaseAdapter):
         costs: torch.Tensor,
         cells: torch.Tensor,
     ) -> torch.Tensor:
-        """Select up to ``top_per_cell`` entries per cell, then round-robin trim.
+        """Select up to ``top_per_cell`` entry_points per cell, then round-robin trim.
 
         Cells are ordered by their best candidate cost so higher-quality cells
         contribute earlier when the union exceeds ``k``.
@@ -324,8 +324,8 @@ if __name__ == "__main__":
     candidates = adapter.build_action_space()
     dt_reset_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid = int(candidates.mask.sum().item())
-    a = int(torch.where(candidates.mask)[0][0].item()) if valid > 0 else 0
+    valid = int(candidates.valid_mask.sum().item())
+    a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
 
     print("GreedyV4Adapter demo")
     print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3  quant_step=10.0")
@@ -347,10 +347,10 @@ if __name__ == "__main__":
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0
 
-    valid2 = int(candidates2.mask.sum().item())
+    valid2 = int(candidates2.valid_mask.sum().item())
     print(f"  step_ms={dt_step_ms:.3f}  valid_after_step={valid2}")
 
-    if int(candidates2.mask.shape[0]) > 0:
+    if int(candidates2.valid_mask.shape[0]) > 0:
         plot_layout(engine, action_space=candidates2)
     else:
         plot_layout(engine, action_space=None)

@@ -2,6 +2,7 @@
 results/
 pretrained/
 records/
+old/
 
 # === Python bytecode ===
 __pycache__/

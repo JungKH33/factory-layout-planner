@@ -359,33 +359,33 @@ class FactoryLayoutEnv(gym.Env):
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
 
         poses = torch.tensor(
-            [[p.x_c, p.y_c] for p in placements],
+            [[p.x_center, p.y_center] for p in placements],
             dtype=torch.float32, device=self.device,
         )
 
-        # Build entries/exits tensors from placement geometry
-        max_ent = max((len(p.entries) for p in placements), default=0)
-        max_exi = max((len(p.exits) for p in placements), default=0)
-        entries = None
-        exits = None
-        entries_mask = None
-        exits_mask = None
+        # Build entry_points/exit_points tensors from placement geometry
+        max_ent = max((len(p.entry_points) for p in placements), default=0)
+        max_exi = max((len(p.exit_points) for p in placements), default=0)
+        entry_points = None
+        exit_points = None
+        entry_mask = None
+        exit_mask = None
         if max_ent > 0:
-            entries = torch.zeros((M, max_ent, 2), dtype=torch.float32, device=self.device)
-            entries_mask = torch.zeros((M, max_ent), dtype=torch.bool, device=self.device)
+            entry_points = torch.zeros((M, max_ent, 2), dtype=torch.float32, device=self.device)
+            entry_mask = torch.zeros((M, max_ent), dtype=torch.bool, device=self.device)
             for i, p in enumerate(placements):
-                for j, (ex, ey) in enumerate(p.entries):
-                    entries[i, j, 0] = float(ex)
-                    entries[i, j, 1] = float(ey)
-                    entries_mask[i, j] = True
+                for j, (ex, ey) in enumerate(p.entry_points):
+                    entry_points[i, j, 0] = float(ex)
+                    entry_points[i, j, 1] = float(ey)
+                    entry_mask[i, j] = True
         if max_exi > 0:
-            exits = torch.zeros((M, max_exi, 2), dtype=torch.float32, device=self.device)
-            exits_mask = torch.zeros((M, max_exi), dtype=torch.bool, device=self.device)
+            exit_points = torch.zeros((M, max_exi, 2), dtype=torch.float32, device=self.device)
+            exit_mask = torch.zeros((M, max_exi), dtype=torch.bool, device=self.device)
             for i, p in enumerate(placements):
-                for j, (ex, ey) in enumerate(p.exits):
-                    exits[i, j, 0] = float(ex)
-                    exits[i, j, 1] = float(ey)
-                    exits_mask[i, j] = True
+                for j, (ex, ey) in enumerate(p.exit_points):
+                    exit_points[i, j, 0] = float(ex)
+                    exit_points[i, j, 1] = float(ey)
+                    exit_mask[i, j] = True
 
         min_x = torch.tensor([p.min_x for p in placements], dtype=torch.float32, device=self.device)
         max_x = torch.tensor([p.max_x for p in placements], dtype=torch.float32, device=self.device)
@@ -394,8 +394,8 @@ class FactoryLayoutEnv(gym.Env):
 
         return self._reward.delta_batch(
             self._state, gid=gid,
-            entries=entries, exits=exits,
-            entries_mask=entries_mask, exits_mask=exits_mask,
+            entry_points=entry_points, exit_points=exit_points,
+            entry_mask=entry_mask, exit_mask=exit_mask,
             min_x=min_x, max_x=max_x,
             min_y=min_y, max_y=max_y,
         ).to(dtype=torch.float32)
@@ -403,10 +403,10 @@ class FactoryLayoutEnv(gym.Env):
     def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, float, float]:
         if not isinstance(action, EnvAction):
             raise TypeError(f"expected EnvAction, got {type(action).__name__}")
-        gid_eff: GroupId = action.gid
+        gid_eff: GroupId = action.group_id
         if gid_eff not in self.group_specs:
             raise KeyError(f"unknown gid={gid_eff!r}")
-        return gid_eff, float(action.x_c), float(action.y_c)
+        return gid_eff, float(action.x_center), float(action.y_center)
 
     def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'GroupPlacement | None']:
         """Resolve a center-based EnvAction to (gid, concrete placement or None).
@@ -415,23 +415,23 @@ class FactoryLayoutEnv(gym.Env):
         one.  If ``action.variant_index`` is set, only that specific variant
         is attempted.
         """
-        gid, x_c, y_c = self._normalize_action(action)
+        gid, x_center, y_center = self._normalize_action(action)
         geom = self._group_spec(gid)
 
-        def _check_placeable(x_bl, y_bl, body_map, clearance_map, clearance_origin, is_rectangular):
+        def _check_placeable(x_bl, y_bl, body_mask, clearance_mask, clearance_origin, is_rectangular):
             return self._state.is_placeable(
                 gid=gid,
                 x_bl=int(x_bl),
                 y_bl=int(y_bl),
-                body_map=body_map,
-                clearance_map=clearance_map,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
                 is_rectangular=bool(is_rectangular),
             )
 
         placement = geom.resolve(
-            x_c=float(x_c),
-            y_c=float(y_c),
+            x_center=float(x_center),
+            y_center=float(y_center),
             is_placeable_fn=_check_placeable,
             score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
             variant_index=action.variant_index,
@@ -592,7 +592,7 @@ class FactoryLayoutEnv(gym.Env):
             return {}, 0.0, True, False, {"reason": "done"}
 
         try:
-            gid_eff, x_c, y_c = self._normalize_action(action)
+            gid_eff, x_center, y_center = self._normalize_action(action)
         except TypeError:
             raise
         except Exception:
@@ -681,9 +681,9 @@ class FactoryLayoutEnv(gym.Env):
                         f"reset(options): initial_placements[{gid!r}] must be EnvAction, "
                         f"got {type(action).__name__}"
                     )
-                if gid != action.gid:
+                if gid != action.group_id:
                     raise ValueError(
-                        f"reset(options): key {gid!r} does not match action.gid={action.gid!r}"
+                        f"reset(options): key {gid!r} does not match action.group_id={action.group_id!r}"
                     )
                 if gid in self._state.placed:
                     raise ValueError(f"reset(options): initial_placements contains duplicate gid: {gid!r}")
@@ -691,7 +691,7 @@ class FactoryLayoutEnv(gym.Env):
                 if placement is None:
                     warnings.warn(
                         f"reset(options): not placeable gid={gid!r} "
-                        f"x_c={action.x_c} y_c={action.y_c} vi={action.variant_index} — skipping",
+                        f"x_center={action.x_center} y_center={action.y_center} vi={action.variant_index} — skipping",
                         stacklevel=2,
                     )
                     continue
@@ -713,7 +713,7 @@ if __name__ == "__main__":
     dev = torch.device("cpu")
 
     # ---------------------------------------------------------------
-    # Group specs — BL-relative entries/exits, 여러 포트 사용 예시
+    # Group specs — BL-relative entry_points/exit_points, 여러 포트 사용 예시
     #
     # A (20×10): 왼쪽 2개 entry, 오른쪽·위 각 1개 exit
     # B (15×15): 왼쪽 2개 entry, 오른쪽·아래 각 1개 exit
@@ -790,8 +790,8 @@ if __name__ == "__main__":
     # --- reset: A·B 사전 배치, C만 step으로 배치 ---
     # forbidden [0,0,30,20] 밖 + constraint map 조건
     initial_placements = {
-        "A": EnvAction(gid="A", x_c=42.0, y_c=27.0, variant_index=0),
-        "B": EnvAction(gid="B", x_c=62.5, y_c=29.5, variant_index=0),
+        "A": EnvAction(group_id="A", x_center=42.0, y_center=27.0, variant_index=0),
+        "B": EnvAction(group_id="B", x_center=62.5, y_center=29.5, variant_index=0),
     }
     t1 = time.perf_counter()
     obs, _ = env.reset(options={"initial_placements": initial_placements})
@@ -806,7 +806,7 @@ if __name__ == "__main__":
     t2 = time.perf_counter()
     # C: 18×12 at rotation=0 → center = (74 + 9, 22 + 6) = (83, 28)
     obs2, reward, terminated, truncated, info = env.step_action(
-        EnvAction(gid="C", x_c=83.0, y_c=28.0)
+        EnvAction(group_id="C", x_center=83.0, y_center=28.0)
     )
     step_ms = (time.perf_counter() - t2) * 1000.0
 

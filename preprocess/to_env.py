@@ -579,7 +579,7 @@ def build_initial_placements(
     groups: Dict[str, Dict],
     scale: float,
 ) -> Dict[str, List[float]]:
-    """Convert fixedFacilityPositions to initial_placements [x_c, y_c, variant_index]."""
+    """Convert fixedFacilityPositions to initial_placements [x_center, y_center, variant_index]."""
     placements: Dict[str, List[float]] = {}
 
     # rotation degrees → variant_index mapping
@@ -613,11 +613,11 @@ def build_initial_placements(
         # swap dimensions for 90/270
         if rot_deg in (90, 270):
             w, h = h, w
-        x_c = x_bl + w / 2.0
-        y_c = y_bl + h / 2.0
+        x_center = x_bl + w / 2.0
+        y_center = y_bl + h / 2.0
 
         if group_id not in placements:
-            placements[group_id] = [x_c, y_c, oi]
+            placements[group_id] = [x_center, y_center, oi]
         else:
             logger.info("Group %s already has initial placement, skipping %s", group_id, fac_id)
 

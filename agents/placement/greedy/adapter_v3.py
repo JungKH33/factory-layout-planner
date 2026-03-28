@@ -21,7 +21,7 @@ class GreedyV3Adapter(BaseAdapter):
 
     Notes:
     - ``action_mask`` is ``torch.BoolTensor[K]`` (True means valid).
-    - ``action_poses`` is ``torch.FloatTensor[K, 2]`` of ``(x_c, y_c)``
+    - ``action_poses`` is ``torch.FloatTensor[K, 2]`` of ``(x_center, y_center)``
       center coordinates.
     """
 
@@ -141,7 +141,7 @@ class GreedyV3Adapter(BaseAdapter):
     ) -> torch.Tensor:
         """Sample up to *count* center positions from a center-based validity map.
 
-        Returns ``[M, 2]`` float tensor of ``(x_c, y_c)`` positions.
+        Returns ``[M, 2]`` float tensor of ``(x_center, y_center)`` positions.
         """
         idx = torch.nonzero(valid_map, as_tuple=False)  # [M, 2] of (y, x)
         if idx.numel() == 0:
@@ -150,7 +150,7 @@ class GreedyV3Adapter(BaseAdapter):
         if M > count:
             perm = torch.randperm(M, generator=gen, device=valid_map.device)[:count]
             idx = idx[perm]
-        # Convert (y, x) -> (x_c, y_c) with +0.5 offset for center of grid cell
+        # Convert (y, x) -> (x_center, y_center) with +0.5 offset for center of grid cell
         centers = torch.stack([idx[:, 1].float(), idx[:, 0].float()], dim=-1)
         return centers
 
@@ -212,7 +212,7 @@ class GreedyV3Adapter(BaseAdapter):
         # No explicit placeable_batch check needed: candidates come from
         # the center_map which guarantees at least one variant is valid.
         # Any false-positives from the integer center shift are handled by
-        # cost_batch (returns inf for non-placeable) and resolve_action.
+        # score_batch (returns inf for non-placeable) and resolve_action.
 
         # Keep order: edge first, then fill.  Trim to K.
         final = [c for _src, c in unique_tagged][:self.k]
@@ -248,8 +248,8 @@ if __name__ == "__main__":
     candidates = adapter.build_action_space()
     dt_reset_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid = int(candidates.mask.sum().item())
-    a = int(torch.where(candidates.mask)[0][0].item()) if valid > 0 else 0
+    valid = int(candidates.valid_mask.sum().item())
+    a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
 
     # Plot: initial candidates (interactive; close to continue)
     plot_layout(engine, action_space=candidates)
@@ -262,7 +262,7 @@ if __name__ == "__main__":
     dt_step_ms = (time.perf_counter() - t1) * 1000.0
 
     # Plot: after 1 placement + new candidates (if any)
-    if int(candidates2.mask.shape[0]) > 0:
+    if int(candidates2.valid_mask.shape[0]) > 0:
         plot_layout(engine, action_space=candidates2)
     else:
         plot_layout(engine, action_space=None)

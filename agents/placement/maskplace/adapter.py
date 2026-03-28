@@ -65,7 +65,7 @@ class MaskPlaceAdapter(BaseAdapter):
         return self.engine.get_state().remaining[k]
 
     def _action_poses_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
-        """Return float32 [G*G,2] table mapping action index -> (x_c, y_c) center coordinates."""
+        """Return float32 [G*G,2] table mapping action index -> (x_center, y_center) center coordinates."""
         g = int(self.grid)
         if gid is None:
             return torch.zeros((g * g, 2), dtype=torch.float32, device=self.device)
@@ -98,7 +98,7 @@ class MaskPlaceAdapter(BaseAdapter):
 
         ok = spec.placeable_batch(
             state=state, gid=gid,
-            x_c=cx.reshape(-1), y_c=cy.reshape(-1),
+            x_center=cx.reshape(-1), y_center=cy.reshape(-1),
         )
         return ok
 
@@ -260,16 +260,16 @@ if __name__ == "__main__":
     candidates = adapter.build_action_space()
     dt_reset_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid = int(candidates.mask.sum().item())
-    a = int(torch.where(candidates.mask)[0][0].item()) if valid > 0 else 0
+    valid = int(candidates.valid_mask.sum().item())
+    a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
 
     # For visualization, subsample valid points (224^2 can be large).
-    idxs = torch.where(candidates.mask)[0][:5000]
-    xy = candidates.poses[idxs]
+    idxs = torch.where(candidates.valid_mask)[0][:5000]
+    xy = candidates.centers[idxs]
     cand0 = ActionSpace(
-        poses=xy,
-        mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
-        gid=candidates.gid,
+        centers=xy,
+        valid_mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
+        gid=candidates.group_id,
     )
     plot_layout(engine, action_space=cand0)
 
@@ -281,13 +281,13 @@ if __name__ == "__main__":
     dt_step_ms = (time.perf_counter() - t1) * 1000.0
 
     # Plot after one placement (subsample new valid points)
-    if int(candidates2.mask.shape[0]) > 0:
-        idxs2 = torch.where(candidates2.mask)[0][:5000]
-        xy2 = candidates2.poses[idxs2]
+    if int(candidates2.valid_mask.shape[0]) > 0:
+        idxs2 = torch.where(candidates2.valid_mask)[0][:5000]
+        xy2 = candidates2.centers[idxs2]
         cand1 = ActionSpace(
-            poses=xy2,
-            mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
-            gid=candidates2.gid,
+            centers=xy2,
+            valid_mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
+            gid=candidates2.group_id,
         )
         plot_layout(engine, action_space=cand1)
     else:
@@ -298,7 +298,7 @@ if __name__ == "__main__":
     print(" valid_actions=", valid, "first_valid_action=", a, "plotted=", int(xy.shape[0]))
     print(f" reset_ms={dt_reset_ms:.3f} step_ms={dt_step_ms:.3f}")
 
-    # Show maps: canvas(map0), net_img(map1), invalid(mask=map2), net_img_2(map3), mask_2(map4) (close to continue)
+    # Show maps: canvas(map0), net_img(map1), invalid(valid_mask=map2), net_img_2(map3), mask_2(map4) (close to continue)
     if isinstance(adapter._last_maps, torch.Tensor) and adapter._last_maps.numel() > 0:
         maps = adapter._last_maps.detach().to(device="cpu", dtype=torch.float32).numpy()  # [5,G,G]
         canvas = maps[0]

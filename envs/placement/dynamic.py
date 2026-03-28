@@ -74,8 +74,8 @@ class DynamicPlacement:
     max_x: Optional[float] = None
     min_y: Optional[float] = None
     max_y: Optional[float] = None
-    entries: List[Tuple[float, float]] = field(default_factory=list)
-    exits: List[Tuple[float, float]] = field(default_factory=list)
+    entry_points: List[Tuple[float, float]] = field(default_factory=list)
+    exit_points: List[Tuple[float, float]] = field(default_factory=list)
 
 
 class DynamicPlanner:
@@ -476,8 +476,8 @@ class DynamicPlanner:
         - geom.unit_z/unit_capacity: capacity scale
         - geom.max_capacity: target capacity to reach
         - invalid/clear_invalid/occupied: optional local feasibility maps
-        - flow_out_target_entries_xy/flow_out_weights: optional flow targets for choosing exits
-        - flow_in_target_exits_xy/flow_in_weights: optional flow targets for choosing entries
+        - flow_out_target_entries_xy/flow_out_weights: optional flow targets for choosing exit_points
+        - flow_in_target_exits_xy/flow_in_weights: optional flow targets for choosing entry_points
         """
         geom.validate()
         device = geom.device
@@ -734,7 +734,7 @@ class DynamicPlanner:
                     if int(entry_pen.numel()) > 0 and bool((entry_pen == entry_pen).any().item()):
                         i_ent = int(torch.argmin(entry_pen).item())
                         e = boundary_xy[i_ent]
-                        result.entries = [(float(e[0].item()), float(e[1].item()))]
+                        result.entry_points = [(float(e[0].item()), float(e[1].item()))]
 
                 # exit port selection (outgoing term only)
                 if need_exit:
@@ -755,6 +755,6 @@ class DynamicPlanner:
                     if int(exit_pen.numel()) > 0 and bool((exit_pen == exit_pen).any().item()):
                         i_ex = int(torch.argmin(exit_pen).item())
                         ex = boundary_xy[i_ex]
-                        result.exits = [(float(ex[0].item()), float(ex[1].item()))]
+                        result.exit_points = [(float(ex[0].item()), float(ex[1].item()))]
 
         return result

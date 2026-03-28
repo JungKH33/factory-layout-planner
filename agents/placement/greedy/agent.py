@@ -19,10 +19,10 @@ class GreedyAgent:
     prior_temperature: float = 1.0
 
     def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
-        device = action_space.poses.device
-        N = int(action_space.poses.shape[0])
+        device = action_space.centers.device
+        N = int(action_space.centers.shape[0])
         priors = torch.zeros((N,), dtype=torch.float32, device=device)
-        valid = action_space.mask
+        valid = action_space.valid_mask
         valid_idx = torch.where(valid.view(-1))[0]
         if int(valid_idx.numel()) == 0:
             return priors
@@ -49,11 +49,11 @@ class GreedyAgent:
         return priors
 
     def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
-        N = int(action_space.poses.shape[0])
+        N = int(action_space.centers.shape[0])
         if N <= 0:
             return 0
 
-        valid = action_space.mask
+        valid = action_space.valid_mask
         valid_idx = torch.where(valid.view(-1))[0]
         if int(valid_idx.numel()) == 0:
             return 0
@@ -61,7 +61,7 @@ class GreedyAgent:
         scores_obs = obs.get("action_costs", None)
         if not (isinstance(scores_obs, torch.Tensor) and int(scores_obs.numel()) == N):
             return int(valid_idx[0].item())
-        scores = scores_obs.to(dtype=torch.float32, device=action_space.poses.device).view(-1)[valid_idx]
+        scores = scores_obs.to(dtype=torch.float32, device=action_space.centers.device).view(-1)[valid_idx]
         best_k = int(torch.argmin(scores).item()) if scores.numel() > 0 else 0
         return int(valid_idx[best_k].item()) if int(valid_idx.numel()) > 0 else 0
 
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     adapter.bind(engine)
     obs = adapter.build_observation()
     action_space = adapter.build_action_space()
-    next_gid = action_space.gid
+    next_gid = action_space.group_id
     agent = GreedyAgent(prior_temperature=1.0)
 
     t0 = time.perf_counter()
@@ -101,8 +101,8 @@ if __name__ == "__main__":
     a = agent.select_action(obs=obs, action_space=action_space)
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid_n = int(action_space.mask.sum().item())
-    pose = action_space.poses[a].tolist() if int(action_space.poses.shape[0]) > 0 else [0, 0]
+    valid_n = int(action_space.valid_mask.sum().item())
+    pose = action_space.centers[a].tolist() if int(action_space.centers.shape[0]) > 0 else [0, 0]
 
     print("agents.greedy demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", next_gid)

@@ -138,9 +138,9 @@ class Session:
         if isinstance(self.obs, dict) and "action_mask" in self.obs:
             if "action_poses" in self.obs:
                 self.candidates = ActionSpace(
-                    poses=self.obs["action_poses"],
-                    mask=self.obs["action_mask"],
-                    gid=next_gid,
+                    centers=self.obs["action_poses"],
+                    valid_mask=self.obs["action_mask"],
+                    group_id=next_gid,
                 )
             else:
                 self.candidates = None
@@ -183,16 +183,16 @@ class Session:
         # Candidates
         candidates = []
         if self.candidates is not None:
-            mask = self.candidates.mask.detach().cpu().numpy()
-            poses = self.candidates.poses.detach().cpu().numpy()
+            mask = self.candidates.valid_mask.detach().cpu().numpy()
+            poses = self.candidates.centers.detach().cpu().numpy()
             scores = self.scores if self.scores is not None else np.zeros(len(poses))
 
             for i in range(len(poses)):
-                x_c, y_c = float(poses[i, 0]), float(poses[i, 1])
+                x_center, y_center = float(poses[i, 0]), float(poses[i, 1])
                 candidates.append(CandidateInfo(
                     index=i,
-                    x=x_c,
-                    y=y_c,
+                    x=x_center,
+                    y=y_center,
                     rot=0,
                     score=float(scores[i]) if i < len(scores) else 0.0,
                     valid=bool(mask[i]),
@@ -260,14 +260,14 @@ class Session:
                 # Add positions if both are placed
                 if src in engine.get_state().placed:
                     p_src = engine.get_state().placements[src]
-                    sx = float(getattr(p_src, "x_c"))
-                    sy = float(getattr(p_src, "y_c"))
+                    sx = float(getattr(p_src, "x_center"))
+                    sy = float(getattr(p_src, "y_center"))
                     edge.src_x = float(sx)
                     edge.src_y = float(sy)
                 if dst in engine.get_state().placed:
                     p_dst = engine.get_state().placements[dst]
-                    dx = float(getattr(p_dst, "x_c"))
-                    dy = float(getattr(p_dst, "y_c"))
+                    dx = float(getattr(p_dst, "x_center"))
+                    dy = float(getattr(p_dst, "y_center"))
                     edge.dst_x = float(dx)
                     edge.dst_y = float(dy)
                 flow_edges.append(edge)

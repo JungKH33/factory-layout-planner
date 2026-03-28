@@ -111,7 +111,7 @@ class AlphaChipAdapter(BaseAdapter):
 
         ok = spec.placeable_batch(
             state=state, gid=gid,
-            x_c=cx.reshape(-1), y_c=cy.reshape(-1),
+            x_center=cx.reshape(-1), y_center=cy.reshape(-1),
         )
         return ok
 
@@ -158,11 +158,11 @@ class AlphaChipAdapter(BaseAdapter):
             if idx is None:
                 continue
             p = self.engine.get_state().placements[gid]
-            x_c = float(getattr(p, "x_c", (float(getattr(p, "min_x", 0.0)) + float(getattr(p, "max_x", 0.0))) / 2.0))
-            y_c = float(getattr(p, "y_c", (float(getattr(p, "min_y", 0.0)) + float(getattr(p, "max_y", 0.0))) / 2.0))
+            x_center = float(getattr(p, "x_center", (float(getattr(p, "min_x", 0.0)) + float(getattr(p, "max_x", 0.0))) / 2.0))
+            y_center = float(getattr(p, "y_center", (float(getattr(p, "min_y", 0.0)) + float(getattr(p, "max_y", 0.0))) / 2.0))
             x[int(idx), 2] = 1.0
-            x[int(idx), 3] = x_c / float(self.engine.grid_width)
-            x[int(idx), 4] = y_c / float(self.engine.grid_height)
+            x[int(idx), 3] = x_center / float(self.engine.grid_width)
+            x[int(idx), 4] = y_center / float(self.engine.grid_height)
         return x
 
     def _build_netlist_metadata(self) -> torch.Tensor:
@@ -296,8 +296,8 @@ if __name__ == "__main__":
     candidates = adapter.build_action_space()
     dt_reset_ms = (time.perf_counter() - t0) * 1000.0
 
-    valid = int(candidates.mask.sum().item())
-    a = int(torch.where(candidates.mask)[0][0].item()) if valid > 0 else 0
+    valid = int(candidates.valid_mask.sum().item())
+    a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
 
     # Print obs tensors + visualize graph structure.
     _print_alphachip_obs({k: obs[k] for k in obs.keys()})
@@ -305,12 +305,12 @@ if __name__ == "__main__":
 
     # Build BL candidates for visualization (avoid plotting all invalid points).
     g = int(adapter.coarse_grid)
-    idxs = torch.where(candidates.mask)[0]
-    xy = candidates.poses[idxs]
+    idxs = torch.where(candidates.valid_mask)[0]
+    xy = candidates.centers[idxs]
     cand0 = ActionSpace(
-        poses=xy,
-        mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
-        gid=candidates.gid,
+        centers=xy,
+        valid_mask=torch.ones((xy.shape[0],), dtype=torch.bool, device=device),
+        group_id=candidates.group_id,
     )
     plot_layout(engine, action_space=cand0)
 
@@ -322,15 +322,15 @@ if __name__ == "__main__":
     dt_step_ms = (time.perf_counter() - t1) * 1000.0
 
     # Plot after one placement (new candidates)
-    if int(candidates2.mask.shape[0]) > 0:
+    if int(candidates2.valid_mask.shape[0]) > 0:
         _print_alphachip_obs({k: obs2[k] for k in obs2.keys()})
         _plot_alphachip_graph({k: obs2[k] for k in obs2.keys()}, title="AlphaChip obs graph (after 1 step)")
-        idxs2 = torch.where(candidates2.mask)[0]
-        xy2 = candidates2.poses[idxs2]
+        idxs2 = torch.where(candidates2.valid_mask)[0]
+        xy2 = candidates2.centers[idxs2]
         cand1 = ActionSpace(
-            poses=xy2,
-            mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
-            gid=candidates2.gid,
+            centers=xy2,
+            valid_mask=torch.ones((xy2.shape[0],), dtype=torch.bool, device=device),
+            group_id=candidates2.group_id,
         )
         plot_layout(engine, action_space=cand1)
     else:

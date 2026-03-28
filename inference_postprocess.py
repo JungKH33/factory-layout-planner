@@ -134,7 +134,7 @@ def main() -> None:
     logger.info("Remaining groups: %s", len(base_env.get_state().remaining))
     
     # ===== 1.5. 기존 그룹 미리 배치 (하드코딩) =====
-    # (gid, x_c, y_c, variant_index) 형식 — center 기반
+    # (gid, x_center, y_center, variant_index) 형식 — center 기반
     # forbidden area: [0, 0, 150, 200] 피해서 배치
     PRE_PLACEMENTS = [
         ("A", 180.0, 240.0, 0),
@@ -147,13 +147,13 @@ def main() -> None:
 
     if PRE_PLACEMENTS:
         logger.info("Pre-placing %s groups (hardcoded)", len(PRE_PLACEMENTS))
-        for gid, x_c, y_c, oi in PRE_PLACEMENTS:
+        for gid, x_center, y_center, oi in PRE_PLACEMENTS:
             if gid in base_env.get_state().remaining:
                 _obs, _reward, _terminated, _truncated, info = base_env.step_action(
-                    EnvAction(gid=gid, x_c=x_c, y_c=y_c, variant_index=oi)
+                    EnvAction(group_id=gid, x_center=x_center, y_center=y_center, variant_index=oi)
                 )
                 if info.get("reason") == "placed":
-                    logger.info("Placed: %s at center (%.1f, %.1f) oi=%d", gid, x_c, y_c, oi)
+                    logger.info("Placed: %s at center (%.1f, %.1f) oi=%d", gid, x_center, y_center, oi)
                 else:
                     logger.warning("Failed to pre-place %s: reason=%s", gid, info.get("reason"))
             else:
@@ -168,7 +168,7 @@ def main() -> None:
     for cfg in configs:
         logger.info(
             "- %s: %s cells, %sx%s, rotatable=%s",
-            cfg.gid,
+            cfg.group_id,
             cfg.total_cells,
             cfg.cell_width,
             cfg.cell_depth,
@@ -182,7 +182,7 @@ def main() -> None:
     else:
         # 자동 생성: storage 그룹 간 + 기존 배치된 그룹과 양방향 연결
         group_flow: Dict[str, Dict[str, float]] = {}
-        storage_gids = [cfg.gid for cfg in configs]
+        storage_gids = [cfg.group_id for cfg in configs]
         
         # storage 그룹 간 양방향 연결
         for i, gid1 in enumerate(storage_gids):
@@ -194,8 +194,8 @@ def main() -> None:
         # 기존 배치된 그룹과 양방향 연결
         for gid in base_env.get_state().placed:
             for cfg in configs:
-                group_flow.setdefault(gid, {})[cfg.gid] = 1.0
-                group_flow[cfg.gid][gid] = 1.0
+                group_flow.setdefault(gid, {})[cfg.group_id] = 1.0
+                group_flow[cfg.group_id][gid] = 1.0
     
     logger.info("Group flow: %s", group_flow)
     
@@ -254,12 +254,12 @@ def main() -> None:
     
     while not (terminated or truncated):
         step += 1
-        current_gid = dynamic_env.gid
+        current_gid = dynamic_env.group_id
         
         # Wrapper decide (no pipeline/search in dynamic wrapper path)
         obs_decision = env.build_observation()
         action_space = env.build_action_space()
-        valid_n = int(action_space.mask.to(torch.int64).sum().item())
+        valid_n = int(action_space.valid_mask.to(torch.int64).sum().item())
         if valid_n <= 0:
             reward = -1.0
             terminated = False
@@ -325,7 +325,7 @@ def main() -> None:
     total_units_all = 0
     total_cells_all = 0
 
-    cfg_map = {c.gid: c for c in configs}
+    cfg_map = {c.group_id: c for c in configs}
 
     for j, (gid, units) in enumerate(dynamic_env.placed_history.items()):
         face, edge = palette[j % len(palette)]

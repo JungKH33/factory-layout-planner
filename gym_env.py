@@ -71,7 +71,7 @@ class AdapterGymEnv(gym.Env):
 
         obs = self.adapter.build_observation()
         action_space = self.adapter.build_action_space()
-        obs["action_mask"] = action_space.mask
+        obs["action_mask"] = action_space.valid_mask
         return obs, {}
 
     def step(
@@ -84,7 +84,7 @@ class AdapterGymEnv(gym.Env):
         except (IndexError, ValueError):
             reward = float(self.engine.failure_penalty())
             obs = self.adapter.build_observation()
-            obs["action_mask"] = torch.zeros_like(action_space.mask)
+            obs["action_mask"] = torch.zeros_like(action_space.valid_mask)
             return obs, reward, False, True, {"reason": "invalid_action"}
 
         _, reward, terminated, truncated, info = self.engine.step_action(env_action)
@@ -92,8 +92,8 @@ class AdapterGymEnv(gym.Env):
 
         if not (terminated or truncated):
             next_as = self.adapter.build_action_space()
-            obs["action_mask"] = next_as.mask
+            obs["action_mask"] = next_as.valid_mask
         else:
-            obs["action_mask"] = torch.zeros_like(action_space.mask)
+            obs["action_mask"] = torch.zeros_like(action_space.valid_mask)
 
         return obs, float(reward), bool(terminated), bool(truncated), info

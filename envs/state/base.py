@@ -143,13 +143,13 @@ class EnvState:
             )
         x0 = int(math.floor(float(min_x)))
         y0 = int(math.floor(float(min_y)))
-        body_map = getattr(placement, "body_map", None)
-        clearance_map = getattr(placement, "clearance_map", None)
+        body_mask = getattr(placement, "body_mask", None)
+        clearance_mask = getattr(placement, "clearance_mask", None)
         clearance_origin = getattr(placement, "clearance_origin", None)
         is_rectangular = bool(getattr(placement, "is_rectangular", False))
-        if not isinstance(body_map, torch.Tensor) or not isinstance(clearance_map, torch.Tensor) or not isinstance(clearance_origin, tuple):
+        if not isinstance(body_mask, torch.Tensor) or not isinstance(clearance_mask, torch.Tensor) or not isinstance(clearance_origin, tuple):
             raise ValueError(
-                "placement must define body_map, clearance_map, clearance_origin, "
+                "placement must define body_mask, clearance_mask, clearance_origin, "
                 "and is_rectangular for map painting"
             )
         self.maps.paint_placement(
@@ -159,8 +159,8 @@ class EnvState:
             bbox_max_y=float(max_y),
             x_bl=int(x0),
             y_bl=int(y0),
-            body_map=body_map,
-            clearance_map=clearance_map,
+            body_mask=body_mask,
+            clearance_mask=clearance_mask,
             clearance_origin=(int(clearance_origin[0]), int(clearance_origin[1])),
             is_rectangular=is_rectangular,
         )
@@ -224,8 +224,8 @@ class EnvState:
         gid: GroupId,
         x_bl: int,
         y_bl: int,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> bool:
@@ -233,8 +233,8 @@ class EnvState:
             gid=gid,
             x_bl=int(x_bl),
             y_bl=int(y_bl),
-            body_map=body_map,
-            clearance_map=clearance_map,
+            body_mask=body_mask,
+            clearance_mask=clearance_mask,
             clearance_origin=clearance_origin,
             is_rectangular=is_rectangular,
         )
@@ -245,8 +245,8 @@ class EnvState:
         gid: GroupId,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> torch.Tensor:
@@ -254,25 +254,25 @@ class EnvState:
             gid=gid,
             x_bl=x_bl,
             y_bl=y_bl,
-            body_map=body_map,
-            clearance_map=clearance_map,
+            body_mask=body_mask,
+            clearance_mask=clearance_mask,
             clearance_origin=clearance_origin,
             is_rectangular=is_rectangular,
         )
 
-    def is_placeable_map(
+    def placeable_map(
         self,
         *,
         gid: GroupId,
-        body_map: torch.Tensor,
-        clearance_map: torch.Tensor,
+        body_mask: torch.Tensor,
+        clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> torch.Tensor:
-        return self.maps.is_placeable_map(
+        return self.maps.placeable_map(
             gid=gid,
-            body_map=body_map,
-            clearance_map=clearance_map,
+            body_mask=body_mask,
+            clearance_mask=clearance_mask,
             clearance_origin=clearance_origin,
             is_rectangular=is_rectangular,
         )
