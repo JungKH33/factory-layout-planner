@@ -96,9 +96,11 @@ class MaskPlaceAdapter(BaseAdapter):
         cx = (jj * cell_w).to(torch.float32) + (cell_w / 2.0)
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
 
+        centers = torch.stack([cx.reshape(-1), cy.reshape(-1)], dim=-1)  # [G*G, 2]
+        x_bl, y_bl = self._centers_to_bl(gid, centers)
         ok = spec.placeable_batch(
             state=state, gid=gid,
-            x_center=cx.reshape(-1), y_center=cy.reshape(-1),
+            x_bl=x_bl, y_bl=y_bl,
         )
         return ok
 

@@ -187,7 +187,7 @@ class GreedyV3Adapter(BaseAdapter):
         state = env.get_state()
 
         # Unified center-based validity map (all variants OR'd).
-        center_map = spec.placeable_center_map(state, gid)
+        center_map = self._build_center_map(gid)
         edge_map = self._build_edge_map(center_map)
         gen = self._torch_gen(env=env)
         q = float(self.quant_step) if self.quant_step is not None else 1.0

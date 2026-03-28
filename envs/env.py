@@ -411,33 +411,75 @@ class FactoryLayoutEnv(gym.Env):
     def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'GroupPlacement | None']:
         """Resolve a center-based EnvAction to (gid, concrete placement or None).
 
-        Tries all variants at the given center and picks the cheapest placeable
-        one.  If ``action.variant_index`` is set, only that specific variant
-        is attempted.
+        Center→BL conversion happens here, per shape_key, so each shape gets
+        the correct BL from the shared center coordinate.
         """
         gid, x_center, y_center = self._normalize_action(action)
         geom = self._group_spec(gid)
 
-        def _check_placeable(x_bl, y_bl, body_mask, clearance_mask, clearance_origin, is_rectangular):
+        def _check_placeable(xb, yb, body_mask, clearance_mask, clearance_origin, is_rectangular):
             return self._state.is_placeable(
                 gid=gid,
-                x_bl=int(x_bl),
-                y_bl=int(y_bl),
-                body_mask=body_mask,
-                clearance_mask=clearance_mask,
+                x_bl=int(xb), y_bl=int(yb),
+                body_mask=body_mask, clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin,
                 is_rectangular=bool(is_rectangular),
             )
 
-        placement = geom.resolve(
-            x_center=float(x_center),
-            y_center=float(y_center),
-            is_placeable_fn=_check_placeable,
-            score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
-            variant_index=action.variant_index,
-            source_index=action.source_index,
-        )
-        return gid, placement
+        # Single variant — fast path
+        if action.variant_index is not None:
+            vi = geom._variants[action.variant_index]
+            x_bl = int(round(x_center - float(vi.body_width) / 2.0))
+            y_bl = int(round(y_center - float(vi.body_height) / 2.0))
+            p = geom.resolve(
+                x_bl=x_bl, y_bl=y_bl,
+                variant_index=action.variant_index,
+                is_placeable_fn=_check_placeable,
+            )
+            return gid, p
+
+        # Multiple variants — determine candidates
+        if action.source_index is not None:
+            s, e = geom._source_ranges[action.source_index]
+            candidates = list(range(s, e))
+        else:
+            candidates = list(range(len(geom._variants)))
+
+        # Group by shape_key → center→BL per shape, skip shape if not placeable.
+        from collections import defaultdict
+        by_shape: Dict[tuple, List[int]] = defaultdict(list)
+        for vi_idx in candidates:
+            by_shape[geom._variants[vi_idx].shape_key].append(vi_idx)
+
+        placeable: List[GroupPlacement] = []
+        for sk, vi_indices in by_shape.items():
+            vi0 = geom._variants[vi_indices[0]]
+            sk_x_bl = int(round(x_center - float(vi0.body_width) / 2.0))
+            sk_y_bl = int(round(y_center - float(vi0.body_height) / 2.0))
+
+            body_mask, clearance_mask, clearance_origin, is_rect = geom.shape_tensors(sk)
+            if not self._state.is_placeable(
+                gid=gid, x_bl=sk_x_bl, y_bl=sk_y_bl,
+                body_mask=body_mask, clearance_mask=clearance_mask,
+                clearance_origin=clearance_origin, is_rectangular=bool(is_rect),
+            ):
+                continue
+            for vi_idx in vi_indices:
+                p = geom.resolve(
+                    x_bl=sk_x_bl, y_bl=sk_y_bl,
+                    variant_index=vi_idx,
+                    is_placeable_fn=_check_placeable,
+                )
+                if p is not None:
+                    placeable.append(p)
+
+        if not placeable:
+            return gid, None
+        if len(placeable) == 1:
+            return gid, placeable[0]
+        scores = self._delta_cost_from_placements(gid, placeable)
+        scores = scores.to(dtype=torch.float32, device=self.device).view(-1)
+        return gid, placeable[int(torch.argmin(scores).item())]
 
     def _apply_resolved_placement(
         self,
@@ -592,7 +634,7 @@ class FactoryLayoutEnv(gym.Env):
             return {}, 0.0, True, False, {"reason": "done"}
 
         try:
-            gid_eff, x_center, y_center = self._normalize_action(action)
+            gid_eff, _x_center, _y_center = self._normalize_action(action)
         except TypeError:
             raise
         except Exception:

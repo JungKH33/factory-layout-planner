@@ -9,15 +9,19 @@ from envs.env_loader import load_env
 
 
 def _score_poses(env, gid, x, y, rotation=None):
-    """Test helper: score center poses via spec.score_batch."""
+    """Test helper: score center poses via spec.score_batch (BL API)."""
     spec = env.group_specs[gid]
     x_t = x if torch.is_tensor(x) else torch.tensor([float(x)], dtype=torch.float32, device=env.device)
     y_t = y if torch.is_tensor(y) else torch.tensor([float(y)], dtype=torch.float32, device=env.device)
     x_t = x_t.to(dtype=torch.float32, device=env.device).view(-1)
     y_t = y_t.to(dtype=torch.float32, device=env.device).view(-1)
     poses = torch.stack([x_t, y_t], dim=-1)
+    bw = spec.body_widths   # [V]
+    bh = spec.body_heights  # [V]
+    x_bl = torch.round(poses[:, 0:1] - bw.unsqueeze(0) / 2.0).to(torch.long)
+    y_bl = torch.round(poses[:, 1:2] - bh.unsqueeze(0) / 2.0).to(torch.long)
     return spec.score_batch(
-        gid=gid, centers=poses,
+        gid=gid, x_bl=x_bl, y_bl=y_bl,
         state=env.get_state(),
         reward=env.reward_composer,
     )

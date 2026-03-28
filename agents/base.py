@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import hashlib
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Dict, Optional, Protocol, Tuple
 
 import torch
 
@@ -84,9 +84,9 @@ class BaseAdapter(ABC):
         raise NotImplementedError
 
     def decode_action(self, action: int, action_space: ActionSpace) -> EnvAction:
-        """Decode action index to EnvAction using action-space poses table."""
+        """Decode action index to EnvAction (center coords — env does center→BL)."""
         a = self.validate_action_index(action, action_space)
-        pose = action_space.centers[a]
+        pose = action_space.centers[a]  # center coords
         gid = action_space.group_id
         if gid is None:
             raise ValueError("action_space.group_id is required to decode EnvAction")
@@ -142,6 +142,45 @@ class BaseAdapter(ABC):
         raw = "|".join(parts).encode("utf-8", errors="ignore")
         return int.from_bytes(hashlib.sha256(raw).digest()[:8], byteorder="big", signed=False) & 0x7FFFFFFF
 
+    def _centers_to_bl(
+        self,
+        gid: GroupId,
+        centers: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """[N, 2] centers → ([N, V] x_bl, [N, V] y_bl).  Fully vectorised."""
+        spec = self.engine.group_specs[gid]
+        bw = spec.body_widths   # [V]
+        bh = spec.body_heights  # [V]
+        x_bl = torch.round(centers[:, 0:1] - bw.unsqueeze(0) / 2.0).to(torch.long)  # [N, V]
+        y_bl = torch.round(centers[:, 1:2] - bh.unsqueeze(0) / 2.0).to(torch.long)  # [N, V]
+        return x_bl, y_bl
+
+    def _build_center_map(self, gid: GroupId) -> torch.Tensor:
+        """BL placeable maps shifted to center coords (union over shapes).
+
+        Moved from ``StaticSpec.placeable_center_map``.
+        """
+        spec = self.engine.group_specs[gid]
+        state = self.engine.get_state()
+        H, W = state.maps.shape
+        result = torch.zeros((H, W), dtype=torch.bool, device=self.device)
+        for shape_key in spec._variants_by_shape:
+            body_mask, clearance_mask, clearance_origin, is_rect = spec.shape_tensors(shape_key)
+            bl_map = state.placeable_map(
+                gid=gid,
+                body_mask=body_mask,
+                clearance_mask=clearance_mask,
+                clearance_origin=clearance_origin,
+                is_rectangular=is_rect,
+            )
+            bh_s, bw_s = int(body_mask.shape[0]), int(body_mask.shape[1])
+            dx, dy = bw_s // 2, bh_s // 2
+            src_h = min(H - dy, int(bl_map.shape[0]))
+            src_w = min(W - dx, int(bl_map.shape[1]))
+            if src_h > 0 and src_w > 0:
+                result[dy:dy + src_h, dx:dx + src_w] |= bl_map[:src_h, :src_w]
+        return result
+
     def _score_poses(
         self,
         gid: GroupId,
@@ -149,7 +188,7 @@ class BaseAdapter(ABC):
         *,
         per_variant: bool = False,
     ) -> torch.Tensor:
-        """Score candidate center poses.
+        """Score candidate center poses via BL-only spec API.
 
         per_variant=False (default): [N] float32 — min delta cost across
         all placeable variants.  Positions with no placeable variant get inf.
@@ -158,9 +197,11 @@ class BaseAdapter(ABC):
         Non-placeable variant slots are inf.
         """
         spec = self.engine.group_specs[gid]
+        x_bl, y_bl = self._centers_to_bl(gid, poses)
         return spec.score_batch(
             gid=gid,
-            centers=poses,
+            x_bl=x_bl,
+            y_bl=y_bl,
             state=self.engine.get_state(),
             reward=self.engine.reward_composer,
             per_variant=per_variant,

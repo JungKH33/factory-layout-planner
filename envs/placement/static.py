@@ -174,6 +174,12 @@ class StaticSpec(GroupSpec):
                 self._source_ranges.append((0, 0))
         self._num_sources: int = n_sources
 
+        # shape_key → variant flat indices (tensor, for vectorised broadcast)
+        self._shape_variant_indices: Dict[tuple, torch.Tensor] = {}
+        for sk in self._variants_by_shape:
+            idxs = [i for i, v in enumerate(self._variants) if v.shape_key == sk]
+            self._shape_variant_indices[sk] = torch.tensor(idxs, dtype=torch.long, device=self.device)
+
     @property
     def num_sources(self) -> int:
         """Number of distinct source shape definitions."""
@@ -183,6 +189,16 @@ class StaticSpec(GroupSpec):
     def variants(self) -> List[GroupVariant]:
         """All unique placement variants for this spec."""
         return list(self._variants)
+
+    @property
+    def body_widths(self) -> torch.Tensor:
+        """[V] float32 body width per variant."""
+        return self._all_body_width
+
+    @property
+    def body_heights(self) -> torch.Tensor:
+        """[V] float32 body height per variant."""
+        return self._all_body_height
 
     # ----- rotation / clearance helpers -----
 
@@ -376,6 +392,9 @@ class StaticSpec(GroupSpec):
         self._all_exit_mask = self._all_exit_mask.to(device)
         self._all_body_width = self._all_body_width.to(device)
         self._all_body_height = self._all_body_height.to(device)
+        self._shape_variant_indices = {
+            k: v.to(device) for k, v in self._shape_variant_indices.items()
+        }
         moved: Dict[tuple, Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]] = {}
         for key, (body_mask, clearance_mask, clearance_origin, is_rectangular) in self._shape_tensors_by_key.items():
             moved[key] = (
@@ -445,49 +464,30 @@ class StaticSpec(GroupSpec):
     def resolve(
         self,
         *,
-        x_center: float,
-        y_center: float,
+        x_bl: int,
+        y_bl: int,
+        variant_index: int,
         is_placeable_fn: Callable[..., bool],
-        score_fn: Optional[Callable] = None,
-        variant_index: Optional[int] = None,
-        source_index: Optional[int] = None,
     ) -> 'GroupPlacement | None':
-        if variant_index is not None:
-            candidates = [(variant_index, self._variants[variant_index])]
-        elif source_index is not None:
-            s, e = self._source_ranges[source_index]
-            candidates = [(i, self._variants[i]) for i in range(s, e)]
-        else:
-            candidates = list(enumerate(self._variants))
+        """Single-variant resolve from BL coordinates.
 
-        placeable: List[GroupPlacement] = []
-        for flat_idx, vi in candidates:
-            w = float(vi.body_width)
-            h = float(vi.body_height)
-            x_bl = int(round(x_center - w / 2.0))
-            y_bl = int(round(y_center - h / 2.0))
-            x_c_s = float(x_bl) + w / 2.0
-            y_c_s = float(y_bl) + h / 2.0
-            body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
-
-            if not is_placeable_fn(
-                x_bl, y_bl,
-                body_mask, clearance_mask, clearance_origin, is_rectangular,
-            ):
-                continue
-
-            placeable.append(self._make_placement(
-                vi, x_c_s, y_c_s, x_bl, y_bl,
-                body_mask, clearance_mask, clearance_origin, is_rectangular,
-                flat_idx,
-            ))
-
-        if not placeable:
+        Caller is responsible for iterating variants / picking the best
+        (see ``env.resolve_action``).
+        """
+        vi = self._variants[variant_index]
+        body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
+        if not is_placeable_fn(
+            x_bl, y_bl,
+            body_mask, clearance_mask, clearance_origin, is_rectangular,
+        ):
             return None
-        if score_fn is None or len(placeable) == 1:
-            return placeable[0]
-        scores = score_fn(placeable).to(dtype=torch.float32, device=self.device).view(-1)
-        return placeable[int(torch.argmin(scores).item())]
+        x_c = float(x_bl) + float(vi.body_width) / 2.0
+        y_c = float(y_bl) + float(vi.body_height) / 2.0
+        return self._make_placement(
+            vi, x_c, y_c, x_bl, y_bl,
+            body_mask, clearance_mask, clearance_origin, is_rectangular,
+            variant_index,
+        )
 
     # ----- placeable / cost batch API -----
 
@@ -511,136 +511,111 @@ class StaticSpec(GroupSpec):
             return torch.zeros((H, W), dtype=torch.bool, device=self.device)
         return result
 
-    def placeable_center_map(self, state: "EnvState", gid: object) -> torch.Tensor:
-        """Center-based validity map (OR of all variant shapes shifted to center coords)."""
-        H, W = state.maps.shape
-        result = torch.zeros((H, W), dtype=torch.bool, device=self.device)
-        for shape_key in self._variants_by_shape:
-            body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
-            bl_map = state.placeable_map(
-                gid=gid,
-                body_mask=body_mask,
-                clearance_mask=clearance_mask,
-                clearance_origin=clearance_origin,
-                is_rectangular=is_rectangular,
-            )
-            bh, bw = int(body_mask.shape[0]), int(body_mask.shape[1])
-            dx = bw // 2
-            dy = bh // 2
-            src_h = min(H - dy, int(bl_map.shape[0]))
-            src_w = min(W - dx, int(bl_map.shape[1]))
-            if src_h > 0 and src_w > 0:
-                result[dy:dy + src_h, dx:dx + src_w] |= bl_map[:src_h, :src_w]
-        return result
-
     def placeable_batch(
         self,
         state: "EnvState",
         gid: object,
-        x_center: torch.Tensor,
-        y_center: torch.Tensor,
+        x_bl: torch.Tensor,
+        y_bl: torch.Tensor,
         per_variant: bool = False,
     ) -> torch.Tensor:
-        """Check placeability for batch of center positions.
+        """BL-only batch placeability.  Loops S unique shape_keys.
+
+        Args:
+            x_bl, y_bl: ``[N, V]`` int64 — per-variant BL coordinates
+                (adapter computes via ``_centers_to_bl``).
 
         Returns:
-            per_variant=False (default): ``[N]`` bool — True if ANY
-                variant is placeable.
-            per_variant=True: ``[N, V]`` bool — per-variant result
-                (V = len(self._variants)).
+            per_variant=False: ``[N]`` bool — True if ANY variant placeable.
+            per_variant=True:  ``[N, V]`` bool — per-variant result.
         """
-        N = int(x_center.shape[0])
+        N = int(x_bl.shape[0])
         V = len(self._variants)
         if per_variant:
             result = torch.zeros((N, V), dtype=torch.bool, device=self.device)
-            for i, vi in enumerate(self._variants):
-                body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
-                body_height, body_width = int(body_mask.shape[0]), int(body_mask.shape[1])
-                x_bl = torch.round(x_center - body_width / 2.0).to(torch.long)
-                y_bl = torch.round(y_center - body_height / 2.0).to(torch.long)
-                result[:, i] = state.is_placeable_batch(
+            for sk, vi_t in self._shape_variant_indices.items():
+                body_mask, clearance_mask, clearance_origin, is_rect = self.shape_tensors(sk)
+                first = int(vi_t[0].item())
+                ok_s = state.is_placeable_batch(
                     gid=gid,
-                    x_bl=x_bl, y_bl=y_bl,
+                    x_bl=x_bl[:, first], y_bl=y_bl[:, first],
                     body_mask=body_mask, clearance_mask=clearance_mask,
-                    clearance_origin=clearance_origin, is_rectangular=is_rectangular,
+                    clearance_origin=clearance_origin, is_rectangular=is_rect,
                 )
+                result[:, vi_t] = ok_s.unsqueeze(1).expand(-1, vi_t.shape[0])
             return result
-        # Default: OR across all shapes (original behaviour)
+        # per_variant=False: OR across shape_keys
         ok = torch.zeros(N, dtype=torch.bool, device=self.device)
-        for shape_key in self._variants_by_shape:
-            body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(shape_key)
-            body_height, body_width = int(body_mask.shape[0]), int(body_mask.shape[1])
-            x_bl = torch.round(x_center - body_width / 2.0).to(torch.long)
-            y_bl = torch.round(y_center - body_height / 2.0).to(torch.long)
-            shape_ok = state.is_placeable_batch(
+        for sk, vi_t in self._shape_variant_indices.items():
+            body_mask, clearance_mask, clearance_origin, is_rect = self.shape_tensors(sk)
+            first = int(vi_t[0].item())
+            ok |= state.is_placeable_batch(
                 gid=gid,
-                x_bl=x_bl, y_bl=y_bl,
+                x_bl=x_bl[:, first], y_bl=y_bl[:, first],
                 body_mask=body_mask, clearance_mask=clearance_mask,
-                clearance_origin=clearance_origin, is_rectangular=is_rectangular,
+                clearance_origin=clearance_origin, is_rectangular=is_rect,
             )
-            ok = ok | shape_ok
         return ok
 
     def score_batch(
         self,
         *,
         gid: object,
-        centers: torch.Tensor,
+        x_bl: torch.Tensor,
+        y_bl: torch.Tensor,
         state: "EnvState",
         reward: "RewardComposer",
         per_variant: bool = False,
     ) -> torch.Tensor:
-        """Vectorized incremental cost for batch of center positions.
+        """Vectorized incremental cost for batch of BL positions.
 
         Two-phase approach:
-          Phase 1 — per-variant placeability loop (shape-dependent, unavoidable).
-          Phase 2 — flatten all valid (position, variant) pairs, build features
-                    via gather on padded offset tables, single ``delta_batch`` call.
+          Phase 1 — placeability loop over S unique shape_keys (broadcast
+                    to V variant columns).
+          Phase 2 — flatten all valid (position, variant) pairs, build
+                    features via gather, single ``delta_batch`` call.
+
+        Args:
+            x_bl, y_bl: ``[N, V]`` int64 — per-variant BL coordinates.
 
         Returns:
-            per_variant=False (default): ``[N]`` float — min cost across
-                all variants (inf where nothing is placeable).
-            per_variant=True: ``[N, V]`` float — per-variant cost
-                (V = len(self._variants), inf where not placeable).
+            per_variant=False: ``[N]`` float — min cost across variants.
+            per_variant=True:  ``[N, V]`` float — per-variant cost (inf
+                where not placeable).
         """
-        N = int(centers.shape[0])
+        N = int(x_bl.shape[0])
         V = len(self._variants)
         if N == 0:
             if per_variant:
                 return torch.zeros((0, V), dtype=torch.float32, device=self.device)
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
 
-        x_center = centers[:, 0]
-        y_center = centers[:, 1]
-
-        # Phase 1: placeability check per variant
+        # Phase 1: placeability — S shape_key iterations (not V)
         ok = torch.zeros((N, V), dtype=torch.bool, device=self.device)
-        for i, vi in enumerate(self._variants):
-            body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
-            x_bl = torch.round(x_center - vi.body_width / 2.0).to(torch.long)
-            y_bl = torch.round(y_center - vi.body_height / 2.0).to(torch.long)
-            ok[:, i] = state.is_placeable_batch(
+        for sk, vi_t in self._shape_variant_indices.items():
+            body_mask, clearance_mask, clearance_origin, is_rect = self.shape_tensors(sk)
+            first = int(vi_t[0].item())
+            ok_s = state.is_placeable_batch(
                 gid=gid,
-                x_bl=x_bl, y_bl=y_bl,
+                x_bl=x_bl[:, first], y_bl=y_bl[:, first],
                 body_mask=body_mask, clearance_mask=clearance_mask,
-                clearance_origin=clearance_origin, is_rectangular=is_rectangular,
+                clearance_origin=clearance_origin, is_rectangular=is_rect,
             )
+            ok[:, vi_t] = ok_s.unsqueeze(1).expand(-1, vi_t.shape[0])
 
         result = torch.full((N, V), float('inf'), dtype=torch.float32, device=self.device)
         valid_n, valid_v = torch.where(ok)
         M = int(valid_n.shape[0])
 
         if M > 0:
-            # Phase 2: vectorized feature build + single delta_batch
+            # Phase 2: vectorized feature build (BL direct, no snap-back)
             needed = reward.required()
             bw = self._all_body_width[valid_v]
             bh = self._all_body_height[valid_v]
-            cx = centers[valid_n, 0]
-            cy = centers[valid_n, 1]
-            x_bl_f = torch.round(cx - bw / 2.0)
-            y_bl_f = torch.round(cy - bh / 2.0)
-            x_c_s = x_bl_f + bw / 2.0
-            y_c_s = y_bl_f + bh / 2.0
+            x_bl_f = x_bl[valid_n, valid_v].float()
+            y_bl_f = y_bl[valid_n, valid_v].float()
+            x_c = x_bl_f + bw / 2.0
+            y_c = y_bl_f + bh / 2.0
 
             features: Dict[str, torch.Tensor] = {}
             if "min_x" in needed:
@@ -652,7 +627,7 @@ class StaticSpec(GroupSpec):
             if "max_y" in needed:
                 features["max_y"] = y_bl_f + bh
             if "entry_points" in needed or "exit_points" in needed:
-                c = torch.stack([x_c_s, y_c_s], dim=1)
+                c = torch.stack([x_c, y_c], dim=1)
             if "entry_points" in needed:
                 if self._all_entry_offsets.shape[1] > 0:
                     features["entry_points"] = c[:, None, :] + self._all_entry_offsets[valid_v]
@@ -1336,9 +1311,13 @@ if __name__ == "__main__":
     # resolve with variant_index=1 (90° rotation)
     def _always_true(*args):
         return True
-    resolved = geom.resolve(x_center=14.0, y_center=7.0, is_placeable_fn=_always_true, variant_index=1)
+    # resolve with variant_index=1 (90° rotation) — BL coords
+    vi1 = geom._variants[1]
+    _x_bl = int(round(14.0 - float(vi1.body_width) / 2.0))
+    _y_bl = int(round(7.0 - float(vi1.body_height) / 2.0))
+    resolved = geom.resolve(x_bl=_x_bl, y_bl=_y_bl, is_placeable_fn=_always_true, variant_index=1)
     print(
-        f"\nresolve(x_center=14.0,y_center=7.0,variant_index=1) -> "
+        f"\nresolve(x_bl={_x_bl},y_bl={_y_bl},variant_index=1) -> "
         f"w={resolved.w}, h={resolved.h}, entry_points={len(resolved.entry_points)}, exit_points={len(resolved.exit_points)}"
     )
 
@@ -1361,8 +1340,13 @@ if __name__ == "__main__":
           f"unique_shapes={len(multi._variants_by_shape)}")
     for vi in multi._variants:
         print(f"  src={vi.source_index} rot={vi.rotation} body=({vi.body_width},{vi.body_height})")
-    r0 = multi.resolve(x_center=20.0, y_center=10.0, is_placeable_fn=_always_true, source_index=1)
-    print(f"  resolve(source_index=1) -> w={r0.w}, h={r0.h}, vi={r0.variant_index}")
+    # resolve source_index=1 — pick first variant of that source
+    _src_s, _src_e = multi._source_ranges[1]
+    _vi_s = multi._variants[_src_s]
+    _x_bl_s = int(round(20.0 - float(_vi_s.body_width) / 2.0))
+    _y_bl_s = int(round(10.0 - float(_vi_s.body_height) / 2.0))
+    r0 = multi.resolve(x_bl=_x_bl_s, y_bl=_y_bl_s, is_placeable_fn=_always_true, variant_index=_src_s)
+    print(f"  resolve(source_index=1, vi={_src_s}) -> w={r0.w}, h={r0.h}, vi={r0.variant_index}")
 
     # --- Irregular demo (L-shape via polygon + auto clearance) ---
     irr = StaticIrregularSpec(
@@ -1379,7 +1363,10 @@ if __name__ == "__main__":
     for vi in irr._variants:
         print(f"  rot={vi.rotation} mirror={vi.mirror} body=({vi.body_width},{vi.body_height}) "
               f"rect={vi.is_rectangular} origin={vi.clearance_origin}")
-    ip = irr.resolve(x_center=20.0, y_center=10.0, is_placeable_fn=_always_true, variant_index=0)
+    _vi_irr = irr._variants[0]
+    _x_bl_i = int(round(20.0 - float(_vi_irr.body_width) / 2.0))
+    _y_bl_i = int(round(10.0 - float(_vi_irr.body_height) / 2.0))
+    ip = irr.resolve(x_bl=_x_bl_i, y_bl=_y_bl_i, is_placeable_fn=_always_true, variant_index=0)
     print(f"  resolve -> w={ip.w}, h={ip.h}, body_mask={tuple(ip.body_mask.shape)}")
     print(f"  body_polygon_abs={ip.body_polygon_abs}")
     print("OK")

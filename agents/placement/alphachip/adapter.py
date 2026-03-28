@@ -109,9 +109,11 @@ class AlphaChipAdapter(BaseAdapter):
 
         self.action_poses = torch.stack([cx, cy], dim=-1).view(g * g, 2).to(dtype=torch.float32)
 
+        centers = self.action_poses  # [G*G, 2]
+        x_bl, y_bl = self._centers_to_bl(gid, centers)
         ok = spec.placeable_batch(
             state=state, gid=gid,
-            x_center=cx.reshape(-1), y_center=cy.reshape(-1),
+            x_bl=x_bl, y_bl=y_bl,
         )
         return ok
 

@@ -54,6 +54,16 @@ class GroupSpec:
     def body_area(self) -> float:
         raise NotImplementedError(f"{type(self).__name__}.body_area is not implemented")
 
+    @property
+    def body_widths(self) -> "torch.Tensor":
+        """[V] float32 body width per variant."""
+        raise NotImplementedError(f"{type(self).__name__}.body_widths is not implemented")
+
+    @property
+    def body_heights(self) -> "torch.Tensor":
+        """[V] float32 body height per variant."""
+        raise NotImplementedError(f"{type(self).__name__}.body_heights is not implemented")
+
     def set_device(self, device: torch.device) -> None:
         raise NotImplementedError(f"{type(self).__name__}.set_device() is not implemented")
 
@@ -65,13 +75,6 @@ class GroupSpec:
 
     def placeable_map(self, *args, **kwargs):
         raise NotImplementedError(f"{type(self).__name__}.placeable_map() is not implemented")
-
-    def placeable_center_map(self, *args, **kwargs):
-        """Center-based validity map: ``map[y, x] = True`` means placing
-        with **center** at approximately ``(x, y)`` is valid for at least
-        one orientation.  Default delegates to ``placeable_map`` (BL-based).
-        """
-        raise NotImplementedError(f"{type(self).__name__}.placeable_center_map() is not implemented")
 
     def placeable_batch(self, *args, **kwargs):
         raise NotImplementedError(f"{type(self).__name__}.placeable_batch() is not implemented")

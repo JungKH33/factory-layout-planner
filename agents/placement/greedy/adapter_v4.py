@@ -138,7 +138,7 @@ class GreedyV4Adapter(BaseAdapter):
         state = env.get_state()
         spec = env.group_specs[gid]
 
-        center_map = spec.placeable_center_map(state, gid)
+        center_map = self._build_center_map(gid)
         W = int(center_map.shape[1])
         cs = self.cell_size
         W_c = (W + cs - 1) // cs
