@@ -108,13 +108,13 @@ Step reward = `-(delta_cost) / reward_scale`
 - **AreaReward**: HPWL compactness `0.5 * ((max_x-min_x) + (max_y-min_y))`
 - **TerminalReward**: failure penalty = `penalty_weight * remaining_area_ratio / reward_scale`
 
-`spec.cost_batch(gid, poses, state, reward, per_orientation)` is the vectorized incremental cost used by adapters and agents (never full `cost()` per candidate).
+`spec.cost_batch(gid, poses, state, reward, per_variant)` is the vectorized incremental cost used by adapters and agents (never full `cost()` per candidate).
 
 ### Search (MCTS / Beam)
 
 Search operates at the **adapter** level. Each MCTS node stores an `EnvState` copy via `engine.get_state().copy()`. The agent provides priors (softmax of `-Δcost`) and leaf values. Rollouts use the greedy agent to a configurable depth.
 
-**Orientation expansion**: when `expand_orientations=True` on an adapter (BaseAdapter param), each center candidate is expanded into `(center, orientation_index)` pairs. `max_orientations` limits how many orientations per center are kept. The adapter's `_apply_orientation_expansion()` computes per-orientation costs in a single `cost_batch(per_orientation=True)` call and selects the top-K `(center, orient)` pairs by cost. `ActionSpace.orientation_indices` carries the per-action orientation index; `decode_action()` produces `EnvAction` with explicit `orientation_index`. Search algorithms (MCTS/Beam) treat these as regular actions with no special orientation branching.
+**Variant expansion**: when `expand_variants=True` on an adapter (BaseAdapter param), each center candidate is expanded into `(center, variant_index)` pairs. `max_variants` limits how many variants per center are kept. The adapter's `_apply_variant_expansion()` computes per-variant costs in a single `cost_batch(per_variant=True)` call and selects the top-K `(center, variant)` pairs by cost. `ActionSpace.variant_indices` carries the per-action variant index; `decode_action()` produces `EnvAction` with explicit `variant_index`. Search algorithms (MCTS/Beam) treat these as regular actions with no special variant branching.
 
 `TopKTracker` (min-heap) tracks best K complete episodes by cost across all search iterations.
 
@@ -138,10 +138,11 @@ DecisionPipeline.decide():
   "env": { "default_weight": 10.0, "default_height": 20.0, "default_dry": 0.0,
            "reward_scale": 100.0, "penalty_weight": 50000.0 },
   "groups": { "<gid>": { "width", "height", "rotatable", "ent_rel_x/y", "exi_rel_x/y",
-                          "facility_clearance_*", "facility_weight/height/dry", "allowed_areas" } },
+                          "facility_clearance_*", "facility_weight/height/dry", "allowed_areas",
+                          "variants": [{"width", "height", "entries_rel", "exits_rel", ...}, ...] } },
   "flow": [["<src>", "<dst>", <weight>], ...],
   "zones": { "forbidden_areas", "weight_areas", "height_areas", "dry_areas", "placement_areas" },
-  "reset": { "initial_placements": {"<gid>": [x_c, y_c, orientation_index]}, "remaining_order": [...] }
+  "reset": { "initial_placements": {"<gid>": [x_c, y_c, variant_index, source_index]}, "remaining_order": [...] }
 }
 ```
 
@@ -162,10 +163,10 @@ Zone constraint logic: op is facility requirement (e.g. `height<=30` → facilit
 ## Key Conventions
 
 - **Coordinate system**: bottom-left origin `(x_bl, y_bl)`, rotation in `{0, 90, 180, 270}` degrees CCW. Tensor indexing is `tensor[y, x]`. Port coords (`ent_rel_x/y`, `exi_rel_x/y`) are BL-relative.
-- **Orientation model**: `Orientation` (base, `envs/placement/base.py`) → `StaticOrientation` (static impl, `envs/placement/static.py`). `GroupSpec.orientations` returns all `(rotation, mirror)` orientations. Adapters work with center coordinates only; the engine resolves orientation at step time. `EnvAction.orientation_index` can pin a specific orientation (used by search).
+- **Variant model**: `Variant` (base, `envs/placement/base.py`) → `StaticVariant` (static impl, `envs/placement/static.py`). `GroupSpec.variants` returns all placement variants (rotation/mirror/shape combinations). Each variant has a `source_index` tracking which original shape definition it came from (0 for single-shape groups). Multi-shape groups define `"variants"` array in JSON — each entry is a distinct source shape with its own width/height/ports/clearance. All source shapes × rotation × mirror combinations are flattened into a single `_variants` list. `_source_ranges` maps `source_index → (start, end)` for filtering. Adapters work with center coordinates only; the engine resolves variant at step time. `EnvAction.variant_index` can pin a specific variant; `EnvAction.source_index` filters to variants from a given source shape.
 - **Grid units**: integer cells. `grid_size` (meters/cell) is only for display/output.
 - **Device ownership**: engine's `device` is set at construction; all tensors follow it. Adapters inherit device on `bind()`.
 - **`inference.py` config**: module-level constants (`ENV_JSON`, `WRAPPER_MODE`, `AGENT_MODE`, `SEARCH_MODE`, etc.) — no CLI args.
 - **Current facility selection**: adapters usually build candidates for `remaining[0]` (ordering agents can reorder this list), but `EnvAction` itself now requires explicit `gid`.
-- **Delta pattern**: all candidate evaluation uses `cost_batch()` (vectorized incremental) rather than full `cost()` per candidate. `cost_batch(per_orientation=True)` and `placeable_batch(per_orientation=True)` return `[N, V]` per-orientation results.
+- **Delta pattern**: all candidate evaluation uses `cost_batch()` (vectorized incremental) rather than full `cost()` per candidate. `cost_batch(per_variant=True)` and `placeable_batch(per_variant=True)` return `[N, V]` per-variant results.
 - **Static-sharing on copy**: `GridMaps.copy()` shares static tensors by reference, clones only runtime tensors. Makes MCTS snapshots cheap.

@@ -579,10 +579,10 @@ def build_initial_placements(
     groups: Dict[str, Dict],
     scale: float,
 ) -> Dict[str, List[float]]:
-    """Convert fixedFacilityPositions to initial_placements [x_c, y_c, orientation_index]."""
+    """Convert fixedFacilityPositions to initial_placements [x_c, y_c, variant_index]."""
     placements: Dict[str, List[float]] = {}
 
-    # rotation degrees → orientation_index mapping
+    # rotation degrees → variant_index mapping
     _rot_to_oi = {0: 0, 90: 1, 180: 2, 270: 3}
 
     for fp in fixed_positions:

@@ -37,10 +37,10 @@ class GreedyAdapter(BaseAdapter):
         diversity_ratio: float = 0.0,  # parity (unused)
         min_diversity: int = 0,  # parity (unused)
         random_seed: Optional[int] = None,
-        expand_orientations: bool = False,
-        max_orientations: int = 4,
+        expand_variants: bool = False,
+        max_variants: int = 4,
     ):
-        super().__init__(expand_orientations=expand_orientations, max_orientations=max_orientations)
+        super().__init__(expand_variants=expand_variants, max_variants=max_variants)
         self.k = int(k)
         self.scan_step = float(scan_step)
         self.quant_step = float(quant_step) if quant_step is not None else None
@@ -84,11 +84,11 @@ class GreedyAdapter(BaseAdapter):
             poses[i, 0] = float(x_bl) + float(w) / 2.0
             poses[i, 1] = float(y_bl) + float(h) / 2.0
 
-        if self.expand_orientations:
-            return self._apply_orientation_expansion(gid, poses, mask, self.k)
+        if self.expand_variants:
+            return self._apply_variant_expansion(gid, poses, mask, self.k)
 
         self.action_poses = poses
-        self.action_orientation_indices = None
+        self.action_variant_indices = None
         delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
         vmask = mask.to(dtype=torch.bool, device=self.device).view(-1)
         vidx = torch.where(vmask)[0]
@@ -218,7 +218,7 @@ class GreedyAdapter(BaseAdapter):
         rr = spec._resolve_rotation(rotation)
         result = None
         seen_shape: set = set()
-        for vi in spec._orientations:  # TODO: remove direct rotation filtering, use spec.orientations
+        for vi in spec._variants:  # TODO: remove direct rotation filtering, use spec.variants
             if vi.rotation != rr:
                 continue
             shape_key = vi.shape_key

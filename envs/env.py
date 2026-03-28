@@ -411,9 +411,9 @@ class FactoryLayoutEnv(gym.Env):
     def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'GroupPlacement | None']:
         """Resolve a center-based EnvAction to (gid, concrete placement or None).
 
-        Tries all (rotation, mirror) orientations at the given center and picks the
-        cheapest placeable one.  If ``action.orientation_index`` is set, only
-        that specific orientation is attempted.
+        Tries all variants at the given center and picks the cheapest placeable
+        one.  If ``action.variant_index`` is set, only that specific variant
+        is attempted.
         """
         gid, x_c, y_c = self._normalize_action(action)
         geom = self._group_spec(gid)
@@ -434,7 +434,8 @@ class FactoryLayoutEnv(gym.Env):
             y_c=float(y_c),
             is_placeable_fn=_check_placeable,
             score_fn=lambda ps: self._delta_cost_from_placements(gid, ps),
-            orientation_index=action.orientation_index,
+            variant_index=action.variant_index,
+            source_index=action.source_index,
         )
         return gid, placement
 
@@ -610,7 +611,7 @@ class FactoryLayoutEnv(gym.Env):
             return self._fail("not_placeable")
 
         # TODO(perf): resolve_action already evaluates delta_cost internally
-        # via score_fn to pick the best orientation.  Here we re-compute it for
+        # via score_fn to pick the best variant.  Here we re-compute it for
         # the chosen concrete placement.  Refactor to carry the score through
         # resolve() to avoid the double computation.
         delta = float(self._delta_cost_from_placements(gid_eff, [placement])[0].item())
@@ -690,7 +691,7 @@ class FactoryLayoutEnv(gym.Env):
                 if placement is None:
                     warnings.warn(
                         f"reset(options): not placeable gid={gid!r} "
-                        f"x_c={action.x_c} y_c={action.y_c} oi={action.orientation_index} — skipping",
+                        f"x_c={action.x_c} y_c={action.y_c} vi={action.variant_index} — skipping",
                         stacklevel=2,
                     )
                     continue
@@ -789,8 +790,8 @@ if __name__ == "__main__":
     # --- reset: A·B 사전 배치, C만 step으로 배치 ---
     # forbidden [0,0,30,20] 밖 + constraint map 조건
     initial_placements = {
-        "A": EnvAction(gid="A", x_c=42.0, y_c=27.0, orientation_index=0),
-        "B": EnvAction(gid="B", x_c=62.5, y_c=29.5, orientation_index=0),
+        "A": EnvAction(gid="A", x_c=42.0, y_c=27.0, variant_index=0),
+        "B": EnvAction(gid="B", x_c=62.5, y_c=29.5, variant_index=0),
     }
     t1 = time.perf_counter()
     obs, _ = env.reset(options={"initial_placements": initial_placements})

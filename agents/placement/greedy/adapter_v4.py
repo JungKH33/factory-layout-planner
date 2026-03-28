@@ -33,11 +33,11 @@ class GreedyV4Adapter(BaseAdapter):
         top_per_cell: int = 3,
         quant_step: Optional[float] = None,
         random_seed: Optional[int] = None,
-        expand_orientations: bool = False,
-        max_orientations: int = 4,
+        expand_variants: bool = False,
+        max_variants: int = 4,
         **kwargs: Any,
     ):
-        super().__init__(expand_orientations=expand_orientations, max_orientations=max_orientations)
+        super().__init__(expand_variants=expand_variants, max_variants=max_variants)
         self.k = int(k)
         self.cell_size = int(cell_size)
         self.top_per_cell = int(top_per_cell)
@@ -71,19 +71,19 @@ class GreedyV4Adapter(BaseAdapter):
         gid = self.current_gid()
         if gid is None:
             self.cell_indices = torch.zeros((self.k,), dtype=torch.int64, device=self.device)
-            return self._empty_orientation_output(self.k)
+            return self._empty_variant_output(self.k)
 
         poses, mask, cell_ids, costs = self._generate(self.engine, gid)
 
-        if self.expand_orientations:
+        if self.expand_variants:
             self.cell_indices = cell_ids
-            out_mask = self._apply_orientation_expansion(gid, poses, mask, self.k)
+            out_mask = self._apply_variant_expansion(gid, poses, mask, self.k)
             if isinstance(self.action_poses, torch.Tensor):
                 self._remap_cell_indices_after_expansion(poses, cell_ids)
             return out_mask
 
         self.action_poses = poses
-        self.action_orientation_indices = None
+        self.action_variant_indices = None
         self.cell_indices = cell_ids
         self.action_costs = costs
         return mask
@@ -289,8 +289,8 @@ class GreedyV4Adapter(BaseAdapter):
         original_poses: torch.Tensor,
         original_cell_ids: torch.Tensor,
     ) -> None:
-        """Remap cell_indices to match expanded action_poses from orientation expansion."""
-        expanded_poses = self.action_poses  # [K, 2] — set by _apply_orientation_expansion
+        """Remap cell_indices to match expanded action_poses from variant expansion."""
+        expanded_poses = self.action_poses  # [K, 2] — set by _apply_variant_expansion
         if expanded_poses is None:
             return
         # Vectorized nearest-neighbor lookup: [K, 1, 2] - [1, N, 2] → [K, N] → argmin

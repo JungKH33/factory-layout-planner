@@ -55,8 +55,8 @@ def main():
     }
 
     initial_placements = {
-        "A": EnvAction(gid="A", x_c=90.0, y_c=20.0, orientation_index=0),
-        "B": EnvAction(gid="B", x_c=90.0, y_c=40.0, orientation_index=0),
+        "A": EnvAction(gid="A", x_c=90.0, y_c=20.0, variant_index=0),
+        "B": EnvAction(gid="B", x_c=90.0, y_c=40.0, variant_index=0),
     }
     remaining_order = ["C", "A", "B"]
 

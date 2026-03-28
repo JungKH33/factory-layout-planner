@@ -16,7 +16,7 @@ class GreedyV3Adapter(BaseAdapter):
     """Top-K candidate wrapper: Discrete(K) actions over center-based sampling.
 
     Samples candidate **center** positions from the unified placeable map
-    (all orientations OR'd).  Orientation is resolved by the engine at step
+    (all variants OR'd).  Variant is resolved by the engine at step
     time — the adapter never accesses rotation directly.
 
     Notes:
@@ -35,10 +35,10 @@ class GreedyV3Adapter(BaseAdapter):
         oversample_factor: int = 2,
         edge_ratio: float = 0.8,
         random_seed: Optional[int] = None,
-        expand_orientations: bool = False,
-        max_orientations: int = 4,
+        expand_variants: bool = False,
+        max_variants: int = 4,
     ):
-        super().__init__(expand_orientations=expand_orientations, max_orientations=max_orientations)
+        super().__init__(expand_variants=expand_variants, max_variants=max_variants)
         self.k = int(k)
         self.quant_step = float(quant_step) if quant_step is not None else None
         self.oversample_factor = int(oversample_factor)
@@ -62,15 +62,15 @@ class GreedyV3Adapter(BaseAdapter):
         self._rng = random.Random(self.action_space_seed())
         gid = self.current_gid()
         if gid is None:
-            return self._empty_orientation_output(self.k)
+            return self._empty_variant_output(self.k)
 
         poses, mask = self._generate(self.engine, gid)
 
-        if self.expand_orientations:
-            return self._apply_orientation_expansion(gid, poses, mask, self.k)
+        if self.expand_variants:
+            return self._apply_variant_expansion(gid, poses, mask, self.k)
 
         self.action_poses = poses
-        self.action_orientation_indices = None
+        self.action_variant_indices = None
 
         delta = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
         vmask = mask.to(dtype=torch.bool, device=self.device).view(-1)
@@ -114,7 +114,7 @@ class GreedyV3Adapter(BaseAdapter):
         else:
             self.action_costs = None
 
-    # ---- candidate generation (center-based, orientation-free) ----
+    # ---- candidate generation (center-based, variant-free) ----
 
     def _torch_gen(self, *, env: FactoryLayoutEnv) -> torch.Generator:
         seed = int(self._rng.randrange(0, 2**31 - 1))
@@ -186,7 +186,7 @@ class GreedyV3Adapter(BaseAdapter):
         spec = env.group_specs[gid]
         state = env.get_state()
 
-        # Unified center-based validity map (all orientations OR'd).
+        # Unified center-based validity map (all variants OR'd).
         center_map = spec.placeable_center_map(state, gid)
         edge_map = self._build_edge_map(center_map)
         gen = self._torch_gen(env=env)
@@ -210,7 +210,7 @@ class GreedyV3Adapter(BaseAdapter):
         unique_tagged = self._dedup_centers(raw_tagged, q)
 
         # No explicit placeable_batch check needed: candidates come from
-        # the center_map which guarantees at least one orientation is valid.
+        # the center_map which guarantees at least one variant is valid.
         # Any false-positives from the integer center shift are handled by
         # cost_batch (returns inf for non-placeable) and resolve_action.
 

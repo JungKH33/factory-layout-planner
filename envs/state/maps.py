@@ -969,8 +969,8 @@ class GridMaps:
         self, spec: GroupSpec,
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int], bool]:
         """Get a representative (body_map, clearance_map, clearance_origin, is_rectangular) from spec."""
-        orient = spec.orientations[0]
-        shape_key = getattr(orient, "shape_key", None)
+        vi = spec.variants[0]
+        shape_key = getattr(vi, "shape_key", None)
         if shape_key is not None:
             return spec.shape_tensors(shape_key)
         # Fallback: create dummy rect tensors

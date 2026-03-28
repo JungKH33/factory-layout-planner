@@ -58,15 +58,15 @@ class BaseAdapter(ABC):
     def __init__(
         self,
         *,
-        expand_orientations: bool = False,
-        max_orientations: int = 4,
+        expand_variants: bool = False,
+        max_variants: int = 4,
     ):
         self._engine: Optional[FactoryLayoutEnv] = None
         self.device = torch.device("cpu")
         self.mask: Optional[torch.Tensor] = None
-        self.expand_orientations = bool(expand_orientations)
-        self.max_orientations = int(max_orientations)
-        self.action_orientation_indices: Optional[torch.Tensor] = None
+        self.expand_variants = bool(expand_variants)
+        self.max_variants = int(max_variants)
+        self.action_variant_indices: Optional[torch.Tensor] = None
 
     @property
     def engine(self) -> FactoryLayoutEnv:
@@ -90,14 +90,14 @@ class BaseAdapter(ABC):
         gid = action_space.gid
         if gid is None:
             raise ValueError("action_space.gid is required to decode EnvAction")
-        orientation_index = None
-        if action_space.orientation_indices is not None:
-            orientation_index = int(action_space.orientation_indices[a].item())
+        variant_index = None
+        if action_space.variant_indices is not None:
+            variant_index = int(action_space.variant_indices[a].item())
         return EnvAction(
             gid=gid,
             x_c=float(pose[0].item()),
             y_c=float(pose[1].item()),
-            orientation_index=orientation_index,
+            variant_index=variant_index,
         )
 
     def num_valid_actions(self, action_space: ActionSpace) -> int:
@@ -147,16 +147,15 @@ class BaseAdapter(ABC):
         gid: GroupId,
         poses: torch.Tensor,
         *,
-        per_orientation: bool = False,
+        per_variant: bool = False,
     ) -> torch.Tensor:
         """Score candidate center poses.
 
-        per_orientation=False (default): [N] float32 — min delta cost across
-        all placeable orientations.  Positions with no placeable orientation
-        get inf.
+        per_variant=False (default): [N] float32 — min delta cost across
+        all placeable variants.  Positions with no placeable variant get inf.
 
-        per_orientation=True: [N, V] float32 — per-orientation delta cost.
-        Non-placeable orientation slots are inf.
+        per_variant=True: [N, V] float32 — per-variant delta cost.
+        Non-placeable variant slots are inf.
         """
         spec = self.engine.group_specs[gid]
         return spec.cost_batch(
@@ -164,52 +163,52 @@ class BaseAdapter(ABC):
             poses=poses,
             state=self.engine.get_state(),
             reward=self.engine.reward_composer,
-            per_orientation=per_orientation,
+            per_variant=per_variant,
         )
 
-    def _apply_orientation_expansion(
+    def _apply_variant_expansion(
         self,
         gid: GroupId,
         center_poses: torch.Tensor,
         center_mask: torch.Tensor,
         k: int,
     ) -> torch.Tensor:
-        """Expand center candidates into (center, orientation) pairs.
+        """Expand center candidates into (center, variant) pairs.
 
         Takes center-only candidates from any subclass's ``create_mask()`` and
-        expands them into ``(center, orientation_index)`` pairs, keeping the
+        expands them into ``(center, variant_index)`` pairs, keeping the
         top *k* by cost.  Sets ``self.action_poses``, ``self.action_costs``,
-        and ``self.action_orientation_indices``.
+        and ``self.action_variant_indices``.
 
-        ``cost_batch(per_orientation=True)`` already returns inf for
-        non-placeable orientation slots, so no separate ``placeable_batch``
+        ``cost_batch(per_variant=True)`` already returns inf for
+        non-placeable variant slots, so no separate ``placeable_batch``
         call is needed.
 
         Returns:
             ``[k]`` bool mask.
         """
         spec = self.engine.group_specs[gid]
-        V = len(spec.orientations)
-        max_orient = min(V, self.max_orientations)
+        V = len(spec.variants)
+        max_vi = min(V, self.max_variants)
 
         vmask = center_mask.to(dtype=torch.bool, device=self.device).view(-1)
         vidx = torch.where(vmask)[0]
 
-        empty = self._empty_orientation_output(k)
+        empty = self._empty_variant_output(k)
         if int(vidx.numel()) == 0:
             return empty
 
         valid_poses = center_poses[vidx]  # [M, 2]
 
         # Single batch call — inf where not placeable
-        cost_nv = self._score_poses(gid, valid_poses, per_orientation=True)  # [M, V]
+        cost_nv = self._score_poses(gid, valid_poses, per_variant=True)  # [M, V]
 
-        # Per-center: keep only top max_orient orientations
-        if V > max_orient:
+        # Per-center: keep only top max_variants variants
+        if V > max_vi:
             cost_nv = cost_nv.clone()
-            _, top_oi = torch.topk(cost_nv, k=max_orient, dim=1, largest=False)
+            _, top_vi = torch.topk(cost_nv, k=max_vi, dim=1, largest=False)
             keep = torch.zeros_like(cost_nv, dtype=torch.bool)
-            keep.scatter_(1, top_oi, True)
+            keep.scatter_(1, top_vi, True)
             cost_nv[~keep] = float("inf")
 
         # Flatten and pick top-k finite entries
@@ -221,27 +220,27 @@ class BaseAdapter(ABC):
         pick_k = min(k, n_finite)
         _, topk_flat = torch.topk(flat_cost, k=pick_k, largest=False)
         ci = topk_flat // V
-        oi = topk_flat % V
+        vi = topk_flat % V
 
         out_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
         out_delta = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
-        out_orient = torch.zeros((k,), dtype=torch.int64, device=self.device)
+        out_vi = torch.zeros((k,), dtype=torch.int64, device=self.device)
         out_mask = torch.zeros((k,), dtype=torch.bool, device=self.device)
 
         out_poses[:pick_k] = valid_poses[ci]
         out_delta[:pick_k] = flat_cost[topk_flat]
-        out_orient[:pick_k] = oi
+        out_vi[:pick_k] = vi
         out_mask[:pick_k] = True
 
         self.action_poses = out_poses
         self.action_costs = out_delta
-        self.action_orientation_indices = out_orient
+        self.action_variant_indices = out_vi
         return out_mask
 
-    def _empty_orientation_output(self, k: int) -> torch.Tensor:
+    def _empty_variant_output(self, k: int) -> torch.Tensor:
         self.action_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
         self.action_costs = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
-        self.action_orientation_indices = None
+        self.action_variant_indices = None
         return torch.zeros((k,), dtype=torch.bool, device=self.device)
 
     def build_action_space(self) -> ActionSpace:
@@ -269,14 +268,14 @@ class BaseAdapter(ABC):
                 f"action_poses must have shape [N,2], got {tuple(poses.shape)} for N={n_actions}"
             )
 
-        orient_raw = getattr(self, "action_orientation_indices", None)
-        orient_indices = None
-        if isinstance(orient_raw, torch.Tensor):
-            oi = orient_raw.to(dtype=torch.int64, device=self.device)
-            if oi.ndim == 1 and int(oi.shape[0]) == n_actions:
-                orient_indices = oi
+        vi_raw = getattr(self, "action_variant_indices", None)
+        vi_indices = None
+        if isinstance(vi_raw, torch.Tensor):
+            vi_t = vi_raw.to(dtype=torch.int64, device=self.device)
+            if vi_t.ndim == 1 and int(vi_t.shape[0]) == n_actions:
+                vi_indices = vi_t
 
-        return ActionSpace(poses=poses, mask=mask, gid=gid, orientation_indices=orient_indices)
+        return ActionSpace(poses=poses, mask=mask, gid=gid, variant_indices=vi_indices)
 
     @abstractmethod
     def build_observation(self) -> Dict[str, Any]:
@@ -296,8 +295,8 @@ class BaseAdapter(ABC):
             state["mask"] = self.mask.clone()
         else:
             state["mask"] = None
-        oi = getattr(self, "action_orientation_indices", None)
-        state["action_orientation_indices"] = oi.clone() if isinstance(oi, torch.Tensor) else None
+        vit = getattr(self, "action_variant_indices", None)
+        state["action_variant_indices"] = vit.clone() if isinstance(vit, torch.Tensor) else None
         return state
 
     def set_state(self, state: Dict[str, object]) -> None:
@@ -307,8 +306,8 @@ class BaseAdapter(ABC):
             self.mask = m.to(device=self.device, dtype=torch.bool).clone()
         else:
             self.mask = None
-        oi = state.get("action_orientation_indices", None)
-        if isinstance(oi, torch.Tensor):
-            self.action_orientation_indices = oi.to(device=self.device, dtype=torch.int64).clone()
+        vit = state.get("action_variant_indices", None)
+        if isinstance(vit, torch.Tensor):
+            self.action_variant_indices = vit.to(device=self.device, dtype=torch.int64).clone()
         else:
-            self.action_orientation_indices = None
+            self.action_variant_indices = None

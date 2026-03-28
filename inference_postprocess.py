@@ -134,7 +134,7 @@ def main() -> None:
     logger.info("Remaining groups: %s", len(base_env.get_state().remaining))
     
     # ===== 1.5. 기존 그룹 미리 배치 (하드코딩) =====
-    # (gid, x_c, y_c, orientation_index) 형식 — center 기반
+    # (gid, x_c, y_c, variant_index) 형식 — center 기반
     # forbidden area: [0, 0, 150, 200] 피해서 배치
     PRE_PLACEMENTS = [
         ("A", 180.0, 240.0, 0),
@@ -150,7 +150,7 @@ def main() -> None:
         for gid, x_c, y_c, oi in PRE_PLACEMENTS:
             if gid in base_env.get_state().remaining:
                 _obs, _reward, _terminated, _truncated, info = base_env.step_action(
-                    EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=oi)
+                    EnvAction(gid=gid, x_c=x_c, y_c=y_c, variant_index=oi)
                 )
                 if info.get("reason") == "placed":
                     logger.info("Placed: %s at center (%.1f, %.1f) oi=%d", gid, x_c, y_c, oi)

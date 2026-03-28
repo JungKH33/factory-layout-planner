@@ -364,7 +364,7 @@ if __name__ == "__main__":
     for gid, x_c, y_c, oi in placements:
         if gid in env.get_state().remaining:
             obs, reward, terminated, truncated, info = env.step_action(
-                EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=oi)
+                EnvAction(gid=gid, x_c=x_c, y_c=y_c, variant_index=oi)
             )
             print(f"    Placed {gid} at center ({x_c}, {y_c}) oi={oi} - reason: {info.get('reason')}")
     

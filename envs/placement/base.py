@@ -7,18 +7,19 @@ import torch
 
 
 # ---------------------------------------------------------------------------
-# Orientation — base protocol for (rotation, mirror) geometry
+# Variant — one distinct placement form (source shape × rotation × mirror)
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class Orientation:
-    """One (rotation, mirror) orientation with precomputed body geometry.
+class Variant:
+    """One placement variant with precomputed body geometry.
 
-    All spec types populate this base with the minimal fields that search /
-    pipeline need.  Spec-specific extras live in subclasses
-    (e.g. ``StaticOrientation``).
+    A variant is a unique (source_shape, rotation, mirror) combination —
+    every distinct way to place this facility.  Spec-specific extras live
+    in subclasses (e.g. ``StaticVariant``).
     """
 
+    source_index: int        # which original shape definition (0 for single-shape)
     rotation: int            # 0, 90, 180, 270
     mirror: bool
     body_w: int              # rotated body width  (grid cells)
@@ -45,8 +46,8 @@ class GroupSpec:
         return str(getattr(self, "_exit_port_mode", "min"))
 
     @property
-    def orientations(self) -> List[Orientation]:
-        """All unique (rotation, mirror) orientations for this spec."""
+    def variants(self) -> List[Variant]:
+        """All unique placement variants for this spec."""
         return []
 
     @property

@@ -59,28 +59,66 @@ def load_env(
         except Exception as e:
             raise ValueError(f"expected number, got {v!r}") from e
 
+    def _parse_ports(
+        obj: Dict[str, Any], default_w: float, default_h: float,
+    ) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Parse entries_rel / exits_rel from a group or variant dict."""
+        entries_raw = obj.get("entries_rel")
+        exits_raw = obj.get("exits_rel")
+        if entries_raw is not None:
+            entries = [(float(p[0]), float(p[1])) for p in entries_raw]
+        else:
+            ent_x = float(obj.get("ent_rel_x", default_w / 2.0))
+            ent_y = float(obj.get("ent_rel_y", default_h / 2.0))
+            entries = [(ent_x, ent_y)]
+        if exits_raw is not None:
+            exits = [(float(p[0]), float(p[1])) for p in exits_raw]
+        else:
+            exi_x = float(obj.get("exi_rel_x", default_w / 2.0))
+            exi_y = float(obj.get("exi_rel_y", default_h / 2.0))
+            exits = [(exi_x, exi_y)]
+        return entries, exits
+
+    def _parse_clearance_lrtb(obj: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
+        """Parse clearance LRTB from a group or variant dict."""
+        cl_lrtb_raw = obj.get("clearance_lrtb")
+        cl_uniform_raw = obj.get("clearance")
+        if cl_lrtb_raw is not None:
+            return (
+                _to_int(cl_lrtb_raw[0]), _to_int(cl_lrtb_raw[1]),
+                _to_int(cl_lrtb_raw[2]), _to_int(cl_lrtb_raw[3]),
+            )
+        elif cl_uniform_raw is not None:
+            n = _to_int(cl_uniform_raw)
+            return (n, n, n, n)
+        return None
+
     group_specs: Dict[GroupId, GroupSpec] = {}
     for gid, g in groups_cfg.items():
-        w = _to_int(g["width"])
-        h = _to_int(g["height"])
-        # IO offsets: JSON stores BL-relative coords directly.
-        # Multi-port: "entries_rel": [[x,y], ...], "exits_rel": [[x,y], ...]
-        # Single-port (legacy): "ent_rel_x"/"ent_rel_y", "exi_rel_x"/"exi_rel_y"
-        # Default to center (w/2, h/2) when no port definition is given.
-        entries_raw = g.get("entries_rel")
-        exits_raw = g.get("exits_rel")
-        if entries_raw is not None:
-            entries_rel = [(float(p[0]), float(p[1])) for p in entries_raw]
+        variants_raw = g.get("variants")
+        group_type = str(g.get("type", "rect")).lower()
+
+        # --- parse top-level width/height/ports ---
+        # When "variants" is present, top-level width/height are optional
+        # (defaults to first variant's values).
+        if variants_raw is not None:
+            if not isinstance(variants_raw, list) or len(variants_raw) == 0:
+                raise ValueError(f"groups.{gid}.variants must be a non-empty list")
+            first_v = variants_raw[0]
+            if group_type == "rect":
+                w = _to_int(g.get("width", first_v["width"]))
+                h = _to_int(g.get("height", first_v["height"]))
+            else:
+                # irregular: width/height come from polygon rasterization;
+                # use placeholder values (overwritten in __post_init__)
+                w = _to_int(g.get("width", first_v.get("width", 1)))
+                h = _to_int(g.get("height", first_v.get("height", 1)))
         else:
-            ent_x = float(g.get("ent_rel_x", w / 2.0))
-            ent_y = float(g.get("ent_rel_y", h / 2.0))
-            entries_rel = [(ent_x, ent_y)]
-        if exits_raw is not None:
-            exits_rel = [(float(p[0]), float(p[1])) for p in exits_raw]
-        else:
-            exi_x = float(g.get("exi_rel_x", w / 2.0))
-            exi_y = float(g.get("exi_rel_y", h / 2.0))
-            exits_rel = [(exi_x, exi_y)]
+            w = _to_int(g["width"])
+            h = _to_int(g["height"])
+
+        entries_rel, exits_rel = _parse_ports(g, float(w), float(h))
+
         zone_values_raw = g.get("zone_values", {})
         if not isinstance(zone_values_raw, dict):
             raise ValueError(f"groups.{gid}.zone_values must be an object")
@@ -89,20 +127,66 @@ def load_env(
         clearance_kwargs: Dict[str, Any] = {}
         irregular_kwargs: Dict[str, Any] = {}
         cl_polygon_raw = g.get("clearance_polygon")
-        cl_lrtb_raw = g.get("clearance_lrtb")
-        cl_uniform_raw = g.get("clearance")
         if cl_polygon_raw is not None:
             irregular_kwargs["clearance_polygon"] = [
                 (float(p[0]), float(p[1])) for p in cl_polygon_raw
             ]
-        if cl_lrtb_raw is not None:
-            clearance_kwargs["clearance_lrtb_rel"] = (
-                _to_int(cl_lrtb_raw[0]), _to_int(cl_lrtb_raw[1]),
-                _to_int(cl_lrtb_raw[2]), _to_int(cl_lrtb_raw[3]),
-            )
-        elif cl_uniform_raw is not None:
-            n = _to_int(cl_uniform_raw)
-            clearance_kwargs["clearance_lrtb_rel"] = (n, n, n, n)
+        top_cl = _parse_clearance_lrtb(g)
+        if top_cl is not None:
+            clearance_kwargs["clearance_lrtb_rel"] = top_cl
+
+        # --- parse _variant_defs if "variants" key is present ---
+        variant_defs: Optional[List[Dict[str, Any]]] = None
+        if variants_raw is not None:
+            variant_defs = []
+            for vi, v in enumerate(variants_raw):
+                if not isinstance(v, dict):
+                    raise ValueError(f"groups.{gid}.variants[{vi}] must be an object")
+
+                if group_type == "rect":
+                    vw = _to_int(v["width"])
+                    vh = _to_int(v["height"])
+                elif group_type == "irregular":
+                    # width/height computed from polygon; use placeholder
+                    vw = _to_int(v.get("width", 1))
+                    vh = _to_int(v.get("height", 1))
+                else:
+                    raise ValueError(f"groups.{gid}: unknown type {group_type!r}")
+
+                v_entries, v_exits = _parse_ports(v, float(vw), float(vh))
+                v_cl = _parse_clearance_lrtb(v)
+
+                vdef: Dict[str, Any] = {
+                    "width": vw,
+                    "height": vh,
+                    "entries_rel": v_entries,
+                    "exits_rel": v_exits,
+                    "rotatable": bool(v.get("rotatable", g.get("rotatable", True))),
+                    "mirrorable": bool(v.get("mirrorable", g.get("mirrorable", True))),
+                }
+                if v_cl is not None:
+                    vdef["clearance_lrtb_rel"] = v_cl
+
+                # irregular-specific: body_polygon and clearance_polygon
+                if group_type == "irregular":
+                    bp_raw = v.get("body_polygon")
+                    if bp_raw is None:
+                        raise ValueError(
+                            f"groups.{gid}.variants[{vi}]: type='irregular' requires 'body_polygon'"
+                        )
+                    vdef["body_polygon"] = [(float(p[0]), float(p[1])) for p in bp_raw]
+                    cp_raw = v.get("clearance_polygon")
+                    if cp_raw is not None:
+                        vdef["clearance_polygon"] = [(float(p[0]), float(p[1])) for p in cp_raw]
+
+                variant_defs.append(vdef)
+
+            # Update top-level entries/exits to first variant for backward compat
+            entries_rel = variant_defs[0]["entries_rel"]
+            exits_rel = variant_defs[0]["exits_rel"]
+            if group_type == "rect":
+                w = _to_int(variant_defs[0]["width"])
+                h = _to_int(variant_defs[0]["height"])
 
         common_kwargs = dict(
             device=dev,
@@ -116,17 +200,21 @@ def load_env(
             zone_values=dict(zone_values_raw),
             _entry_port_mode=str(g.get("entry_port_mode", "min")),
             _exit_port_mode=str(g.get("exit_port_mode", "min")),
+            _variant_defs=variant_defs,
             **clearance_kwargs,
         )
 
-        group_type = str(g.get("type", "rect")).lower()
         if group_type == "rect":
             group_specs[gid] = StaticRectSpec(**common_kwargs)
         elif group_type == "irregular":
             body_polygon_raw = g.get("body_polygon")
-            if body_polygon_raw is None:
+            if body_polygon_raw is None and variants_raw is None:
                 raise ValueError(f"groups.{gid}: type='irregular' requires a 'body_polygon' field")
-            body_polygon = [(float(p[0]), float(p[1])) for p in body_polygon_raw]
+            if body_polygon_raw is not None:
+                body_polygon = [(float(p[0]), float(p[1])) for p in body_polygon_raw]
+            else:
+                # Use first variant's polygon as canonical
+                body_polygon = variant_defs[0]["body_polygon"]
             group_specs[gid] = StaticIrregularSpec(
                 **common_kwargs,
                 **irregular_kwargs,
@@ -212,17 +300,20 @@ def load_env(
     if "initial_placements" in reset_cfg and reset_cfg["initial_placements"] is not None:
         ip = {}
         for gid, pose in reset_cfg["initial_placements"].items():
-            if not (isinstance(pose, list) and len(pose) in (2, 3)):
+            if not (isinstance(pose, list) and len(pose) in (2, 3, 4)):
                 raise ValueError(
-                    f"initial_placements[{gid}] must be [x_c, y_c] or [x_c, y_c, orientation_index], got: {pose}"
+                    f"initial_placements[{gid}] must be [x_c, y_c], "
+                    f"[x_c, y_c, variant_index], or "
+                    f"[x_c, y_c, variant_index, source_index], got: {pose}"
                 )
             try:
                 x_c = float(pose[0])
                 y_c = float(pose[1])
             except Exception as e:
                 raise ValueError(f"initial_placements[{gid}]: x_c/y_c must be numbers, got: {pose}") from e
-            oi = int(pose[2]) if len(pose) > 2 else None
-            ip[gid] = EnvAction(gid=gid, x_c=x_c, y_c=y_c, orientation_index=oi)
+            vi = int(pose[2]) if len(pose) > 2 and pose[2] is not None else None
+            si = int(pose[3]) if len(pose) > 3 and pose[3] is not None else None
+            ip[gid] = EnvAction(gid=gid, x_c=x_c, y_c=y_c, variant_index=vi, source_index=si)
         reset_kwargs["initial_placements"] = ip
     if "remaining_order" in reset_cfg and reset_cfg["remaining_order"] is not None:
         reset_kwargs["remaining_order"] = list(reset_cfg["remaining_order"])
