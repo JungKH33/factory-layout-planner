@@ -395,6 +395,21 @@ class MCTSSearch(BaseSearch):
                         obs=obs2,
                         action_space=next_action_space,
                     )
+                    next_valid = int(next_action_space.valid_mask.to(torch.int64).sum().item())
+                    if next_valid <= 0:
+                        # Keep reward semantics consistent with episode loop:
+                        # no-valid-actions terminal should include failure penalty.
+                        dead_reward, _dead_term, _dead_trunc, _dead_info = self._apply_action_index(
+                            engine=engine,
+                            adapter=adapter,
+                            action=0,
+                            action_space=next_action_space,
+                        )
+                        reward = float(reward) + float(dead_reward)
+                        terminal = True
+                        child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
+                        next_action_space = child_cache.action_space
+                        priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
 
                 child = _Node(
                     decision_cache=child_cache,
