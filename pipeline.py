@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Union
 
-from agents.base import Agent, BaseAdapter, OrderingAgent
-from envs.action import EnvAction
+from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter, OrderingAgent
+from envs.action import EnvAction, GroupId
 from envs.env import FactoryLayoutEnv
+from envs.placement.base import GroupPlacement
 from search.base import BaseSearch
+from search.hierarchical_mcts import HierarchicalMCTSSearch
+
+# Return type: hierarchical adapters return resolved placement,
+# standard adapters return EnvAction.
+DecideResult = Union[
+    Tuple[Tuple[GroupId, GroupPlacement, float], Dict[str, Any]],  # hierarchical
+    Tuple[EnvAction, Dict[str, Any]],                               # standard
+]
 
 
 @dataclass(frozen=True)
 class DecisionPipeline:
     """Decision-only pipeline.
 
-    Flow:
-    engine state -> adapter.build_observation -> adapter.build_action_space
-        -> agent/search select action index
+    Hierarchical adapters (BaseHierarchicalAdapter):
+        -> adapter.resolve_action -> (gid, GroupPlacement, delta_cost)
+        -> caller uses engine.step_placement()
+
+    Standard adapters (BaseAdapter):
         -> adapter.decode_action -> EnvAction
+        -> caller uses engine.step_action()
     """
 
     agent: Agent
@@ -24,14 +36,18 @@ class DecisionPipeline:
     search: Optional[BaseSearch] = None
     ordering_agent: Optional[OrderingAgent] = None
 
+    @property
+    def is_hierarchical(self) -> bool:
+        return isinstance(self.adapter, BaseHierarchicalAdapter)
+
     def bind(self, *, engine: FactoryLayoutEnv) -> None:
         """Bind runtime engine context to adapter/search."""
         self.adapter.bind(engine)
         if self.search is not None:
             self.search.set_adapter(self.adapter)
 
-    def decide(self) -> tuple[EnvAction, Dict[str, Any]]:
-        """Return selected action and debug dictionary."""
+    def decide(self) -> DecideResult:
+        """Return action result and debug dictionary."""
         adapter = self.adapter
 
         if self.ordering_agent is not None:
@@ -43,24 +59,51 @@ class DecisionPipeline:
         if valid_count <= 0:
             raise ValueError("no_valid_actions")
 
-        if self.search is None:
-            action_index = int(self.agent.select_action(obs=observation, action_space=action_space))
-            search_name = "none"
-        else:
-            action_index = int(
-                self.search.select(
+        # --- Hierarchical adapter path ---
+        if isinstance(adapter, BaseHierarchicalAdapter):
+            if isinstance(self.search, HierarchicalMCTSSearch):
+                cell_idx, local_idx = self.search.select(
                     obs=observation,
                     agent=self.agent,
                     root_action_space=action_space,
                 )
-            )
+                worker_as = adapter.cell_action_space(cell_idx)
+                gid, placement, delta_cost = adapter.resolve_worker_action(local_idx, worker_as)
+                action_index = cell_idx
+                search_name = "HierarchicalMCTSSearch"
+            elif self.search is not None:
+                # Flat MCTS/beam with hierarchical adapter
+                action_index = int(self.search.select(
+                    obs=observation, agent=self.agent, root_action_space=action_space,
+                ))
+                search_name = type(self.search).__name__
+                gid, placement, delta_cost = adapter.resolve_action(action_index, action_space)
+            else:
+                action_index = int(self.agent.select_action(obs=observation, action_space=action_space))
+                search_name = "none"
+                gid, placement, delta_cost = adapter.resolve_action(action_index, action_space)
+
+            debug = self._build_debug(action_index, search_name, valid_count, action_space, observation)
+            return (gid, placement, delta_cost), debug
+
+        # --- Standard adapter path ---
+        if self.search is None:
+            action_index = int(self.agent.select_action(obs=observation, action_space=action_space))
+            search_name = "none"
+        else:
+            action_index = int(self.search.select(
+                obs=observation, agent=self.agent, root_action_space=action_space,
+            ))
             search_name = type(self.search).__name__
 
         action = adapter.decode_action(action_index, action_space)
+        debug = self._build_debug(action_index, search_name, valid_count, action_space, observation)
+        return action, debug
 
+    def _build_debug(self, action_index, search_name, valid_count, action_space, observation):
         scores = self.agent.policy(obs=observation, action_space=action_space)
         value = self.agent.value(obs=observation, action_space=action_space)
-        debug = {
+        return {
             "action_index": int(action_index),
             "search": search_name,
             "valid_actions": int(valid_count),
@@ -68,7 +111,6 @@ class DecisionPipeline:
             "scores": scores.detach().to(device="cpu").numpy(),
             "value": float(value),
         }
-        return action, debug
 
 
 if __name__ == "__main__":
@@ -94,8 +136,9 @@ if __name__ == "__main__":
 
     t0 = time.perf_counter()
     try:
-        action, dbg = pipe.decide()
-        _obs_env2, reward, terminated, truncated, info = engine.step_action(action)
+        result, dbg = pipe.decide()
+        # Standard adapter → EnvAction
+        _obs_env2, reward, terminated, truncated, info = engine.step_action(result)
         reason = "ok"
     except ValueError as e:
         if str(e) == "no_valid_actions":
@@ -111,7 +154,6 @@ if __name__ == "__main__":
 
     print("pipeline demo")
     print(" env=", ENV_JSON, "device=", device, "next_gid=", (engine.get_state().remaining[0] if engine.get_state().remaining else None))
-    print(" result=", {"reason": reason, "action": None if reason != "ok" else (action.x_center, action.y_center)})
     print(" debug=", dbg)
     print(" reward=", reward, "terminated=", terminated, "truncated=", truncated, "reason=", info.get("reason"))
     print(f" elapsed_ms={dt_ms:.2f}")

@@ -489,6 +489,18 @@ class StaticSpec(GroupSpec):
             variant_index,
         )
 
+    def build_placement(self, *, variant_index: int, x_bl: int, y_bl: int) -> GroupPlacement:
+        """Pure geometry — no placeability check. Caller already verified."""
+        vi = self._variants[variant_index]
+        body_mask, clearance_mask, clearance_origin, is_rectangular = self.shape_tensors(vi.shape_key)
+        x_c = float(x_bl) + float(vi.body_width) / 2.0
+        y_c = float(y_bl) + float(vi.body_height) / 2.0
+        return self._make_placement(
+            vi, x_c, y_c, x_bl, y_bl,
+            body_mask, clearance_mask, clearance_origin, is_rectangular,
+            variant_index,
+        )
+
     # ----- placeable / cost batch API -----
 
     def placeable_map(self, state: "EnvState", gid: object) -> torch.Tensor:

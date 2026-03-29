@@ -154,19 +154,26 @@ class BaseSearch(ABC):
         action: int,
         action_space: ActionSpace,
     ):
-        """Apply discrete action index via decode -> engine.step_action.
+        """Apply discrete action index via adapter → engine.
 
-        Returns (reward, terminated, truncated, info) — no observation.
-        Callers build observation via adapter.build_observation() only when needed.
+        Hierarchical adapters: resolve_action → step_placement.
+        Standard adapters: decode_action → step_action.
         """
+        from agents.base import BaseHierarchicalAdapter
         try:
-            placement = adapter.decode_action(int(action), action_space)
+            if isinstance(adapter, BaseHierarchicalAdapter):
+                gid, placement, _delta_cost = adapter.resolve_action(int(action), action_space)
+                _, reward, terminated, truncated, info = engine.step_placement(
+                    gid, placement,
+                )
+            else:
+                env_action = adapter.decode_action(int(action), action_space)
+                _, reward, terminated, truncated, info = engine.step_action(env_action)
         except IndexError:
             return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
         except ValueError as e:
             reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
             return float(engine.failure_penalty()), False, True, {"reason": reason}
-        _, reward, terminated, truncated, info = engine.step_action(placement)
         return float(reward), bool(terminated), bool(truncated), info
 
     def _track_terminal(self, *, engine: FactoryLayoutEnv, cum_reward: float) -> None:

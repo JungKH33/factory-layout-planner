@@ -82,6 +82,10 @@ class GroupSpec:
     def score_batch(self, *args, **kwargs):
         raise NotImplementedError(f"{type(self).__name__}.score_batch() is not implemented")
 
+    def build_placement(self, *, variant_index: int, x_bl: int, y_bl: int) -> "GroupPlacement":
+        """Pure geometry — build placement without placeability check."""
+        raise NotImplementedError(f"{type(self).__name__}.build_placement() is not implemented")
+
 
 @dataclass
 class GroupPlacement:

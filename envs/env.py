@@ -623,12 +623,57 @@ class FactoryLayoutEnv(gym.Env):
 
         return {}, float(reward), False, True, info
 
+    def step_placement(
+        self,
+        gid: GroupId,
+        placement: GroupPlacement,
+    ) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+        """Apply a resolved GroupPlacement directly. No variant resolution."""
+        if not self._state.remaining:
+            self._state.step(apply=False)
+            return {}, 0.0, True, False, {"reason": "done"}
+        if gid not in self._state.remaining:
+            self._state.step(apply=False)
+            return self._fail("gid_not_remaining")
+
+        # Placeability validation — env never trusts external input
+        if not self._state.is_placeable(
+            gid=gid,
+            x_bl=int(placement.min_x),
+            y_bl=int(placement.min_y),
+            body_mask=placement.body_mask,
+            clearance_mask=placement.clearance_mask,
+            clearance_origin=placement.clearance_origin,
+            is_rectangular=placement.is_rectangular,
+        ):
+            self._state.step(apply=False)
+            return self._fail("not_placeable")
+
+        delta_cost = float(self._delta_cost_from_placements(gid, [placement])[0].item())
+
+        self._state.step(apply=True, gid=gid, placement=placement)
+        self._update_flow_port_pairs(updated_gid=gid)
+
+        reward = float(self._reward.to_reward(delta_cost))
+        terminated = len(self._state.remaining) == 0
+        truncated = self.max_steps is not None and self._state.step_count >= self.max_steps
+        info: Dict[str, Any] = {"reason": "placed"}
+
+        if terminated or truncated:
+            logger.info(
+                "end: terminated=%s truncated=%s remaining=%d placed=%d step=%d cost=%.3f reason=placed reward=%.3f",
+                terminated, truncated,
+                len(self._state.remaining), len(self._state.placed),
+                self._state.step_count, self.total_cost(), reward,
+            )
+
+        return {}, float(reward), bool(terminated), bool(truncated), info
+
     def step_action(
         self,
         action: EnvAction,
     ) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
-        """Place a single `EnvAction` (wrapper owns mask/index validation)."""
-        # 1. 이미 완료된 경우
+        """Place a single `EnvAction` — resolves variant then delegates to step_placement."""
         if not self._state.remaining:
             self._state.step(apply=False)
             return {}, 0.0, True, False, {"reason": "done"}
@@ -652,39 +697,7 @@ class FactoryLayoutEnv(gym.Env):
             self._state.step(apply=False)
             return self._fail("not_placeable")
 
-        # TODO(perf): resolve_action already evaluates delta_cost internally
-        # via score_fn to pick the best variant.  Here we re-compute it for
-        # the chosen concrete placement.  Refactor to carry the score through
-        # resolve() to avoid the double computation.
-        delta = float(self._delta_cost_from_placements(gid_eff, [placement])[0].item())
-        self._state.step(
-            apply=True,
-            gid=gid_eff,
-            placement=placement,
-        )
-        self._update_flow_port_pairs(updated_gid=gid_eff)
-
-        reward = float(self._reward.to_reward(delta))
-        terminated = len(self._state.remaining) == 0
-        truncated = self.max_steps is not None and self._state.step_count >= self.max_steps
-
-        info: Dict[str, Any] = {"reason": "placed"}
-
-        # 5. 로깅
-        if terminated or truncated:
-            total_cost = self.total_cost()
-            logger.info(
-                "end: terminated=%s truncated=%s remaining=%d placed=%d step=%d cost=%.3f reason=placed reward=%.3f",
-                terminated,
-                truncated,
-                len(self._state.remaining),
-                len(self._state.placed),
-                self._state.step_count,
-                total_cost,
-                reward,
-            )
-
-        return {}, float(reward), bool(terminated), bool(truncated), info
+        return self.step_placement(gid_eff, placement)
 
     # ---- gym api ----
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):

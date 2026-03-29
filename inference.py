@@ -14,6 +14,7 @@ from postprocess import RoutePlanner
 from pipeline import DecisionPipeline
 from search.beam import BeamConfig, BeamSearch
 from search.mcts import MCTSConfig, MCTSSearch
+from search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
 
 from agents.registry import create as create_agent
 from agents.ordering import DifficultyOrderingAgent
@@ -23,7 +24,7 @@ from envs.action_space import ActionSpace
 # --- config (module-level constants, keep simple) ---
 ENV_JSON: str = "envs/env_configs/mixed_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -34,7 +35,7 @@ TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "mcts"  # "none" | "mcts"
+SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "hierarchical_mcts"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 MCTS_ROLLOUT_ENABLED: bool = True
@@ -91,6 +92,8 @@ def main() -> None:
                      "expand_variants": EXPAND_VARIANTS, "max_variants": MAX_VARIANTS},
         "greedyv4": {"k": TOPK_K, "cell_size": TOPK_CELL_SIZE, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
                      "expand_variants": EXPAND_VARIANTS, "max_variants": MAX_VARIANTS},
+        "region": {"cell_size": TOPK_CELL_SIZE, "top_per_cell": 20, "quant_step": TOPK_QUANT_STEP,
+                   "max_variants": MAX_VARIANTS, "random_seed": 5},
         "alphachip": {"coarse_grid": int(ALPHACHIP_GRID)},
         "maskplace": {"grid": 224, "soft_coefficient": 1.0},
     }
@@ -120,6 +123,19 @@ def main() -> None:
                 track_verbose=TRACK_VERBOSE,
             )
         )
+    elif SEARCH_MODE == "hierarchical_mcts":
+        search = HierarchicalMCTSSearch(
+            config=HierarchicalMCTSConfig(
+                num_simulations=MCTS_SIMS,
+                rollout_enabled=bool(MCTS_ROLLOUT_ENABLED),
+                rollout_depth=int(ROLLOUT_DEPTH),
+                track_top_k=TRACK_TOP_K,
+                track_verbose=TRACK_VERBOSE,
+                pw_enabled=bool(MCTS_PW_ENABLED),
+                pw_c=MCTS_PW_C,
+                pw_alpha=MCTS_PW_ALPHA,
+            )
+        )
     elif SEARCH_MODE == "beam":
         search = BeamSearch(
             config=BeamConfig(
@@ -132,7 +148,7 @@ def main() -> None:
             )
         )
     else:
-        raise ValueError(f"Unknown SEARCH_MODE={SEARCH_MODE!r} (expected 'none'|'mcts'|'beam')")
+        raise ValueError(f"Unknown SEARCH_MODE={SEARCH_MODE!r} (expected 'none'|'mcts'|'hierarchical_mcts'|'beam')")
 
     if ORDERING_MODE == "none":
         ordering_agent = None
@@ -166,11 +182,15 @@ def main() -> None:
         next_gid = engine.get_state().remaining[0] if engine.get_state().remaining else None
 
         state = engine.get_state().copy()
-        action = None
+        result = None
         dbg: dict[str, object] = {}
         try:
-            action, dbg = pipe.decide()
-            obs_env_next, reward, terminated, truncated, info = engine.step_action(action)
+            result, dbg = pipe.decide()
+            if pipe.is_hierarchical:
+                gid, placement, _delta_cost = result
+                obs_env_next, reward, terminated, truncated, info = engine.step_placement(gid, placement)
+            else:
+                obs_env_next, reward, terminated, truncated, info = engine.step_action(result)
         except ValueError as e:
             if str(e) != "no_valid_actions":
                 raise
@@ -211,7 +231,7 @@ def main() -> None:
 
         obs_env = obs_env_next
         total_reward += float(reward)
-        if action is None:
+        if result is None:
             logger.warning(
                 "step %s next_gid=%s search=%s reason=no_valid_actions",
                 step,
@@ -219,13 +239,17 @@ def main() -> None:
                 SEARCH_MODE,
             )
         else:
+            if pipe.is_hierarchical:
+                _gid, _pl, _dc = result
+                pos_x, pos_y = float(_pl.x_center), float(_pl.y_center)
+            else:
+                pos_x, pos_y = float(result.x_center), float(result.y_center)
             logger.info(
                 "step %s next_gid=%s search=%s action=(%.1f,%.1f)",
                 step,
                 next_gid,
                 dbg.get("search", SEARCH_MODE),
-                float(action.x_center),
-                float(action.y_center),
+                pos_x, pos_y,
             )
 
         if terminated or truncated:

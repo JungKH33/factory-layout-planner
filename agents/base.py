@@ -10,6 +10,7 @@ from envs.action import EnvAction
 from envs.action import GroupId
 from envs.action_space import ActionSpace
 from envs.env import FactoryLayoutEnv
+from envs.placement.base import GroupPlacement
 
 
 # ---------------------------------------------------------------------------
@@ -352,3 +353,25 @@ class BaseAdapter(ABC):
             self.action_variant_indices = vit.to(device=self.device, dtype=torch.int64).clone()
         else:
             self.action_variant_indices = None
+
+
+# ---------------------------------------------------------------------------
+# Base hierarchical adapter (for region/cell-based adapters)
+# ---------------------------------------------------------------------------
+
+class BaseHierarchicalAdapter(BaseAdapter):
+    """Adapter that resolves actions to (gid, GroupPlacement, delta_cost).
+
+    Used by region/cell-based adapters where the adapter owns variant
+    resolution. Works with ``env.step_placement()`` instead of
+    ``env.step_action()``.
+    """
+
+    @abstractmethod
+    def resolve_action(self, action_idx: int, action_space: ActionSpace) -> Tuple[GroupId, GroupPlacement, float]:
+        """Action index → (gid, GroupPlacement, delta_cost)."""
+        raise NotImplementedError
+
+    def cell_action_space(self, cell_idx: int) -> ActionSpace:
+        """Return within-cell candidates as ActionSpace (for H-MCTS worker)."""
+        raise NotImplementedError(f"{type(self).__name__}.cell_action_space() is not implemented")
