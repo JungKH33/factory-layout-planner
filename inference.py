@@ -14,6 +14,7 @@ from postprocess import RoutePlanner
 from pipeline import DecisionPipeline
 from search.beam import BeamConfig, BeamSearch
 from search.mcts import MCTSConfig, MCTSSearch
+from search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
 from search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
 
 from agents.registry import create as create_agent
@@ -35,7 +36,7 @@ TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "hierarchical_mcts"  # "none" | "mcts" | "hierarchical_mcts" | "beam"
+SEARCH_MODE: str = "hierarchical_beam"  # "none" | "mcts" | "hierarchical_mcts" | "hierarchical_beam" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 MCTS_ROLLOUT_ENABLED: bool = True
@@ -52,6 +53,7 @@ BEAM_WIDTH: int = 8
 BEAM_DEPTH: int = 5
 BEAM_EXPANSION_TOPK: int = 16
 BEAM_CACHE_DECISION_STATE: bool = False
+HBEAM_WORKER_TOPK: int = 4
 
 # Variant expansion: adapter가 (center, variant) 쌍을 후보로 생성
 EXPAND_VARIANTS: bool = False
@@ -136,6 +138,18 @@ def main() -> None:
                 pw_alpha=MCTS_PW_ALPHA,
             )
         )
+    elif SEARCH_MODE == "hierarchical_beam":
+        search = HierarchicalBeamSearch(
+            config=HierarchicalBeamConfig(
+                beam_width=BEAM_WIDTH,
+                depth=BEAM_DEPTH,
+                manager_topk=BEAM_EXPANSION_TOPK,
+                worker_topk=HBEAM_WORKER_TOPK,
+                cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
+                track_top_k=TRACK_TOP_K,
+                track_verbose=TRACK_VERBOSE,
+            )
+        )
     elif SEARCH_MODE == "beam":
         search = BeamSearch(
             config=BeamConfig(
@@ -148,7 +162,10 @@ def main() -> None:
             )
         )
     else:
-        raise ValueError(f"Unknown SEARCH_MODE={SEARCH_MODE!r} (expected 'none'|'mcts'|'hierarchical_mcts'|'beam')")
+        raise ValueError(
+            f"Unknown SEARCH_MODE={SEARCH_MODE!r} "
+            "(expected 'none'|'mcts'|'hierarchical_mcts'|'hierarchical_beam'|'beam')"
+        )
 
     if ORDERING_MODE == "none":
         ordering_agent = None
