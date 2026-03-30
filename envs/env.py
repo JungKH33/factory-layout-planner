@@ -625,10 +625,10 @@ class FactoryLayoutEnv(gym.Env):
 
     def step_placement(
         self,
-        gid: GroupId,
         placement: GroupPlacement,
     ) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         """Apply a resolved GroupPlacement directly. No variant resolution."""
+        gid = placement.group_id
         if not self._state.remaining:
             self._state.step(apply=False)
             return {}, 0.0, True, False, {"reason": "done"}
@@ -697,7 +697,7 @@ class FactoryLayoutEnv(gym.Env):
             self._state.step(apply=False)
             return self._fail("not_placeable")
 
-        return self.step_placement(gid_eff, placement)
+        return self.step_placement(placement)
 
     # ---- gym api ----
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):

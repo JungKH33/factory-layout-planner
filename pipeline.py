@@ -1,34 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter, OrderingAgent
-from envs.action import EnvAction, GroupId
 from envs.env import FactoryLayoutEnv
 from envs.placement.base import GroupPlacement
 from search.base import BaseSearch
 from search.hierarchical_mcts import HierarchicalMCTSSearch
 
-# Return type: hierarchical adapters return resolved placement,
-# standard adapters return EnvAction.
-DecideResult = Union[
-    Tuple[Tuple[GroupId, GroupPlacement, float], Dict[str, Any]],  # hierarchical
-    Tuple[EnvAction, Dict[str, Any]],                               # standard
-]
+# Return type: all adapters return resolved placement only.
+DecideResult = Tuple[GroupPlacement, Dict[str, Any]]
 
 
 @dataclass(frozen=True)
 class DecisionPipeline:
     """Decision-only pipeline.
 
-    Hierarchical adapters (BaseHierarchicalAdapter):
-        -> adapter.resolve_action -> (gid, GroupPlacement, delta_cost)
+    All adapters:
+        -> adapter.resolve_action -> GroupPlacement
         -> caller uses engine.step_placement()
-
-    Standard adapters (BaseAdapter):
-        -> adapter.decode_action -> EnvAction
-        -> caller uses engine.step_action()
     """
 
     agent: Agent
@@ -59,48 +50,31 @@ class DecisionPipeline:
         if valid_count <= 0:
             raise ValueError("no_valid_actions")
 
-        # --- Hierarchical adapter path ---
-        if isinstance(adapter, BaseHierarchicalAdapter):
-            if isinstance(self.search, HierarchicalMCTSSearch):
-                cell_idx, local_idx = self.search.select(
-                    obs=observation,
-                    agent=self.agent,
-                    root_action_space=action_space,
-                )
-                worker_as = adapter.cell_action_space(cell_idx)
-                gid, placement, delta_cost = adapter.resolve_worker_action(
-                    local_idx, worker_as, cell_idx=cell_idx,
-                )
-                action_index = cell_idx
-                search_name = "HierarchicalMCTSSearch"
-            elif self.search is not None:
-                # Flat MCTS/beam with hierarchical adapter
-                action_index = int(self.search.select(
-                    obs=observation, agent=self.agent, root_action_space=action_space,
-                ))
-                search_name = type(self.search).__name__
-                gid, placement, delta_cost = adapter.resolve_action(action_index, action_space)
-            else:
-                action_index = int(self.agent.select_action(obs=observation, action_space=action_space))
-                search_name = "none"
-                gid, placement, delta_cost = adapter.resolve_action(action_index, action_space)
-
-            debug = self._build_debug(action_index, search_name, valid_count, action_space, observation)
-            return (gid, placement, delta_cost), debug
-
-        # --- Standard adapter path ---
-        if self.search is None:
+        if isinstance(self.search, HierarchicalMCTSSearch):
+            cell_idx, local_idx = self.search.select(
+                obs=observation,
+                agent=self.agent,
+                root_action_space=action_space,
+            )
+            worker_as = adapter.cell_action_space(cell_idx)
+            placement = adapter.resolve_worker_action(
+                local_idx, worker_as, cell_idx=cell_idx,
+            )
+            action_index = cell_idx
+            search_name = "HierarchicalMCTSSearch"
+        elif self.search is None:
             action_index = int(self.agent.select_action(obs=observation, action_space=action_space))
             search_name = "none"
+            placement = adapter.resolve_action(action_index, action_space)
         else:
             action_index = int(self.search.select(
                 obs=observation, agent=self.agent, root_action_space=action_space,
             ))
             search_name = type(self.search).__name__
+            placement = adapter.resolve_action(action_index, action_space)
 
-        action = adapter.decode_action(action_index, action_space)
         debug = self._build_debug(action_index, search_name, valid_count, action_space, observation)
-        return action, debug
+        return placement, debug
 
     def _build_debug(self, action_index, search_name, valid_count, action_space, observation):
         scores = self.agent.policy(obs=observation, action_space=action_space)
@@ -139,8 +113,7 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     try:
         result, dbg = pipe.decide()
-        # Standard adapter → EnvAction
-        _obs_env2, reward, terminated, truncated, info = engine.step_action(result)
+        _obs_env2, reward, terminated, truncated, info = engine.step_placement(result)
         reason = "ok"
     except ValueError as e:
         if str(e) == "no_valid_actions":

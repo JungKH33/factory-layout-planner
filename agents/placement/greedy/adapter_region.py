@@ -223,14 +223,13 @@ class RegionAdapter(BaseHierarchicalAdapter):
     # ---- resolve ----
 
     def resolve_action(self, action_idx: int, action_space: ActionSpace):
-        """Cell index → (gid, GroupPlacement, delta_cost) using best candidate in cell."""
+        """Cell index → GroupPlacement using best candidate in cell."""
         a = self.validate_action_index(action_idx, action_space)
         cell = self._cells[a]
 
         # Best candidate (already sorted by cost)
         center = cell.centers[0]
         vi_idx = int(cell.variant_indices[0].item())
-        cost = float(cell.costs[0].item())
 
         gid = action_space.group_id
         spec = self.engine.group_specs[gid]
@@ -238,7 +237,7 @@ class RegionAdapter(BaseHierarchicalAdapter):
         x_bl = int(round(float(center[0].item()) - float(vi.body_width) / 2.0))
         y_bl = int(round(float(center[1].item()) - float(vi.body_height) / 2.0))
         placement = spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
-        return gid, placement, cost
+        return placement
 
     def resolve_worker_action(
         self,
@@ -247,7 +246,7 @@ class RegionAdapter(BaseHierarchicalAdapter):
         *,
         cell_idx: int,
     ):
-        """Within-cell candidate index → (gid, GroupPlacement, delta_cost)."""
+        """Within-cell candidate index → GroupPlacement."""
         a = self.validate_action_index(action_idx, action_space)
         if cell_idx < 0 or cell_idx >= len(self._cells):
             raise IndexError(f"cell_idx out of range: {cell_idx}")
@@ -259,14 +258,13 @@ class RegionAdapter(BaseHierarchicalAdapter):
         cell = self._cells[int(cell_idx)]
         if a >= int(cell.costs.shape[0]):
             raise IndexError(f"worker action index out of range for cell {cell_idx}: {a}")
-        delta_cost = float(cell.costs[a].item())
 
         vi = spec.variants[vi_idx]
         x_bl = int(round(float(center[0].item()) - float(vi.body_width) / 2.0))
         y_bl = int(round(float(center[1].item()) - float(vi.body_height) / 2.0))
         placement = spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
 
-        return gid, placement, delta_cost
+        return placement
 
     def cell_action_space(self, cell_idx: int) -> ActionSpace:
         """Cell-internal candidates as ActionSpace for H-MCTS worker level."""
@@ -344,8 +342,11 @@ if __name__ == "__main__":
 
         # Resolve best cell
         best_cell = int(torch.argmin(costs).item())
-        gid, placement, delta_cost = adapter.resolve_action(best_cell, candidates)
-        print(f"  best_cell={best_cell}  gid={gid}  pos=({placement.x_center:.1f},{placement.y_center:.1f})  cost={delta_cost:.3f}")
+        placement = adapter.resolve_action(best_cell, candidates)
+        print(
+            f"  best_cell={best_cell}  gid={placement.group_id}  "
+            f"pos=({placement.x_center:.1f},{placement.y_center:.1f})"
+        )
 
     # Step through all groups
     print("\n  Full episode:")
@@ -363,10 +364,13 @@ if __name__ == "__main__":
             break
         costs = obs["action_costs"]
         best = int(torch.argmin(costs).item())
-        gid, placement, delta_cost = adapter.resolve_action(best, candidates)
-        _, reward, terminated, truncated, info = engine.step_placement(gid, placement)
+        placement = adapter.resolve_action(best, candidates)
+        _, reward, terminated, truncated, info = engine.step_placement(placement)
         total_reward += reward
-        print(f"    step {step}: gid={gid}  cells={R}  pos=({placement.x_center:.1f},{placement.y_center:.1f})  cost={delta_cost:.1f}  reward={reward:.3f}")
+        print(
+            f"    step {step}: gid={placement.group_id}  cells={R}  "
+            f"pos=({placement.x_center:.1f},{placement.y_center:.1f})  reward={reward:.3f}"
+        )
         if terminated or truncated:
             break
     print(f"  total_cost={engine.total_cost():.3f}  total_reward={total_reward:.3f}")

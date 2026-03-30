@@ -80,14 +80,14 @@ class AdapterGymEnv(gym.Env):
     ) -> Tuple[Dict[str, Any], float, bool, bool, Dict[str, Any]]:
         action_space = self.adapter.build_action_space()
         try:
-            env_action = self.adapter.decode_action(int(action), action_space)
+            placement = self.adapter.resolve_action(int(action), action_space)
         except (IndexError, ValueError):
             reward = float(self.engine.failure_penalty())
             obs = self.adapter.build_observation()
             obs["action_mask"] = torch.zeros_like(action_space.valid_mask)
             return obs, reward, False, True, {"reason": "invalid_action"}
 
-        _, reward, terminated, truncated, info = self.engine.step_action(env_action)
+        _, reward, terminated, truncated, info = self.engine.step_placement(placement)
         obs = self.adapter.build_observation()
 
         if not (terminated or truncated):

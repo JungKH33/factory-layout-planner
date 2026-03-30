@@ -22,9 +22,9 @@ from envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "envs/env_configs/mixed_01.json"
+ENV_JSON: str = "envs/env_configs/clearance_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -186,11 +186,7 @@ def main() -> None:
         dbg: dict[str, object] = {}
         try:
             result, dbg = pipe.decide()
-            if pipe.is_hierarchical:
-                gid, placement, _delta_cost = result
-                obs_env_next, reward, terminated, truncated, info = engine.step_placement(gid, placement)
-            else:
-                obs_env_next, reward, terminated, truncated, info = engine.step_action(result)
+            obs_env_next, reward, terminated, truncated, info = engine.step_placement(result)
         except ValueError as e:
             if str(e) != "no_valid_actions":
                 raise
@@ -239,11 +235,7 @@ def main() -> None:
                 SEARCH_MODE,
             )
         else:
-            if pipe.is_hierarchical:
-                _gid, _pl, _dc = result
-                pos_x, pos_y = float(_pl.x_center), float(_pl.y_center)
-            else:
-                pos_x, pos_y = float(result.x_center), float(result.y_center)
+            pos_x, pos_y = float(result.x_center), float(result.y_center)
             logger.info(
                 "step %s next_gid=%s search=%s action=(%.1f,%.1f)",
                 step,

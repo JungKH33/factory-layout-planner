@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import hashlib
-from typing import Any, Dict, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import torch
 
@@ -100,6 +100,55 @@ class BaseAdapter(ABC):
             y_center=float(pose[1].item()),
             variant_index=variant_index,
         )
+
+    def resolve_action(self, action_idx: int, action_space: ActionSpace) -> GroupPlacement:
+        """Resolve action index to concrete placement (adapter-owned variant resolution).
+
+        Default implementation for standard adapters:
+        - if `action_space.variant_indices` exists: use the pinned variant
+        - else: evaluate all variants at the selected center and pick the best
+        """
+        a = self.validate_action_index(action_idx, action_space)
+        gid = action_space.group_id
+        if gid is None:
+            raise ValueError("action_space.group_id is required")
+
+        spec = self.engine.group_specs[gid]
+        center = action_space.centers[a]
+        cx = float(center[0].item())
+        cy = float(center[1].item())
+
+        if action_space.variant_indices is not None:
+            variant_indices = [int(action_space.variant_indices[a].item())]
+        else:
+            variant_indices = list(range(len(spec.variants)))
+        if not variant_indices:
+            raise ValueError("no_variants")
+
+        placeable: List[GroupPlacement] = []
+        for vi_idx in variant_indices:
+            vi = spec.variants[vi_idx]
+            x_bl = int(round(cx - float(vi.body_width) / 2.0))
+            y_bl = int(round(cy - float(vi.body_height) / 2.0))
+            placement = spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
+            if self.engine.get_state().is_placeable(
+                gid=gid,
+                x_bl=int(placement.min_x),
+                y_bl=int(placement.min_y),
+                body_mask=placement.body_mask,
+                clearance_mask=placement.clearance_mask,
+                clearance_origin=placement.clearance_origin,
+                is_rectangular=placement.is_rectangular,
+            ):
+                placeable.append(placement)
+
+        if not placeable:
+            raise ValueError("not_placeable")
+
+        scores = self.engine._delta_cost_from_placements(gid, placeable).to(dtype=torch.float32, device=self.device).view(-1)
+        best_idx = int(torch.argmin(scores).item())
+        best = placeable[best_idx]
+        return best
 
     def num_valid_actions(self, action_space: ActionSpace) -> int:
         """Return number of valid actions in given action-space."""
@@ -360,7 +409,7 @@ class BaseAdapter(ABC):
 # ---------------------------------------------------------------------------
 
 class BaseHierarchicalAdapter(BaseAdapter):
-    """Adapter that resolves actions to (gid, GroupPlacement, delta_cost).
+    """Adapter that resolves actions to GroupPlacement.
 
     Used by region/cell-based adapters where the adapter owns variant
     resolution. Works with ``env.step_placement()`` instead of
@@ -368,8 +417,8 @@ class BaseHierarchicalAdapter(BaseAdapter):
     """
 
     @abstractmethod
-    def resolve_action(self, action_idx: int, action_space: ActionSpace) -> Tuple[GroupId, GroupPlacement, float]:
-        """Action index → (gid, GroupPlacement, delta_cost)."""
+    def resolve_action(self, action_idx: int, action_space: ActionSpace) -> GroupPlacement:
+        """Action index → GroupPlacement."""
         raise NotImplementedError
 
     def cell_action_space(self, cell_idx: int) -> ActionSpace:

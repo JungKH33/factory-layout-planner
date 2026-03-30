@@ -807,6 +807,7 @@ class StaticRectSpec(StaticSpec):
         w = float(vi.body_width)
         h = float(vi.body_height)
         return StaticRectPlacement(
+            group_id=self.id,
             x_center=x_c_s, y_center=y_c_s,
             entry_points=entry_points, exit_points=exit_points,
             min_x=float(x_bl), max_x=float(x_bl) + w,
@@ -1044,6 +1045,7 @@ class StaticIrregularSpec(StaticSpec):
             src_cp, x_bl, y_bl, vi.rotation, vi.mirror,
             src_w, src_h) if src_cp else None)
         return StaticIrregularPlacement(
+            group_id=self.id,
             x_center=x_c_s, y_center=y_c_s,
             entry_points=entry_points, exit_points=exit_points,
             min_x=float(x_bl), max_x=float(x_bl) + w,

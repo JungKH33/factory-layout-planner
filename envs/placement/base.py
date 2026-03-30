@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 
+from envs.action import GroupId
+
 
 # ---------------------------------------------------------------------------
 # GroupVariant — one distinct placement form (source shape × rotation × mirror)
@@ -96,6 +98,7 @@ class GroupPlacement:
     non-default 필드를 추가하려면 parent에 default가 없어야 함).
     """
 
+    group_id: GroupId
     x_center: float
     y_center: float
     entry_points: List[Tuple[float, float]]

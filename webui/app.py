@@ -261,8 +261,8 @@ async def step(sid: str, req: StepRequest):
                 session.truncated = True
                 info = {"reason": "masked_action"}
             else:
-                env_action = adapter.decode_action(a, candidates)
-                obs_core, reward, session.terminated, session.truncated, info = engine.step_action(env_action)
+                placement = adapter.resolve_action(a, candidates)
+                obs_core, reward, session.terminated, session.truncated, info = engine.step_placement(placement)
                 session.obs = adapter.build_observation(obs_core)
             
             # Update candidates for new state

@@ -155,20 +155,12 @@ class BaseSearch(ABC):
         action_space: ActionSpace,
     ):
         """Apply discrete action index via adapter → engine.
-
-        Hierarchical adapters: resolve_action → step_placement.
-        Standard adapters: decode_action → step_action.
         """
-        from agents.base import BaseHierarchicalAdapter
         try:
-            if isinstance(adapter, BaseHierarchicalAdapter):
-                gid, placement, _delta_cost = adapter.resolve_action(int(action), action_space)
-                _, reward, terminated, truncated, info = engine.step_placement(
-                    gid, placement,
-                )
-            else:
-                env_action = adapter.decode_action(int(action), action_space)
-                _, reward, terminated, truncated, info = engine.step_action(env_action)
+            placement = adapter.resolve_action(int(action), action_space)
+            _, reward, terminated, truncated, info = engine.step_placement(
+                placement,
+            )
         except IndexError:
             return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
         except ValueError as e:
