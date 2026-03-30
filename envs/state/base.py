@@ -123,7 +123,8 @@ class EnvState:
     def set_remaining(self, remaining: List[GroupId]) -> None:
         self.remaining = list(remaining)
 
-    def place(self, *, gid: GroupId, placement: object) -> None:
+    def place(self, *, placement: object) -> None:
+        gid = placement.group_id
         is_new = gid not in self.placed
         self.placements[gid] = placement
         self.placed.add(gid)
@@ -165,7 +166,6 @@ class EnvState:
             is_rectangular=is_rectangular,
         )
         self.flow.upsert_io(
-            gid=gid,
             placement=placement,
             nodes=self.placed_nodes_order,
         )
@@ -174,16 +174,14 @@ class EnvState:
         self,
         *,
         apply: bool,
-        gid: Optional[GroupId] = None,
         placement: Optional[object] = None,
     ) -> None:
         self.step_count += 1
         if not bool(apply):
             return
-        if gid is None or placement is None:
-            raise ValueError("step(apply=True) requires gid and placement")
+        if placement is None:
+            raise ValueError("step(apply=True) requires placement")
         self.place(
-            gid=gid,
             placement=placement,
         )
 
@@ -218,28 +216,25 @@ class EnvState:
     def flow_port_pairs_nodes_key(self) -> Tuple[GroupId, ...]:
         return self.flow.flow_port_pairs_nodes_key
 
-    def is_placeable(
+    def placeable(
         self,
         *,
-        gid: GroupId,
-        x_bl: int,
-        y_bl: int,
-        body_mask: torch.Tensor,
-        clearance_mask: torch.Tensor,
-        clearance_origin: Tuple[int, int],
-        is_rectangular: bool,
+        placement: object,
     ) -> bool:
-        return self.maps.is_placeable(
+        gid = placement.group_id
+        x_bl = int(getattr(placement, "x_bl", placement.min_x))
+        y_bl = int(getattr(placement, "y_bl", placement.min_y))
+        return self.maps.placeable(
             gid=gid,
-            x_bl=int(x_bl),
-            y_bl=int(y_bl),
-            body_mask=body_mask,
-            clearance_mask=clearance_mask,
-            clearance_origin=clearance_origin,
-            is_rectangular=is_rectangular,
+            x_bl=x_bl,
+            y_bl=y_bl,
+            body_mask=placement.body_mask,
+            clearance_mask=placement.clearance_mask,
+            clearance_origin=placement.clearance_origin,
+            is_rectangular=placement.is_rectangular,
         )
 
-    def is_placeable_batch(
+    def placeable_batch(
         self,
         *,
         gid: GroupId,
@@ -250,7 +245,7 @@ class EnvState:
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> torch.Tensor:
-        return self.maps.is_placeable_batch(
+        return self.maps.placeable_batch(
             gid=gid,
             x_bl=x_bl,
             y_bl=y_bl,

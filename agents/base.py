@@ -131,21 +131,13 @@ class BaseAdapter(ABC):
             x_bl = int(round(cx - float(vi.body_width) / 2.0))
             y_bl = int(round(cy - float(vi.body_height) / 2.0))
             placement = spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
-            if self.engine.get_state().is_placeable(
-                gid=gid,
-                x_bl=int(placement.min_x),
-                y_bl=int(placement.min_y),
-                body_mask=placement.body_mask,
-                clearance_mask=placement.clearance_mask,
-                clearance_origin=placement.clearance_origin,
-                is_rectangular=placement.is_rectangular,
-            ):
+            if self.engine.get_state().placeable(placement=placement):
                 placeable.append(placement)
 
         if not placeable:
             raise ValueError("not_placeable")
 
-        scores = self.engine._delta_cost_from_placements(gid, placeable).to(dtype=torch.float32, device=self.device).view(-1)
+        scores = self.engine._delta_cost_from_placements(placeable).to(dtype=torch.float32, device=self.device).view(-1)
         best_idx = int(torch.argmin(scores).item())
         best = placeable[best_idx]
         return best

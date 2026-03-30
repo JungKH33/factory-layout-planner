@@ -286,7 +286,7 @@ class GridMaps:
         spec_type = type(self._group_specs[gid])
         return self._backends[("batch", spec_type)]
 
-    def is_placeable(
+    def placeable(
         self,
         *,
         gid: GroupId,
@@ -716,7 +716,7 @@ class GridMaps:
             flat_result[valid_idx[start:stop]] = (~body_hit) & (~body_clear_hit) & (~pad_hit)
         return result
 
-    def is_placeable_batch(
+    def placeable_batch(
         self,
         *,
         gid: GroupId,

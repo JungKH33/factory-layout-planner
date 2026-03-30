@@ -548,7 +548,7 @@ class StaticSpec(GroupSpec):
             for sk, vi_t in self._shape_variant_indices.items():
                 body_mask, clearance_mask, clearance_origin, is_rect = self.shape_tensors(sk)
                 first = int(vi_t[0].item())
-                ok_s = state.is_placeable_batch(
+                ok_s = state.placeable_batch(
                     gid=gid,
                     x_bl=x_bl[:, first], y_bl=y_bl[:, first],
                     body_mask=body_mask, clearance_mask=clearance_mask,
@@ -561,7 +561,7 @@ class StaticSpec(GroupSpec):
         for sk, vi_t in self._shape_variant_indices.items():
             body_mask, clearance_mask, clearance_origin, is_rect = self.shape_tensors(sk)
             first = int(vi_t[0].item())
-            ok |= state.is_placeable_batch(
+            ok |= state.placeable_batch(
                 gid=gid,
                 x_bl=x_bl[:, first], y_bl=y_bl[:, first],
                 body_mask=body_mask, clearance_mask=clearance_mask,
@@ -607,7 +607,7 @@ class StaticSpec(GroupSpec):
         for sk, vi_t in self._shape_variant_indices.items():
             body_mask, clearance_mask, clearance_origin, is_rect = self.shape_tensors(sk)
             first = int(vi_t[0].item())
-            ok_s = state.is_placeable_batch(
+            ok_s = state.placeable_batch(
                 gid=gid,
                 x_bl=x_bl[:, first], y_bl=y_bl[:, first],
                 body_mask=body_mask, clearance_mask=clearance_mask,

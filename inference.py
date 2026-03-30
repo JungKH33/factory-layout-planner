@@ -24,7 +24,7 @@ from envs.action_space import ActionSpace
 # --- config (module-level constants, keep simple) ---
 ENV_JSON: str = "envs/env_configs/clearance_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "region"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -35,7 +35,7 @@ TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "hierarchical_mcts"
+SEARCH_MODE: str = "hierarchical_mcts"  # "none" | "mcts" | "hierarchical_mcts"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 MCTS_ROLLOUT_ENABLED: bool = True

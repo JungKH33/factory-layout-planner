@@ -347,7 +347,6 @@ class FactoryLayoutEnv(gym.Env):
 
     def _delta_cost_from_placements(
         self,
-        gid: GroupId,
         placements: List[GroupPlacement],
     ) -> torch.Tensor:
         """Score already-resolved placements via reward delta.
@@ -357,6 +356,13 @@ class FactoryLayoutEnv(gym.Env):
         M = len(placements)
         if M == 0:
             return torch.zeros((0,), dtype=torch.float32, device=self.device)
+        gid = placements[0].group_id
+        for p in placements[1:]:
+            if p.group_id != gid:
+                raise ValueError(
+                    "all placements passed to _delta_cost_from_placements() "
+                    "must share the same group_id"
+                )
 
         poses = torch.tensor(
             [[p.x_center, p.y_center] for p in placements],
@@ -418,7 +424,7 @@ class FactoryLayoutEnv(gym.Env):
         geom = self._group_spec(gid)
 
         def _check_placeable(xb, yb, body_mask, clearance_mask, clearance_origin, is_rectangular):
-            return self._state.is_placeable(
+            return self._state.maps.placeable(
                 gid=gid,
                 x_bl=int(xb), y_bl=int(yb),
                 body_mask=body_mask, clearance_mask=clearance_mask,
@@ -458,7 +464,7 @@ class FactoryLayoutEnv(gym.Env):
             sk_y_bl = int(round(y_center - float(vi0.body_height) / 2.0))
 
             body_mask, clearance_mask, clearance_origin, is_rect = geom.shape_tensors(sk)
-            if not self._state.is_placeable(
+            if not self._state.maps.placeable(
                 gid=gid, x_bl=sk_x_bl, y_bl=sk_y_bl,
                 body_mask=body_mask, clearance_mask=clearance_mask,
                 clearance_origin=clearance_origin, is_rectangular=bool(is_rect),
@@ -477,23 +483,24 @@ class FactoryLayoutEnv(gym.Env):
             return gid, None
         if len(placeable) == 1:
             return gid, placeable[0]
-        scores = self._delta_cost_from_placements(gid, placeable)
+        scores = self._delta_cost_from_placements(placeable)
         scores = scores.to(dtype=torch.float32, device=self.device).view(-1)
         return gid, placeable[int(torch.argmin(scores).item())]
 
     def _apply_resolved_placement(
         self,
-        gid: GroupId,
         placement: GroupPlacement,
     ) -> None:
-        self._state.place(gid=gid, placement=placement)
+        gid = placement.group_id
+        self._state.place(placement=placement)
         self._update_flow_port_pairs(updated_gid=gid)
 
-    def apply_dynamic_placement(self, gid: GroupId, placement: object) -> None:
+    def apply_dynamic_placement(self, placement: object) -> None:
         """Apply a pre-resolved dynamic placement object (DynamicPlacement-compatible)."""
+        gid = placement.group_id
         if gid not in self.group_specs:
             raise KeyError(f"unknown gid={gid!r}")
-        self._apply_resolved_placement(gid, placement)
+        self._apply_resolved_placement(placement)
 
     # ---- objective ----
 
@@ -637,21 +644,13 @@ class FactoryLayoutEnv(gym.Env):
             return self._fail("gid_not_remaining")
 
         # Placeability validation — env never trusts external input
-        if not self._state.is_placeable(
-            gid=gid,
-            x_bl=int(placement.min_x),
-            y_bl=int(placement.min_y),
-            body_mask=placement.body_mask,
-            clearance_mask=placement.clearance_mask,
-            clearance_origin=placement.clearance_origin,
-            is_rectangular=placement.is_rectangular,
-        ):
+        if not self._state.placeable(placement=placement):
             self._state.step(apply=False)
             return self._fail("not_placeable")
 
-        delta_cost = float(self._delta_cost_from_placements(gid, [placement])[0].item())
+        delta_cost = float(self._delta_cost_from_placements([placement])[0].item())
 
-        self._state.step(apply=True, gid=gid, placement=placement)
+        self._state.step(apply=True, placement=placement)
         self._update_flow_port_pairs(updated_gid=gid)
 
         reward = float(self._reward.to_reward(delta_cost))
@@ -750,7 +749,7 @@ class FactoryLayoutEnv(gym.Env):
                         stacklevel=2,
                     )
                     continue
-                self._apply_resolved_placement(gid, placement)
+                self._apply_resolved_placement(placement)
         return {}, {}
 
     def step(self, action: EnvAction):

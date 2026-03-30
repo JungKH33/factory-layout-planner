@@ -195,7 +195,8 @@ class FlowGraph:
         self._row_by_gid = {gid: i for i, gid in enumerate(nodes_key)}
         self._io_nodes_key = nodes_key
 
-    def upsert_io(self, *, gid: GroupId, placement: object, nodes: List[GroupId]) -> None:
+    def upsert_io(self, *, placement: object, nodes: List[GroupId]) -> None:
+        gid = placement.group_id
         nodes_key = tuple(nodes)
         if gid not in nodes_key:
             raise ValueError(f"upsert_io: gid={gid!r} not in nodes")
