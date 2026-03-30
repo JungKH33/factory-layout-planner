@@ -17,9 +17,9 @@ import torch
 
 from envs.env import FactoryLayoutEnv
 from envs.action_space import ActionSpace
-from agents.base import Agent, BaseAdapter
+from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter
 from search.base import (
-    BaseSearch,
+    BaseHierarchicalSearch,
     BaseSearchConfig,
     DecisionCache,
     SearchSnapshot,
@@ -216,7 +216,7 @@ class _RegionNode:
         return int(torch.argmax(score).item())
 
 
-class HierarchicalMCTSSearch(BaseSearch):
+class HierarchicalMCTSSearch(BaseHierarchicalSearch):
     """2-Level MCTS: manager (cell selection) + worker (pos/var selection)."""
 
     def __init__(self, *, config: HierarchicalMCTSConfig):
@@ -225,7 +225,7 @@ class HierarchicalMCTSSearch(BaseSearch):
         if config.track_top_k > 0:
             self.top_tracker = TopKTracker(k=config.track_top_k, verbose=config.track_verbose)
 
-    def select(
+    def select_h(
         self,
         *,
         obs: dict,
@@ -236,6 +236,11 @@ class HierarchicalMCTSSearch(BaseSearch):
         adapter = self.adapter
         if adapter is None:
             raise ValueError("adapter not set")
+        if not isinstance(adapter, BaseHierarchicalAdapter):
+            raise TypeError(
+                "HierarchicalMCTSSearch requires BaseHierarchicalAdapter, "
+                f"got {type(adapter).__name__}"
+            )
         engine = adapter.engine
 
         root_cache = self._capture_decision_cache(
@@ -283,7 +288,7 @@ class HierarchicalMCTSSearch(BaseSearch):
         self,
         *,
         engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
+        adapter: BaseHierarchicalAdapter,
         root: _StepNode,
         agent: Agent,
     ) -> None:
@@ -305,14 +310,16 @@ class HierarchicalMCTSSearch(BaseSearch):
 
             # Get or create RegionNode
             if cell_idx not in step_node.children:
-                # Restore snapshot so adapter._cells matches step_node's state
+                # Restore snapshot so adapter's cell cache matches this node state.
                 self._restore_snapshot(
                     engine=engine, adapter=adapter,
                     snapshot=step_node.decision_cache.snapshot,
                 )
                 worker_as = adapter.cell_action_space(cell_idx)
-                cell_data = adapter._cells[cell_idx]
-                worker_priors = _greedy_worker_priors(cell_data.costs, cfg.worker_temperature)
+                worker_priors = _greedy_worker_priors(
+                    adapter.worker_costs(cell_idx),
+                    cfg.worker_temperature,
+                )
                 region_node = _RegionNode(
                     cell_idx=cell_idx,
                     priors=worker_priors,
@@ -433,7 +440,7 @@ class HierarchicalMCTSSearch(BaseSearch):
         self,
         *,
         engine: FactoryLayoutEnv,
-        adapter: BaseAdapter,
+        adapter: BaseHierarchicalAdapter,
         agent: Agent,
         path_reward_offset: float = 0.0,
     ) -> float:

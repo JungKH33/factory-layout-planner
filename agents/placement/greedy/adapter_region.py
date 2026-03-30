@@ -266,6 +266,11 @@ class RegionAdapter(BaseHierarchicalAdapter):
 
         return placement
 
+    def worker_costs(self, cell_idx: int) -> torch.Tensor:
+        if cell_idx < 0 or cell_idx >= len(self._cells):
+            raise IndexError(f"cell_idx out of range: {cell_idx}")
+        return self._cells[cell_idx].costs
+
     def cell_action_space(self, cell_idx: int) -> ActionSpace:
         """Cell-internal candidates as ActionSpace for H-MCTS worker level."""
         cell = self._cells[cell_idx]

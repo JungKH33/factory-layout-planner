@@ -413,6 +413,23 @@ class BaseHierarchicalAdapter(BaseAdapter):
         """Action index → GroupPlacement."""
         raise NotImplementedError
 
+    @abstractmethod
     def cell_action_space(self, cell_idx: int) -> ActionSpace:
         """Return within-cell candidates as ActionSpace (for H-MCTS worker)."""
         raise NotImplementedError(f"{type(self).__name__}.cell_action_space() is not implemented")
+
+    @abstractmethod
+    def resolve_worker_action(
+        self,
+        action_idx: int,
+        action_space: ActionSpace,
+        *,
+        cell_idx: int,
+    ) -> GroupPlacement:
+        """Within-cell action index → concrete placement."""
+        raise NotImplementedError(f"{type(self).__name__}.resolve_worker_action() is not implemented")
+
+    @abstractmethod
+    def worker_costs(self, cell_idx: int) -> torch.Tensor:
+        """Return worker candidate costs for the given manager cell."""
+        raise NotImplementedError(f"{type(self).__name__}.worker_costs() is not implemented")

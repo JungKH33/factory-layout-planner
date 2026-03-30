@@ -35,7 +35,7 @@ TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "hierarchical_mcts"  # "none" | "mcts" | "hierarchical_mcts"
+SEARCH_MODE: str = "hierarchical_mcts"  # "none" | "mcts" | "hierarchical_mcts" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 MCTS_ROLLOUT_ENABLED: bool = True

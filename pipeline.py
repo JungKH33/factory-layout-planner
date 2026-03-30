@@ -6,8 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter, OrderingAgent
 from envs.env import FactoryLayoutEnv
 from envs.placement.base import GroupPlacement
-from search.base import BaseSearch
-from search.hierarchical_mcts import HierarchicalMCTSSearch
+from search.base import BaseHierarchicalSearch, BaseSearch
 
 # Return type: all adapters return resolved placement only.
 DecideResult = Tuple[GroupPlacement, Dict[str, Any]]
@@ -50,8 +49,13 @@ class DecisionPipeline:
         if valid_count <= 0:
             raise ValueError("no_valid_actions")
 
-        if isinstance(self.search, HierarchicalMCTSSearch):
-            cell_idx, local_idx = self.search.select(
+        if isinstance(self.search, BaseHierarchicalSearch):
+            if not isinstance(adapter, BaseHierarchicalAdapter):
+                raise TypeError(
+                    f"{type(self.search).__name__} requires BaseHierarchicalAdapter, "
+                    f"got {type(adapter).__name__}"
+                )
+            cell_idx, local_idx = self.search.select_h(
                 obs=observation,
                 agent=self.agent,
                 root_action_space=action_space,
@@ -61,7 +65,7 @@ class DecisionPipeline:
                 local_idx, worker_as, cell_idx=cell_idx,
             )
             action_index = cell_idx
-            search_name = "HierarchicalMCTSSearch"
+            search_name = type(self.search).__name__
         elif self.search is None:
             action_index = int(self.agent.select_action(obs=observation, action_space=action_space))
             search_name = "none"

@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseAdapter
+from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter
 from envs.env import FactoryLayoutEnv
 from envs.state import EnvState
 from envs.action_space import ActionSpace
@@ -191,6 +191,43 @@ class BaseSearch(ABC):
     ) -> int:
         """Select an action from action_space."""
         ...
+
+
+class BaseHierarchicalSearch(BaseSearch):
+    """Base class for hierarchical (manager/worker) search algorithms."""
+
+    def set_adapter(self, adapter: BaseAdapter) -> None:
+        if not isinstance(adapter, BaseHierarchicalAdapter):
+            raise TypeError(
+                f"{type(self).__name__} requires BaseHierarchicalAdapter, "
+                f"got {type(adapter).__name__}"
+            )
+        super().set_adapter(adapter)
+
+    @abstractmethod
+    def select_h(
+        self,
+        *,
+        obs: dict,
+        agent: Agent,
+        root_action_space: ActionSpace,
+    ) -> Tuple[int, int]:
+        """Select hierarchical action as (manager_action, worker_action)."""
+        ...
+
+    def select(
+        self,
+        *,
+        obs: dict,
+        agent: Agent,
+        root_action_space: ActionSpace,
+    ) -> int:
+        manager_action, _worker_action = self.select_h(
+            obs=obs,
+            agent=agent,
+            root_action_space=root_action_space,
+        )
+        return int(manager_action)
 
 
 @dataclass
