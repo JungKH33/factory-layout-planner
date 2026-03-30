@@ -342,7 +342,9 @@ class HierarchicalMCTSSearch(BaseSearch):
 
                 worker_as = region_node.worker_action_space
                 try:
-                    gid, placement, _delta_cost = adapter.resolve_worker_action(local_idx, worker_as)
+                    gid, placement, _delta_cost = adapter.resolve_worker_action(
+                        local_idx, worker_as, cell_idx=cell_idx,
+                    )
                     _, reward, terminated, truncated, _info = engine.step_placement(
                         gid, placement,
                     )

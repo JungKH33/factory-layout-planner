@@ -240,26 +240,32 @@ class RegionAdapter(BaseHierarchicalAdapter):
         placement = spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
         return gid, placement, cost
 
-    def resolve_worker_action(self, action_idx: int, action_space: ActionSpace):
+    def resolve_worker_action(
+        self,
+        action_idx: int,
+        action_space: ActionSpace,
+        *,
+        cell_idx: int,
+    ):
         """Within-cell candidate index → (gid, GroupPlacement, delta_cost)."""
         a = self.validate_action_index(action_idx, action_space)
+        if cell_idx < 0 or cell_idx >= len(self._cells):
+            raise IndexError(f"cell_idx out of range: {cell_idx}")
+
         gid = action_space.group_id
         spec = self.engine.group_specs[gid]
         center = action_space.centers[a]
         vi_idx = int(action_space.variant_indices[a].item()) if action_space.variant_indices is not None else 0
-        cost_t = getattr(self, "action_costs", None)
-        # Try to get cost from cell data matching this candidate
-        delta_cost = None
-        if isinstance(cost_t, torch.Tensor) and a < int(cost_t.shape[0]):
-            delta_cost = float(cost_t[a].item())
+        cell = self._cells[int(cell_idx)]
+        if a >= int(cell.costs.shape[0]):
+            raise IndexError(f"worker action index out of range for cell {cell_idx}: {a}")
+        delta_cost = float(cell.costs[a].item())
 
         vi = spec.variants[vi_idx]
         x_bl = int(round(float(center[0].item()) - float(vi.body_width) / 2.0))
         y_bl = int(round(float(center[1].item()) - float(vi.body_height) / 2.0))
         placement = spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
 
-        if delta_cost is None:
-            delta_cost = float(self.engine._delta_cost_from_placements(gid, [placement])[0].item())
         return gid, placement, delta_cost
 
     def cell_action_space(self, cell_idx: int) -> ActionSpace:

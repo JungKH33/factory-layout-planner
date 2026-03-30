@@ -68,7 +68,9 @@ class DecisionPipeline:
                     root_action_space=action_space,
                 )
                 worker_as = adapter.cell_action_space(cell_idx)
-                gid, placement, delta_cost = adapter.resolve_worker_action(local_idx, worker_as)
+                gid, placement, delta_cost = adapter.resolve_worker_action(
+                    local_idx, worker_as, cell_idx=cell_idx,
+                )
                 action_index = cell_idx
                 search_name = "HierarchicalMCTSSearch"
             elif self.search is not None:
