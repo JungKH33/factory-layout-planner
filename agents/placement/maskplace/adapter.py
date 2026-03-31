@@ -276,8 +276,8 @@ if __name__ == "__main__":
     plot_layout(engine, action_space=cand0)
 
     t1 = time.perf_counter()
-    placement = adapter.decode_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_action(placement)
+    placement = adapter.resolve_action(a, candidates)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

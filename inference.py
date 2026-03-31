@@ -27,7 +27,7 @@ from envs.action_space import ActionSpace
 # --- config (module-level constants, keep simple) ---
 ENV_JSON: str = "envs/env_configs/mixed_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "region"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -38,7 +38,7 @@ TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "hierarchical_beam"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
+SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 MCTS_ROLLOUT_ENABLED: bool = True
@@ -58,10 +58,6 @@ BEAM_CACHE_DECISION_STATE: bool = False
 HBEAM_WORKER_TOPK: int = 4
 BEST_USE_VALUE_HEURISTIC: bool = True
 HBEST_USE_VALUE_HEURISTIC: bool = True
-
-# Variant expansion: adapter가 (center, variant) 쌍을 후보로 생성
-EXPAND_VARIANTS: bool = False
-MAX_VARIANTS: int = 3
 
 # Top-K tracking: search 중 최고 결과 K개 저장
 TRACK_TOP_K: int = 5  # 0이면 비활성화
@@ -90,16 +86,11 @@ def main() -> None:
     engine.log = True
 
     adapter_kwargs: dict = {
-        "greedy": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
-                   "expand_variants": EXPAND_VARIANTS, "max_variants": MAX_VARIANTS},
-        "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
-                     "expand_variants": EXPAND_VARIANTS, "max_variants": MAX_VARIANTS},
-        "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5,
-                     "expand_variants": EXPAND_VARIANTS, "max_variants": MAX_VARIANTS},
-        "greedyv4": {"k": TOPK_K, "cell_size": TOPK_CELL_SIZE, "quant_step": TOPK_QUANT_STEP, "random_seed": 5,
-                     "expand_variants": EXPAND_VARIANTS, "max_variants": MAX_VARIANTS},
-        "region": {"cell_size": TOPK_CELL_SIZE, "top_per_cell": 20, "quant_step": TOPK_QUANT_STEP,
-                   "max_variants": MAX_VARIANTS, "random_seed": 5},
+        "greedy": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
+        "greedyv2": {"k": TOPK_K, "scan_step": TOPK_SCAN_STEP, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
+        "greedyv3": {"k": TOPK_K, "quant_step": TOPK_QUANT_STEP, "oversample_factor": 2, "edge_ratio": 0.8, "random_seed": 5},
+        "greedyv4": {"cell_size": TOPK_CELL_SIZE, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
+        "region": {"cell_size": TOPK_CELL_SIZE, "top_per_cell": 20, "quant_step": TOPK_QUANT_STEP, "random_seed": 5},
         "alphachip": {"coarse_grid": int(ALPHACHIP_GRID)},
         "maskplace": {"grid": 224, "soft_coefficient": 1.0},
     }

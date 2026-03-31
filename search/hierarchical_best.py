@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseHierarchicalAdapter
+from agents.base import Agent, BaseAdapter
 from envs.action_space import ActionSpace
 from search.base import (
     BaseHierarchicalSearch,
@@ -66,10 +66,10 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         adapter = self.adapter
         if adapter is None:
             raise ValueError("HierarchicalBestFirstSearch.adapter is not set. Call search.set_adapter(...).")
-        if not isinstance(adapter, BaseHierarchicalAdapter):
+        if not adapter.supports_hierarchical:
             raise TypeError(
-                "HierarchicalBestFirstSearch requires BaseHierarchicalAdapter, "
-                f"got {type(adapter).__name__}"
+                "HierarchicalBestFirstSearch requires adapter with "
+                f"supports_hierarchical=True, got {type(adapter).__name__}"
             )
         engine = adapter.engine
 
@@ -178,10 +178,10 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
 
                 self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                 try:
-                    worker_as = adapter.cell_action_space(cell_idx)
+                    worker_as = adapter.sub_action_space(cell_idx)
                     local_candidates = self._top_worker_candidates(
                         adapter=adapter,
-                        cell_idx=cell_idx,
+                        parent_idx=cell_idx,
                         worker_action_space=worker_as,
                     )
                 except Exception:
@@ -209,10 +209,10 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                 for local_idx in local_candidates:
                     self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                     try:
-                        placement = adapter.resolve_worker_action(
+                        placement = adapter.resolve_sub_action(
                             int(local_idx),
                             worker_as,
-                            cell_idx=cell_idx,
+                            parent_idx=cell_idx,
                         )
                         _, reward, terminated, truncated, _info = engine.step_placement(placement)
                     except (IndexError, ValueError):
@@ -335,7 +335,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
     def _top_worker_candidates(
         self,
         *,
-        adapter: BaseHierarchicalAdapter,
+        adapter: BaseAdapter,
         cell_idx: int,
         worker_action_space: ActionSpace,
     ) -> List[int]:
@@ -344,7 +344,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         if valid_n <= 0:
             return []
 
-        costs = adapter.worker_costs(cell_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
+        costs = adapter.sub_action_costs(cell_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
         m = int(valid.shape[0])
         if int(costs.shape[0]) < m:
             padded = torch.full((m,), float("inf"), dtype=torch.float32, device=adapter.device)
@@ -369,7 +369,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
     def _fallback_pair(
         self,
         *,
-        adapter: BaseHierarchicalAdapter,
+        adapter: BaseAdapter,
         agent: Agent,
         obs: dict,
         root_action_space: ActionSpace,
@@ -389,7 +389,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
             pass
 
         try:
-            worker_as = adapter.cell_action_space(best_cell)
+            worker_as = adapter.sub_action_space(best_cell)
             locals_top = self._top_worker_candidates(
                 adapter=adapter,
                 cell_idx=best_cell,

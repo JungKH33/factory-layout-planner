@@ -37,10 +37,9 @@ class GreedyAdapter(BaseAdapter):
         diversity_ratio: float = 0.0,  # parity (unused)
         min_diversity: int = 0,  # parity (unused)
         random_seed: Optional[int] = None,
-        expand_variants: bool = False,
-        max_variants: int = 4,
+        **kwargs: Any,
     ):
-        super().__init__(expand_variants=expand_variants, max_variants=max_variants)
+        super().__init__()
         self.k = int(k)
         self.scan_step = float(scan_step)
         self.quant_step = float(quant_step) if quant_step is not None else None
@@ -83,9 +82,6 @@ class GreedyAdapter(BaseAdapter):
             w, h = spec.rotated_size(int(rotation))
             poses[i, 0] = float(x_bl) + float(w) / 2.0
             poses[i, 1] = float(y_bl) + float(h) / 2.0
-
-        if self.expand_variants:
-            return self._apply_variant_expansion(gid, poses, mask, self.k)
 
         self.action_poses = poses
         self.action_variant_indices = None
@@ -520,8 +516,8 @@ if __name__ == "__main__":
     plot_layout(engine, action_space=candidates)
 
     t1 = time.perf_counter()
-    placement = adapter.decode_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_action(placement)
+    placement = adapter.resolve_action(a, candidates)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

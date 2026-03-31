@@ -17,7 +17,7 @@ import torch
 
 from envs.env import FactoryLayoutEnv
 from envs.action_space import ActionSpace
-from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter
+from agents.base import Agent, BaseAdapter
 from search.base import (
     BaseHierarchicalSearch,
     BaseSearchConfig,
@@ -236,10 +236,10 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         adapter = self.adapter
         if adapter is None:
             raise ValueError("adapter not set")
-        if not isinstance(adapter, BaseHierarchicalAdapter):
+        if not adapter.supports_hierarchical:
             raise TypeError(
-                "HierarchicalMCTSSearch requires BaseHierarchicalAdapter, "
-                f"got {type(adapter).__name__}"
+                "HierarchicalMCTSSearch requires adapter with "
+                f"supports_hierarchical=True, got {type(adapter).__name__}"
             )
         engine = adapter.engine
 
@@ -288,7 +288,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         self,
         *,
         engine: FactoryLayoutEnv,
-        adapter: BaseHierarchicalAdapter,
+        adapter: BaseAdapter,
         root: _StepNode,
         agent: Agent,
     ) -> None:
@@ -315,9 +315,9 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                     engine=engine, adapter=adapter,
                     snapshot=step_node.decision_cache.snapshot,
                 )
-                worker_as = adapter.cell_action_space(cell_idx)
+                worker_as = adapter.sub_action_space(cell_idx)
                 worker_priors = _greedy_worker_priors(
-                    adapter.worker_costs(cell_idx),
+                    adapter.sub_action_costs(cell_idx),
                     cfg.worker_temperature,
                 )
                 region_node = _RegionNode(
@@ -349,8 +349,8 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
 
                 worker_as = region_node.worker_action_space
                 try:
-                    placement = adapter.resolve_worker_action(
-                        local_idx, worker_as, cell_idx=cell_idx,
+                    placement = adapter.resolve_sub_action(
+                        local_idx, worker_as, parent_idx=cell_idx,
                     )
                     _, reward, terminated, truncated, _info = engine.step_placement(
                         placement,
@@ -440,7 +440,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         self,
         *,
         engine: FactoryLayoutEnv,
-        adapter: BaseHierarchicalAdapter,
+        adapter: BaseAdapter,
         agent: Agent,
         path_reward_offset: float = 0.0,
     ) -> float:

@@ -35,10 +35,9 @@ class GreedyV3Adapter(BaseAdapter):
         oversample_factor: int = 2,
         edge_ratio: float = 0.8,
         random_seed: Optional[int] = None,
-        expand_variants: bool = False,
-        max_variants: int = 4,
+        **kwargs: Any,
     ):
-        super().__init__(expand_variants=expand_variants, max_variants=max_variants)
+        super().__init__()
         self.k = int(k)
         self.quant_step = float(quant_step) if quant_step is not None else None
         self.oversample_factor = int(oversample_factor)
@@ -62,12 +61,12 @@ class GreedyV3Adapter(BaseAdapter):
         self._rng = random.Random(self.action_space_seed())
         gid = self.current_gid()
         if gid is None:
-            return self._empty_variant_output(self.k)
+            self.action_poses = torch.zeros((self.k, 2), dtype=torch.float32, device=self.device)
+            self.action_costs = torch.full((self.k,), float("inf"), dtype=torch.float32, device=self.device)
+            self.action_variant_indices = None
+            return torch.zeros((self.k,), dtype=torch.bool, device=self.device)
 
         poses, mask = self._generate(self.engine, gid)
-
-        if self.expand_variants:
-            return self._apply_variant_expansion(gid, poses, mask, self.k)
 
         self.action_poses = poses
         self.action_variant_indices = None
@@ -255,8 +254,8 @@ if __name__ == "__main__":
     plot_layout(engine, action_space=candidates)
 
     t1 = time.perf_counter()
-    placement = adapter.decode_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_action(placement)
+    placement = adapter.resolve_action(a, candidates)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter, OrderingAgent
+from agents.base import Agent, BaseAdapter, OrderingAgent
 from envs.env import FactoryLayoutEnv
 from envs.placement.base import GroupPlacement
 from search.base import BaseHierarchicalSearch, BaseSearch
@@ -28,7 +28,7 @@ class DecisionPipeline:
 
     @property
     def is_hierarchical(self) -> bool:
-        return isinstance(self.adapter, BaseHierarchicalAdapter)
+        return self.adapter.supports_hierarchical
 
     def bind(self, *, engine: FactoryLayoutEnv) -> None:
         """Bind runtime engine context to adapter/search."""
@@ -50,19 +50,19 @@ class DecisionPipeline:
             raise ValueError("no_valid_actions")
 
         if isinstance(self.search, BaseHierarchicalSearch):
-            if not isinstance(adapter, BaseHierarchicalAdapter):
+            if not adapter.supports_hierarchical:
                 raise TypeError(
-                    f"{type(self.search).__name__} requires BaseHierarchicalAdapter, "
-                    f"got {type(adapter).__name__}"
+                    f"{type(self.search).__name__} requires adapter with "
+                    f"supports_hierarchical=True, got {type(adapter).__name__}"
                 )
             cell_idx, local_idx = self.search.select_h(
                 obs=observation,
                 agent=self.agent,
                 root_action_space=action_space,
             )
-            worker_as = adapter.cell_action_space(cell_idx)
-            placement = adapter.resolve_worker_action(
-                local_idx, worker_as, cell_idx=cell_idx,
+            worker_as = adapter.sub_action_space(cell_idx)
+            placement = adapter.resolve_sub_action(
+                local_idx, worker_as, parent_idx=cell_idx,
             )
             action_index = cell_idx
             search_name = type(self.search).__name__

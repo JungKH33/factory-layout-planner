@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import torch
 
-from envs.action import EnvAction
 from envs.action import GroupId
 from envs.action_space import ActionSpace
 from envs.env import FactoryLayoutEnv
@@ -56,17 +55,10 @@ class BaseAdapter(ABC):
 
     metadata = {"render_modes": []}
 
-    def __init__(
-        self,
-        *,
-        expand_variants: bool = False,
-        max_variants: int = 4,
-    ):
+    def __init__(self):
         self._engine: Optional[FactoryLayoutEnv] = None
         self.device = torch.device("cpu")
         self.mask: Optional[torch.Tensor] = None
-        self.expand_variants = bool(expand_variants)
-        self.max_variants = int(max_variants)
         self.action_variant_indices: Optional[torch.Tensor] = None
 
     @property
@@ -83,23 +75,6 @@ class BaseAdapter(ABC):
     @abstractmethod
     def create_mask(self) -> torch.Tensor:
         raise NotImplementedError
-
-    def decode_action(self, action: int, action_space: ActionSpace) -> EnvAction:
-        """Decode action index to EnvAction (center coords — env does center→BL)."""
-        a = self.validate_action_index(action, action_space)
-        pose = action_space.centers[a]  # center coords
-        gid = action_space.group_id
-        if gid is None:
-            raise ValueError("action_space.group_id is required to decode EnvAction")
-        variant_index = None
-        if action_space.variant_indices is not None:
-            variant_index = int(action_space.variant_indices[a].item())
-        return EnvAction(
-            group_id=gid,
-            x_center=float(pose[0].item()),
-            y_center=float(pose[1].item()),
-            variant_index=variant_index,
-        )
 
     def resolve_action(self, action_idx: int, action_space: ActionSpace) -> GroupPlacement:
         """Resolve action index to concrete placement (adapter-owned variant resolution).
@@ -249,83 +224,6 @@ class BaseAdapter(ABC):
             per_variant=per_variant,
         )
 
-    def _apply_variant_expansion(
-        self,
-        gid: GroupId,
-        center_poses: torch.Tensor,
-        center_mask: torch.Tensor,
-        k: int,
-    ) -> torch.Tensor:
-        """Expand center candidates into (center, variant) pairs.
-
-        Takes center-only candidates from any subclass's ``create_mask()`` and
-        expands them into ``(center, variant_index)`` pairs, keeping the
-        top *k* by cost.  Sets ``self.action_poses``, ``self.action_costs``,
-        and ``self.action_variant_indices``.
-
-        ``score_batch(per_variant=True)`` already returns inf for
-        non-placeable variant slots, so no separate ``placeable_batch``
-        call is needed.
-
-        Returns:
-            ``[k]`` bool mask.
-        """
-        spec = self.engine.group_specs[gid]
-        V = len(spec.variants)
-        max_vi = min(V, self.max_variants)
-
-        vmask = center_mask.to(dtype=torch.bool, device=self.device).view(-1)
-        vidx = torch.where(vmask)[0]
-
-        empty = self._empty_variant_output(k)
-        if int(vidx.numel()) == 0:
-            return empty
-
-        valid_poses = center_poses[vidx]  # [M, 2]
-
-        # Single batch call — inf where not placeable
-        cost_nv = self._score_poses(gid, valid_poses, per_variant=True)  # [M, V]
-
-        # Per-center: keep only top max_variants variants
-        if V > max_vi:
-            cost_nv = cost_nv.clone()
-            _, top_vi = torch.topk(cost_nv, k=max_vi, dim=1, largest=False)
-            keep = torch.zeros_like(cost_nv, dtype=torch.bool)
-            keep.scatter_(1, top_vi, True)
-            cost_nv[~keep] = float("inf")
-
-        # Flatten and pick top-k finite entries
-        flat_cost = cost_nv.reshape(-1)  # [M*V]
-        n_finite = int(torch.isfinite(flat_cost).sum().item())
-        if n_finite == 0:
-            return empty
-
-        pick_k = min(k, n_finite)
-        _, topk_flat = torch.topk(flat_cost, k=pick_k, largest=False)
-        ci = topk_flat // V
-        vi = topk_flat % V
-
-        out_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
-        out_delta = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
-        out_vi = torch.zeros((k,), dtype=torch.int64, device=self.device)
-        out_mask = torch.zeros((k,), dtype=torch.bool, device=self.device)
-
-        out_poses[:pick_k] = valid_poses[ci]
-        out_delta[:pick_k] = flat_cost[topk_flat]
-        out_vi[:pick_k] = vi
-        out_mask[:pick_k] = True
-
-        self.action_poses = out_poses
-        self.action_costs = out_delta
-        self.action_variant_indices = out_vi
-        return out_mask
-
-    def _empty_variant_output(self, k: int) -> torch.Tensor:
-        self.action_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
-        self.action_costs = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
-        self.action_variant_indices = None
-        return torch.zeros((k,), dtype=torch.bool, device=self.device)
-
     def build_action_space(self) -> ActionSpace:
         """Generate action_space from current engine state.
 
@@ -395,41 +293,27 @@ class BaseAdapter(ABC):
         else:
             self.action_variant_indices = None
 
+    # ---- hierarchical search support ----
 
-# ---------------------------------------------------------------------------
-# Base hierarchical adapter (for region/cell-based adapters)
-# ---------------------------------------------------------------------------
+    @property
+    def supports_hierarchical(self) -> bool:
+        """Whether this adapter supports hierarchical (sub-action) search."""
+        return False
 
-class BaseHierarchicalAdapter(BaseAdapter):
-    """Adapter that resolves actions to GroupPlacement.
+    def sub_action_space(self, parent_idx: int) -> ActionSpace:
+        """Return sub-level candidates as ActionSpace for hierarchical search."""
+        raise NotImplementedError(f"{type(self).__name__} does not support hierarchical search")
 
-    Used by region/cell-based adapters where the adapter owns variant
-    resolution. Works with ``env.step_placement()`` instead of
-    ``env.step_action()``.
-    """
-
-    @abstractmethod
-    def resolve_action(self, action_idx: int, action_space: ActionSpace) -> GroupPlacement:
-        """Action index → GroupPlacement."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def cell_action_space(self, cell_idx: int) -> ActionSpace:
-        """Return within-cell candidates as ActionSpace (for H-MCTS worker)."""
-        raise NotImplementedError(f"{type(self).__name__}.cell_action_space() is not implemented")
-
-    @abstractmethod
-    def resolve_worker_action(
+    def resolve_sub_action(
         self,
         action_idx: int,
         action_space: ActionSpace,
         *,
-        cell_idx: int,
+        parent_idx: int,
     ) -> GroupPlacement:
-        """Within-cell action index → concrete placement."""
-        raise NotImplementedError(f"{type(self).__name__}.resolve_worker_action() is not implemented")
+        """Sub-level action index → concrete placement."""
+        raise NotImplementedError(f"{type(self).__name__} does not support hierarchical search")
 
-    @abstractmethod
-    def worker_costs(self, cell_idx: int) -> torch.Tensor:
-        """Return worker candidate costs for the given manager cell."""
-        raise NotImplementedError(f"{type(self).__name__}.worker_costs() is not implemented")
+    def sub_action_costs(self, parent_idx: int) -> torch.Tensor:
+        """Return sub-level candidate costs for the given parent action."""
+        raise NotImplementedError(f"{type(self).__name__} does not support hierarchical search")

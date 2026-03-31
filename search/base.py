@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseAdapter, BaseHierarchicalAdapter
+from agents.base import Agent, BaseAdapter
 from envs.env import FactoryLayoutEnv
 from envs.state import EnvState
 from envs.action_space import ActionSpace
@@ -197,10 +197,10 @@ class BaseHierarchicalSearch(BaseSearch):
     """Base class for hierarchical (manager/worker) search algorithms."""
 
     def set_adapter(self, adapter: BaseAdapter) -> None:
-        if not isinstance(adapter, BaseHierarchicalAdapter):
+        if not adapter.supports_hierarchical:
             raise TypeError(
-                f"{type(self).__name__} requires BaseHierarchicalAdapter, "
-                f"got {type(adapter).__name__}"
+                f"{type(self).__name__} requires adapter with "
+                f"supports_hierarchical=True, got {type(adapter).__name__}"
             )
         super().set_adapter(adapter)
 

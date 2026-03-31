@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .base import Agent, BaseAdapter
-from .placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter, GreedyV4Adapter, RegionAdapter
+from .placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter, GreedyV4Adapter
 from .placement.maskplace import MaskPlaceAgent, MaskPlaceAdapter
 from .placement.alphachip import AlphaChipAgent, AlphaChipAdapter
 
@@ -52,7 +52,7 @@ REGISTRY: Dict[str, Dict[str, AgentAdapterSpec]] = {
         "greedy": AgentAdapterSpec(GreedyAgent, GreedyV4Adapter),
     },
     "region": {
-        "greedy": AgentAdapterSpec(GreedyAgent, RegionAdapter),
+        "greedy": AgentAdapterSpec(GreedyAgent, GreedyV4Adapter),
     },
     "maskplace": {
         "maskplace": AgentAdapterSpec(MaskPlaceAgent, MaskPlaceAdapter),
