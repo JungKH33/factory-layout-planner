@@ -13,8 +13,10 @@ from postprocess import RoutePlanner
 
 from pipeline import DecisionPipeline
 from search.beam import BeamConfig, BeamSearch
+from search.best import BestFirstConfig, BestFirstSearch
 from search.mcts import MCTSConfig, MCTSSearch
 from search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
+from search.hierarchical_best import HierarchicalBestFirstConfig, HierarchicalBestFirstSearch
 from search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
 
 from agents.registry import create as create_agent
@@ -23,7 +25,7 @@ from envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "envs/env_configs/clearance_01.json"
+ENV_JSON: str = "envs/env_configs/mixed_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "region"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "region" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
@@ -36,7 +38,7 @@ TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "hierarchical_beam"  # "none" | "mcts" | "hierarchical_mcts" | "hierarchical_beam" | "beam"
+SEARCH_MODE: str = "hierarchical_beam"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 MCTS_ROLLOUT_ENABLED: bool = True
@@ -54,6 +56,8 @@ BEAM_DEPTH: int = 5
 BEAM_EXPANSION_TOPK: int = 16
 BEAM_CACHE_DECISION_STATE: bool = False
 HBEAM_WORKER_TOPK: int = 4
+BEST_USE_VALUE_HEURISTIC: bool = True
+HBEST_USE_VALUE_HEURISTIC: bool = True
 
 # Variant expansion: adapter가 (center, variant) 쌍을 후보로 생성
 EXPAND_VARIANTS: bool = False
@@ -138,6 +142,19 @@ def main() -> None:
                 pw_alpha=MCTS_PW_ALPHA,
             )
         )
+    elif SEARCH_MODE in {"h_best_first", "h_best"}:
+        search = HierarchicalBestFirstSearch(
+            config=HierarchicalBestFirstConfig(
+                max_expansions=MCTS_SIMS,
+                depth=BEAM_DEPTH,
+                manager_topk=BEAM_EXPANSION_TOPK,
+                worker_topk=HBEAM_WORKER_TOPK,
+                cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
+                use_value_heuristic=bool(HBEST_USE_VALUE_HEURISTIC),
+                track_top_k=TRACK_TOP_K,
+                track_verbose=TRACK_VERBOSE,
+            )
+        )
     elif SEARCH_MODE == "hierarchical_beam":
         search = HierarchicalBeamSearch(
             config=HierarchicalBeamConfig(
@@ -146,6 +163,18 @@ def main() -> None:
                 manager_topk=BEAM_EXPANSION_TOPK,
                 worker_topk=HBEAM_WORKER_TOPK,
                 cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
+                track_top_k=TRACK_TOP_K,
+                track_verbose=TRACK_VERBOSE,
+            )
+        )
+    elif SEARCH_MODE in {"best_first", "best"}:
+        search = BestFirstSearch(
+            config=BestFirstConfig(
+                max_expansions=MCTS_SIMS,
+                depth=BEAM_DEPTH,
+                expansion_topk=BEAM_EXPANSION_TOPK,
+                cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
+                use_value_heuristic=bool(BEST_USE_VALUE_HEURISTIC),
                 track_top_k=TRACK_TOP_K,
                 track_verbose=TRACK_VERBOSE,
             )
@@ -164,7 +193,7 @@ def main() -> None:
     else:
         raise ValueError(
             f"Unknown SEARCH_MODE={SEARCH_MODE!r} "
-            "(expected 'none'|'mcts'|'hierarchical_mcts'|'hierarchical_beam'|'beam')"
+            "(expected 'none'|'mcts'|'hierarchical_mcts'|'h_best_first'|'hierarchical_beam'|'best_first'|'beam')"
         )
 
     if ORDERING_MODE == "none":
