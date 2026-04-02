@@ -63,6 +63,8 @@ class GreedyV4Adapter(BaseAdapter):
             obs["action_costs"] = self.action_costs
         if isinstance(self.cell_indices, torch.Tensor):
             obs["cell_indices"] = self.cell_indices
+        obs["reward_scale"] = float(self.engine.reward_scale)
+        obs["failure_penalty"] = float(self.engine.failure_penalty())
         return obs
 
     def create_mask(self) -> torch.Tensor:

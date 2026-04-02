@@ -17,6 +17,9 @@ class GreedyAgent:
     """
 
     prior_temperature: float = 1.0
+    value_topk: int = 3
+    value_risk_beta: float = 0.3
+    value_min_reward_scale: float = 1e-6
 
     def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
         device = action_space.centers.device
@@ -79,13 +82,56 @@ class GreedyAgent:
         return int(valid_idx[best_k].item()) if int(valid_idx.numel()) > 0 else 0
 
     def value(self, *, obs: dict, action_space: ActionSpace) -> float:
-        # Optional adapter-provided scalar estimate.
+        # Optional externally provided scalar estimate takes precedence.
         v = obs.get("state_value", None)
         if isinstance(v, torch.Tensor) and v.numel() > 0:
             return float(v.view(-1)[0].item())
         if isinstance(v, (float, int)):
             return float(v)
-        return 0.0
+
+        device = action_space.centers.device
+        valid = action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
+        valid_idx = torch.where(valid)[0]
+        valid_n = int(valid_idx.numel())
+
+        step_term = 0.0
+        scores_obs = obs.get("action_costs", None)
+        if (
+            isinstance(scores_obs, torch.Tensor)
+            and int(scores_obs.numel()) == int(valid.numel())
+            and valid_n > 0
+        ):
+            costs = scores_obs.to(dtype=torch.float32, device=device).view(-1)
+            valid_costs = costs[valid_idx]
+            finite = torch.isfinite(valid_costs)
+            if bool(finite.any().item()):
+                finite_costs = valid_costs[finite]
+                k = min(max(1, int(self.value_topk)), int(finite_costs.numel()))
+                top_small = torch.topk(finite_costs, k=k, largest=False).values
+                mean_cost = float(top_small.mean().item())
+
+                reward_scale = obs.get("reward_scale", None)
+                if isinstance(reward_scale, torch.Tensor) and reward_scale.numel() > 0:
+                    rs = float(reward_scale.view(-1)[0].item())
+                elif isinstance(reward_scale, (float, int)):
+                    rs = float(reward_scale)
+                else:
+                    rs = 1.0
+                if rs <= float(self.value_min_reward_scale):
+                    rs = 1.0
+                step_term = -mean_cost / rs
+
+        failure_penalty = obs.get("failure_penalty", 0.0)
+        if isinstance(failure_penalty, torch.Tensor) and failure_penalty.numel() > 0:
+            fail = float(failure_penalty.view(-1)[0].item())
+        elif isinstance(failure_penalty, (float, int)):
+            fail = float(failure_penalty)
+        else:
+            fail = 0.0
+
+        risk = 1.0 / float(valid_n + 1)
+        beta = max(0.0, float(self.value_risk_beta))
+        return float(step_term + beta * risk * fail)
 
     def value_batch(
         self,

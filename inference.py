@@ -42,6 +42,8 @@ ALPHACHIP_GRID: int = 128
 SEARCH_MODE: str = "best_first"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
+BEST_MAX_EXPANSIONS: int = 20
+HBEST_MAX_EXPANSIONS: int = 20
 MCTS_ROLLOUT_ENABLED: bool = True
 ROLLOUT_DEPTH: int = 10
 
@@ -137,7 +139,7 @@ def main() -> None:
     elif SEARCH_MODE in {"h_best_first", "h_best"}:
         search = HierarchicalBestFirstSearch(
             config=HierarchicalBestFirstConfig(
-                max_expansions=MCTS_SIMS,
+                max_expansions=HBEST_MAX_EXPANSIONS,
                 depth=BEAM_DEPTH,
                 manager_topk=BEAM_EXPANSION_TOPK,
                 worker_topk=HBEAM_WORKER_TOPK,
@@ -162,7 +164,7 @@ def main() -> None:
     elif SEARCH_MODE in {"best_first", "best"}:
         search = BestFirstSearch(
             config=BestFirstConfig(
-                max_expansions=MCTS_SIMS,
+                max_expansions=BEST_MAX_EXPANSIONS,
                 depth=BEAM_DEPTH,
                 expansion_topk=BEAM_EXPANSION_TOPK,
                 cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
