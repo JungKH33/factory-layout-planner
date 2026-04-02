@@ -94,6 +94,7 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
 
         for depth in range(total_depth):
             new_beams: List[_HierBeamItem] = []
+            expand_contexts = []
             for beam in beams:
                 self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
                 node_snapshot = beam.snapshot
@@ -123,95 +124,111 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                     )
                     continue
 
-                priors = agent.policy(obs=obs_node, action_space=action_space).to(
-                    dtype=torch.float32, device=adapter.device
-                ).view(-1)
-                priors = priors.masked_fill(~valid_mask, float("-inf"))
-                manager_topk = min(max(1, int(self.config.manager_topk)), valid_n)
-                top_manager_actions = torch.topk(priors, k=manager_topk).indices
+                expand_contexts.append((beam, node_snapshot, action_space, valid_mask, int(valid_n), obs_node))
 
-                for manager_action in top_manager_actions:
-                    manager_action = int(manager_action)
+            if expand_contexts:
+                priors_batch = self._policy_many(
+                    agent=agent,
+                    obs_batch=[ctx[5] for ctx in expand_contexts],
+                    action_space_batch=[ctx[2] for ctx in expand_contexts],
+                    device=adapter.device,
+                )
 
-                    self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
-                    try:
-                        worker_as = adapter.sub_action_space(manager_action)
-                        worker_candidates = self._top_worker_candidates(
-                            adapter=adapter,
-                            parent_idx=manager_action,
-                            worker_action_space=worker_as,
-                        )
-                    except (IndexError, ValueError):
-                        worker_candidates = []
+                for (beam, node_snapshot, action_space, valid_mask, valid_n, _obs_node), priors in zip(expand_contexts, priors_batch):
+                    m = int(valid_mask.shape[0])
+                    if int(priors.shape[0]) < m:
+                        padded = torch.full((m,), float("-inf"), dtype=torch.float32, device=adapter.device)
+                        if int(priors.shape[0]) > 0:
+                            padded[: int(priors.shape[0])] = priors
+                        priors = padded
+                    elif int(priors.shape[0]) > m:
+                        priors = priors[:m]
+                    priors = priors.masked_fill(~valid_mask, float("-inf"))
+                    manager_topk = min(max(1, int(self.config.manager_topk)), valid_n)
+                    top_manager_actions = torch.topk(priors, k=manager_topk).indices
 
-                    if not worker_candidates:
-                        reward = float(engine.failure_penalty())
-                        terminated = False
-                        truncated = True
-                        terminal = True
-                        new_cum = float(beam.cum_reward) + float(reward)
-                        root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
-                        root_worker_action = 0 if beam.first_worker_action < 0 else int(beam.first_worker_action)
-                        child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                        new_beams.append(
-                            _HierBeamItem(
-                                cum_reward=new_cum,
-                                first_manager_action=root_manager_action,
-                                first_worker_action=root_worker_action,
-                                snapshot=child_snapshot,
-                                obs={} if terminal else None,
-                                action_space=self._empty_action_space(device=adapter.device) if terminal else None,
-                            )
-                        )
-                        self._track_terminal(engine=engine, cum_reward=new_cum)
-                        continue
+                    for manager_action in top_manager_actions:
+                        manager_action = int(manager_action)
 
-                    for worker_action in worker_candidates:
                         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                         try:
-                            placement = adapter.resolve_sub_action(
-                                int(worker_action),
-                                worker_as,
+                            worker_as = adapter.sub_action_space(manager_action)
+                            worker_candidates = self._top_worker_candidates(
+                                adapter=adapter,
                                 parent_idx=manager_action,
+                                worker_action_space=worker_as,
                             )
-                            _, reward, terminated, truncated, _info = engine.step_placement(placement)
                         except (IndexError, ValueError):
+                            worker_candidates = []
+
+                        if not worker_candidates:
                             reward = float(engine.failure_penalty())
                             terminated = False
                             truncated = True
-                        terminal = bool(terminated or truncated)
-
-                        new_cum = float(beam.cum_reward) + float(reward)
-                        root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
-                        root_worker_action = int(worker_action) if beam.first_worker_action < 0 else int(beam.first_worker_action)
-
-                        if terminal:
+                            terminal = True
+                            new_cum = float(beam.cum_reward) + float(reward)
+                            root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
+                            root_worker_action = 0 if beam.first_worker_action < 0 else int(beam.first_worker_action)
                             child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                            child_obs: Optional[dict] = {}
-                            child_action_space: Optional[ActionSpace] = self._empty_action_space(device=adapter.device)
-                        else:
-                            if bool(self.config.cache_decision_state):
-                                child_obs = adapter.build_observation()
-                                child_action_space = adapter.build_action_space()
-                                child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                            else:
-                                child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                                child_obs = None
-                                child_action_space = None
-
-                        new_beams.append(
-                            _HierBeamItem(
-                                cum_reward=new_cum,
-                                first_manager_action=root_manager_action,
-                                first_worker_action=root_worker_action,
-                                snapshot=child_snapshot,
-                                obs=child_obs,
-                                action_space=child_action_space,
+                            new_beams.append(
+                                _HierBeamItem(
+                                    cum_reward=new_cum,
+                                    first_manager_action=root_manager_action,
+                                    first_worker_action=root_worker_action,
+                                    snapshot=child_snapshot,
+                                    obs={} if terminal else None,
+                                    action_space=self._empty_action_space(device=adapter.device) if terminal else None,
+                                )
                             )
-                        )
-
-                        if terminal:
                             self._track_terminal(engine=engine, cum_reward=new_cum)
+                            continue
+
+                        for worker_action in worker_candidates:
+                            self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
+                            try:
+                                placement = adapter.resolve_sub_action(
+                                    int(worker_action),
+                                    worker_as,
+                                    parent_idx=manager_action,
+                                )
+                                _, reward, terminated, truncated, _info = engine.step_placement(placement)
+                            except (IndexError, ValueError):
+                                reward = float(engine.failure_penalty())
+                                terminated = False
+                                truncated = True
+                            terminal = bool(terminated or truncated)
+
+                            new_cum = float(beam.cum_reward) + float(reward)
+                            root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
+                            root_worker_action = int(worker_action) if beam.first_worker_action < 0 else int(beam.first_worker_action)
+
+                            if terminal:
+                                child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                                child_obs: Optional[dict] = {}
+                                child_action_space: Optional[ActionSpace] = self._empty_action_space(device=adapter.device)
+                            else:
+                                if bool(self.config.cache_decision_state):
+                                    child_obs = adapter.build_observation()
+                                    child_action_space = adapter.build_action_space()
+                                    child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                                else:
+                                    child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                                    child_obs = None
+                                    child_action_space = None
+
+                            new_beams.append(
+                                _HierBeamItem(
+                                    cum_reward=new_cum,
+                                    first_manager_action=root_manager_action,
+                                    first_worker_action=root_worker_action,
+                                    snapshot=child_snapshot,
+                                    obs=child_obs,
+                                    action_space=child_action_space,
+                                )
+                            )
+
+                            if terminal:
+                                self._track_terminal(engine=engine, cum_reward=new_cum)
 
             if not new_beams:
                 break

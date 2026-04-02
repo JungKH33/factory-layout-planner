@@ -17,16 +17,39 @@ from envs.placement.base import GroupPlacement
 # ---------------------------------------------------------------------------
 
 class Agent(Protocol):
-    """Evaluate action_space for the given state."""
+    """Evaluate action_space for the given state.
+
+    Contract (global, shared by all agents/search):
+    - policy:
+      returns per-action probabilities with shape [N].
+      index alignment must match ``action_space`` exactly.
+      entries must be >= 0.
+      invalid actions must have probability 0.
+      when at least one valid action exists, probabilities over valid actions
+      must sum to 1.
+      when no valid action exists, returning all zeros is allowed.
+      Do not return log-probabilities / raw logits.
+    - value:
+      returns expected remaining cumulative reward from current state
+      (or discounted return if the training setup uses discounting).
+      value scale must be consistent with environment reward scale.
+      This is NOT a probability and is not constrained to [0, 1].
+      It should follow reward direction: larger means better.
+    """
 
     def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
-        """Return float32 [N] non-negative policy scores/probabilities (not necessarily normalized)."""
+        """Return float32 [N] policy probabilities.
+
+        Shape must match action count N.
+        If valid actions exist, sum(policy[valid]) == 1.
+        If no valid action exists, all-zero output is allowed.
+        """
 
     def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         """Return an action index in [0, N)."""
 
     def value(self, *, obs: dict, action_space: ActionSpace) -> float:
-        """Return a scalar leaf value estimate for MCTS (higher should be better)."""
+        """Return scalar expected remaining return (single float)."""
 
 
 # ---------------------------------------------------------------------------

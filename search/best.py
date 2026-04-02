@@ -23,6 +23,7 @@ class BestFirstConfig(BaseSearchConfig):
     max_expansions: int = 200
     depth: int = 5
     expansion_topk: int = 16
+    expansion_batch_size: int = 1
     cache_decision_state: bool = False
     use_value_heuristic: bool = True
     track_top_k: int = 0
@@ -109,148 +110,175 @@ class BestFirstSearch(BaseSearch):
         best_score = float("-inf")
         expansions = 0
 
+        batch_size = max(1, int(self.config.expansion_batch_size))
         while frontier and expansions < total_expansions:
-            _, _, node = heapq.heappop(frontier)
-            self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node.snapshot)
-            node_snapshot = node.snapshot
+            budget = int(total_expansions - expansions)
+            take_n = min(batch_size, budget, len(frontier))
+            node_batch: List[_BestItem] = []
+            for _ in range(int(take_n)):
+                _, _, node = heapq.heappop(frontier)
+                node_batch.append(node)
 
-            if node.obs is not None and node.action_space is not None:
-                obs_node = node.obs
-                action_space = node.action_space
-            else:
-                obs_node = adapter.build_observation()
-                action_space = adapter.build_action_space()
-                node_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+            expandable = []
+            for node in node_batch:
+                self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node.snapshot)
+                node_snapshot = node.snapshot
 
-            if node.depth >= max_depth:
-                if node.first_action >= 0 and float(node.score) > best_score:
-                    best_action = int(node.first_action)
-                    best_score = float(node.score)
-                expansions += 1
-                self._maybe_emit_progress(
-                    iteration=expansions,
-                    total=total_expansions,
-                    visits=root_visits,
-                    values=root_values,
-                    mask=root_mask,
-                    frontier_size=len(frontier),
-                )
-                continue
-
-            valid_mask = action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
-            valid_n = int(valid_mask.to(torch.int64).sum().item())
-            if valid_n <= 0:
-                self._track_terminal(engine=engine, cum_reward=float(node.cum_reward))
-                if node.first_action >= 0 and float(node.score) > best_score:
-                    best_action = int(node.first_action)
-                    best_score = float(node.score)
-                expansions += 1
-                self._maybe_emit_progress(
-                    iteration=expansions,
-                    total=total_expansions,
-                    visits=root_visits,
-                    values=root_values,
-                    mask=root_mask,
-                    frontier_size=len(frontier),
-                )
-                continue
-
-            priors = agent.policy(obs=obs_node, action_space=action_space).to(
-                dtype=torch.float32, device=adapter.device
-            ).view(-1)
-            priors = priors.masked_fill(~valid_mask, float("-inf"))
-            topk = min(max(1, int(self.config.expansion_topk)), valid_n)
-            top_actions = torch.topk(priors, k=topk).indices
-
-            for action in top_actions:
-                action = int(action)
-
-                self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
-                reward, terminated, truncated, _info = self._apply_action_index(
-                    engine=engine,
-                    adapter=adapter,
-                    action=action,
-                    action_space=action_space,
-                )
-                terminal = bool(terminated or truncated)
-                child_depth = int(node.depth) + 1
-                child_cum = float(node.cum_reward) + float(reward)
-                root_action = action if node.first_action < 0 else int(node.first_action)
-
-                if terminal:
-                    child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                    child_obs: Optional[dict] = {}
-                    child_action_space: Optional[ActionSpace] = self._empty_action_space(device=adapter.device)
-                    value_term = 0.0
-                    score = float(child_cum)
-                    self._track_terminal(engine=engine, cum_reward=child_cum)
+                if node.obs is not None and node.action_space is not None:
+                    obs_node = node.obs
+                    action_space = node.action_space
                 else:
-                    if bool(self.config.cache_decision_state):
-                        child_obs = adapter.build_observation()
-                        child_action_space = adapter.build_action_space()
-                        child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                    else:
-                        child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                        child_obs = None
-                        child_action_space = None
+                    obs_node = adapter.build_observation()
+                    action_space = adapter.build_action_space()
+                    node_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
 
-                    if bool(self.config.use_value_heuristic):
-                        if child_obs is not None and child_action_space is not None:
-                            value_term = self._safe_value(
-                                agent=agent,
-                                obs=child_obs,
-                                action_space=child_action_space,
-                            )
-                        else:
-                            self._restore_snapshot(engine=engine, adapter=adapter, snapshot=child_snapshot)
-                            eval_obs = adapter.build_observation()
-                            eval_action_space = adapter.build_action_space()
-                            value_term = self._safe_value(
-                                agent=agent,
-                                obs=eval_obs,
-                                action_space=eval_action_space,
-                            )
-                            child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                    else:
-                        value_term = 0.0
-                    score = float(child_cum) + float(value_term)
-
-                if root_action >= 0 and score > best_score:
-                    best_action = int(root_action)
-                    best_score = float(score)
-
-                if has_callback and 0 <= root_action < n_actions:
-                    root_visits[root_action] += 1
-                    root_values[root_action] = max(float(root_values[root_action]), float(score))
-
-                if (not terminal) and child_depth <= max_depth:
-                    heapq.heappush(
-                        frontier,
-                        (
-                            -float(score),
-                            push_order,
-                            _BestItem(
-                                score=float(score),
-                                cum_reward=float(child_cum),
-                                depth=int(child_depth),
-                                first_action=int(root_action),
-                                snapshot=child_snapshot,
-                                obs=child_obs,
-                                action_space=child_action_space,
-                            ),
-                        ),
+                if node.depth >= max_depth:
+                    if node.first_action >= 0 and float(node.score) > best_score:
+                        best_action = int(node.first_action)
+                        best_score = float(node.score)
+                    expansions += 1
+                    self._maybe_emit_progress(
+                        iteration=expansions,
+                        total=total_expansions,
+                        visits=root_visits,
+                        values=root_values,
+                        mask=root_mask,
+                        frontier_size=len(frontier),
                     )
-                    push_order += 1
+                    continue
 
-            expansions += 1
-            self._maybe_emit_progress(
-                iteration=expansions,
-                total=total_expansions,
-                visits=root_visits,
-                values=root_values,
-                mask=root_mask,
-                frontier_size=len(frontier),
+                valid_mask = action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
+                valid_n = int(valid_mask.to(torch.int64).sum().item())
+                if valid_n <= 0:
+                    self._track_terminal(engine=engine, cum_reward=float(node.cum_reward))
+                    if node.first_action >= 0 and float(node.score) > best_score:
+                        best_action = int(node.first_action)
+                        best_score = float(node.score)
+                    expansions += 1
+                    self._maybe_emit_progress(
+                        iteration=expansions,
+                        total=total_expansions,
+                        visits=root_visits,
+                        values=root_values,
+                        mask=root_mask,
+                        frontier_size=len(frontier),
+                    )
+                    continue
+
+                expandable.append((node, node_snapshot, obs_node, action_space, valid_mask, valid_n))
+
+            if not expandable:
+                continue
+
+            priors_batch = self._policy_many(
+                agent=agent,
+                obs_batch=[ctx[2] for ctx in expandable],
+                action_space_batch=[ctx[3] for ctx in expandable],
+                device=adapter.device,
             )
+
+            for (node, node_snapshot, _obs_node, action_space, valid_mask, valid_n), priors in zip(expandable, priors_batch):
+                m = int(valid_mask.shape[0])
+                if int(priors.shape[0]) < m:
+                    padded = torch.full((m,), float("-inf"), dtype=torch.float32, device=adapter.device)
+                    if int(priors.shape[0]) > 0:
+                        padded[: int(priors.shape[0])] = priors
+                    priors = padded
+                elif int(priors.shape[0]) > m:
+                    priors = priors[:m]
+                priors = priors.masked_fill(~valid_mask, float("-inf"))
+                topk = min(max(1, int(self.config.expansion_topk)), valid_n)
+                top_actions = torch.topk(priors, k=topk).indices
+
+                for action in top_actions:
+                    action = int(action)
+
+                    self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
+                    reward, terminated, truncated, _info = self._apply_action_index(
+                        engine=engine,
+                        adapter=adapter,
+                        action=action,
+                        action_space=action_space,
+                    )
+                    terminal = bool(terminated or truncated)
+                    child_depth = int(node.depth) + 1
+                    child_cum = float(node.cum_reward) + float(reward)
+                    root_action = action if node.first_action < 0 else int(node.first_action)
+
+                    if terminal:
+                        child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                        child_obs: Optional[dict] = {}
+                        child_action_space: Optional[ActionSpace] = self._empty_action_space(device=adapter.device)
+                        value_term = 0.0
+                        score = float(child_cum)
+                        self._track_terminal(engine=engine, cum_reward=child_cum)
+                    else:
+                        if bool(self.config.cache_decision_state):
+                            child_obs = adapter.build_observation()
+                            child_action_space = adapter.build_action_space()
+                            child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                        else:
+                            child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                            child_obs = None
+                            child_action_space = None
+
+                        if bool(self.config.use_value_heuristic):
+                            if child_obs is not None and child_action_space is not None:
+                                value_term = self._safe_value(
+                                    agent=agent,
+                                    obs=child_obs,
+                                    action_space=child_action_space,
+                                )
+                            else:
+                                self._restore_snapshot(engine=engine, adapter=adapter, snapshot=child_snapshot)
+                                eval_obs = adapter.build_observation()
+                                eval_action_space = adapter.build_action_space()
+                                value_term = self._safe_value(
+                                    agent=agent,
+                                    obs=eval_obs,
+                                    action_space=eval_action_space,
+                                )
+                                child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                        else:
+                            value_term = 0.0
+                        score = float(child_cum) + float(value_term)
+
+                    if root_action >= 0 and score > best_score:
+                        best_action = int(root_action)
+                        best_score = float(score)
+
+                    if has_callback and 0 <= root_action < n_actions:
+                        root_visits[root_action] += 1
+                        root_values[root_action] = max(float(root_values[root_action]), float(score))
+
+                    if (not terminal) and child_depth <= max_depth:
+                        heapq.heappush(
+                            frontier,
+                            (
+                                -float(score),
+                                push_order,
+                                _BestItem(
+                                    score=float(score),
+                                    cum_reward=float(child_cum),
+                                    depth=int(child_depth),
+                                    first_action=int(root_action),
+                                    snapshot=child_snapshot,
+                                    obs=child_obs,
+                                    action_space=child_action_space,
+                                ),
+                            ),
+                        )
+                        push_order += 1
+
+                expansions += 1
+                self._maybe_emit_progress(
+                    iteration=expansions,
+                    total=total_expansions,
+                    visits=root_visits,
+                    values=root_values,
+                    mask=root_mask,
+                    frontier_size=len(frontier),
+                )
 
         if best_action < 0:
             best_action = self._fallback_action(

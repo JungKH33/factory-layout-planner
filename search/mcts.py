@@ -303,6 +303,8 @@ class MCTSSearch(BaseSearch):
         obs: dict,
         action_space: ActionSpace,
     ) -> torch.Tensor:
+        # Agent.policy contract: non-negative scores (not log-probs/logits).
+        # We still normalize defensively for robustness.
         pri = agent.policy(obs=obs, action_space=action_space)
         if not isinstance(pri, torch.Tensor):
             raise TypeError("Agent.policy must return torch.Tensor")

@@ -56,6 +56,47 @@ class MaskPlaceAgent:
         return pri
 
     @torch.no_grad()
+    def policy_batch(
+        self,
+        *,
+        obs_batch: list[dict],
+        action_space_batch: list[ActionSpace],
+    ) -> list[torch.Tensor]:
+        if len(obs_batch) != len(action_space_batch):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        if not obs_batch:
+            return []
+
+        states: list[torch.Tensor] = []
+        for obs in obs_batch:
+            state = obs.get("state", None)
+            if not isinstance(state, torch.Tensor):
+                raise ValueError("MaskPlaceAgent requires obs['state'].")
+            st = state.to(device=self.device, dtype=torch.float32)
+            if st.dim() == 1:
+                states.append(st.view(-1))
+            elif st.dim() == 2 and int(st.shape[0]) == 1:
+                states.append(st[0].view(-1))
+            else:
+                states.append(st.view(-1))
+        state_batch = torch.stack(states, dim=0)
+
+        probs, _values = self.model(state_batch)
+        outs: list[torch.Tensor] = []
+        for i, action_space in enumerate(action_space_batch):
+            device = action_space.centers.device
+            pri = probs[i].to(device=device, dtype=torch.float32).view(-1)
+            mask = action_space.valid_mask.to(device=device, dtype=torch.bool).view(-1)
+            if int(mask.numel()) != int(pri.numel()):
+                mask = torch.ones_like(pri, dtype=torch.bool, device=device)
+            pri = pri.masked_fill(~mask, 0.0)
+            s = float(pri.sum().item())
+            if s > 0.0:
+                pri = pri / s
+            outs.append(pri)
+        return outs
+
+    @torch.no_grad()
     def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         pri = self.policy(obs=obs, action_space=action_space)
         if pri.numel() == 0:
@@ -72,3 +113,34 @@ class MaskPlaceAgent:
             st = st.view(1, -1)
         _probs, v = self.model(st)
         return float(v.view(-1)[0].item()) if isinstance(v, torch.Tensor) and v.numel() > 0 else 0.0
+
+    @torch.no_grad()
+    def value_batch(
+        self,
+        *,
+        obs_batch: list[dict],
+        action_space_batch: list[ActionSpace],
+    ) -> list[float]:
+        if len(obs_batch) != len(action_space_batch):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        if not obs_batch:
+            return []
+
+        states: list[torch.Tensor] = []
+        for obs in obs_batch:
+            state = obs.get("state", None)
+            if not isinstance(state, torch.Tensor):
+                return [
+                    self.value(obs=obs, action_space=action_space)
+                    for obs, action_space in zip(obs_batch, action_space_batch)
+                ]
+            st = state.to(device=self.device, dtype=torch.float32)
+            if st.dim() == 1:
+                states.append(st.view(-1))
+            elif st.dim() == 2 and int(st.shape[0]) == 1:
+                states.append(st[0].view(-1))
+            else:
+                states.append(st.view(-1))
+        state_batch = torch.stack(states, dim=0)
+        _probs, values = self.model(state_batch)
+        return [float(values[i].view(-1)[0].item()) for i in range(int(values.shape[0]))]

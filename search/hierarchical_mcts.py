@@ -470,6 +470,8 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
     # ---- helpers ----
 
     def _safe_priors(self, *, agent: Agent, obs: dict, action_space: ActionSpace) -> torch.Tensor:
+        # Agent.policy contract: non-negative scores (not log-probs/logits).
+        # We normalize defensively because MCTS expects a probability distribution.
         device = action_space.centers.device if action_space.centers.numel() > 0 else torch.device("cpu")
         pri = agent.policy(obs=obs, action_space=action_space)
         if not isinstance(pri, torch.Tensor):

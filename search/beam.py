@@ -90,6 +90,7 @@ class BeamSearch(BaseSearch):
 
         for depth in range(total_depth):
             new_beams: List[_BeamItem] = []
+            expand_contexts = []
             for beam in beams:
                 self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
 
@@ -115,64 +116,75 @@ class BeamSearch(BaseSearch):
                     )
                     continue
 
-                # IMPORTANT: policy must be computed from the obs corresponding to this node state.
-                priors = (
-                    agent.policy(obs=obs_node, action_space=action_space).to(
-                        dtype=torch.float32, device=adapter.device
-                    )
-                    .view(-1)
+                expand_contexts.append((beam, action_space, valid_mask, int(valid_n), obs_node))
+
+            if expand_contexts:
+                priors_batch = self._policy_many(
+                    agent=agent,
+                    obs_batch=[ctx[4] for ctx in expand_contexts],
+                    action_space_batch=[ctx[1] for ctx in expand_contexts],
+                    device=adapter.device,
                 )
-                priors = priors.masked_fill(~valid_mask, float("-inf"))
 
-                # Expand only among VALID actions. (Avoid selecting masked actions when valid_n < expansion_topk.)
-                topk = min(int(self.config.expansion_topk), int(valid_n))
-                if topk <= 0:
-                    continue
+                for (beam, action_space, valid_mask, valid_n, _obs_node), priors in zip(expand_contexts, priors_batch):
+                    m = int(valid_mask.shape[0])
+                    if int(priors.shape[0]) < m:
+                        padded = torch.full((m,), float("-inf"), dtype=torch.float32, device=adapter.device)
+                        if int(priors.shape[0]) > 0:
+                            padded[: int(priors.shape[0])] = priors
+                        priors = padded
+                    elif int(priors.shape[0]) > m:
+                        priors = priors[:m]
+                    priors = priors.masked_fill(~valid_mask, float("-inf"))
 
-                top_actions = torch.topk(priors, k=topk).indices
+                    # Expand only among VALID actions.
+                    topk = min(int(self.config.expansion_topk), int(valid_n))
+                    if topk <= 0:
+                        continue
+                    top_actions = torch.topk(priors, k=topk).indices
 
-                for a in top_actions:
-                    a = int(a)
+                    for a in top_actions:
+                        a = int(a)
 
-                    self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
-                    reward, terminated, truncated, _info = self._apply_action_index(
-                        engine=engine, adapter=adapter,
-                        action=int(a), action_space=action_space,
-                    )
-
-                    new_cum = float(beam.cum_reward) + float(reward)
-                    root_a = a if beam.first_action < 0 else int(beam.first_action)
-                    if terminated or truncated:
-                        child_snapshot = SearchSnapshot(
-                            engine_state=engine.get_state().copy(),
-                            adapter_state={},
+                        self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
+                        reward, terminated, truncated, _info = self._apply_action_index(
+                            engine=engine, adapter=adapter,
+                            action=int(a), action_space=action_space,
                         )
-                        child_obs = {}
-                        child_action_space = self._empty_action_space(device=adapter.device)
-                    else:
-                        if bool(self.config.cache_decision_state):
-                            child_obs = adapter.build_observation()
-                            child_action_space = adapter.build_action_space()
-                            child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
-                        else:
+
+                        new_cum = float(beam.cum_reward) + float(reward)
+                        root_a = a if beam.first_action < 0 else int(beam.first_action)
+                        if terminated or truncated:
                             child_snapshot = SearchSnapshot(
                                 engine_state=engine.get_state().copy(),
                                 adapter_state={},
                             )
-                            child_obs = None
-                            child_action_space = None
-                    new_beams.append(
-                        _BeamItem(
-                            cum_reward=new_cum,
-                            first_action=root_a,
-                            snapshot=child_snapshot,
-                            obs=child_obs,
-                            action_space=child_action_space,
+                            child_obs = {}
+                            child_action_space = self._empty_action_space(device=adapter.device)
+                        else:
+                            if bool(self.config.cache_decision_state):
+                                child_obs = adapter.build_observation()
+                                child_action_space = adapter.build_action_space()
+                                child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
+                            else:
+                                child_snapshot = SearchSnapshot(
+                                    engine_state=engine.get_state().copy(),
+                                    adapter_state={},
+                                )
+                                child_obs = None
+                                child_action_space = None
+                        new_beams.append(
+                            _BeamItem(
+                                cum_reward=new_cum,
+                                first_action=root_a,
+                                snapshot=child_snapshot,
+                                obs=child_obs,
+                                action_space=child_action_space,
+                            )
                         )
-                    )
 
-                    if terminated or truncated:
-                        self._track_terminal(engine=engine, cum_reward=new_cum)
+                        if terminated or truncated:
+                            self._track_terminal(engine=engine, cum_reward=new_cum)
 
             if not new_beams:
                 break

@@ -55,7 +55,13 @@ class BaseSearchConfig:
 
 
 class BaseSearch(ABC):
-    """Base class for search algorithms with progress callback support."""
+    """Base class for search algorithms with progress callback support.
+
+    Agent output contract used by all searches:
+    - policy(obs, action_space) -> [N] non-negative scores (higher is better),
+      not necessarily normalized.
+    - value(obs, action_space) -> scalar utility (single float), not probability.
+    """
 
     def __init__(self):
         self.top_tracker: Optional[TopKTracker] = None
@@ -180,6 +186,116 @@ class BaseSearch(ABC):
             positions=positions,
             engine_state=engine.get_state().copy(),
         ))
+
+    def _policy_many(
+        self,
+        *,
+        agent: Agent,
+        obs_batch: List[dict],
+        action_space_batch: List[ActionSpace],
+        device: torch.device,
+    ) -> List[torch.Tensor]:
+        """Compute policy scores for multiple nodes.
+
+        Preferred path:
+        - agent.policy_batch(obs_batch=..., action_space_batch=...)
+
+        Fallback path:
+        - per-item agent.policy(...)
+
+        Output semantics are identical to Agent.policy contract:
+        [N] non-negative scores, larger = better.
+        """
+        n = int(len(obs_batch))
+        if n != int(len(action_space_batch)):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        if n <= 0:
+            return []
+
+        out_raw: Optional[List[torch.Tensor]] = None
+        policy_batch_fn = getattr(agent, "policy_batch", None)
+        if callable(policy_batch_fn):
+            try:
+                maybe = policy_batch_fn(
+                    obs_batch=obs_batch,
+                    action_space_batch=action_space_batch,
+                )
+            except TypeError:
+                maybe = policy_batch_fn(obs_batch, action_space_batch)
+            except Exception:
+                maybe = None
+            if isinstance(maybe, (list, tuple)) and int(len(maybe)) == n:
+                out_raw = list(maybe)
+
+        if out_raw is None:
+            out_raw = [
+                agent.policy(obs=obs, action_space=action_space)
+                for obs, action_space in zip(obs_batch, action_space_batch)
+            ]
+
+        out: List[torch.Tensor] = []
+        for item in out_raw:
+            if isinstance(item, torch.Tensor):
+                out.append(item.to(dtype=torch.float32, device=device).view(-1))
+            else:
+                out.append(torch.tensor(item, dtype=torch.float32, device=device).view(-1))
+        return out
+
+    def _value_many(
+        self,
+        *,
+        agent: Agent,
+        obs_batch: List[dict],
+        action_space_batch: List[ActionSpace],
+    ) -> List[float]:
+        """Compute value estimates for multiple nodes.
+
+        Preferred path:
+        - agent.value_batch(obs_batch=..., action_space_batch=...)
+
+        Fallback path:
+        - per-item agent.value(...)
+
+        Output semantics are identical to Agent.value contract:
+        single scalar utility per node, larger = better.
+        """
+        n = int(len(obs_batch))
+        if n != int(len(action_space_batch)):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        if n <= 0:
+            return []
+
+        values_raw: Optional[List[float]] = None
+        value_batch_fn = getattr(agent, "value_batch", None)
+        if callable(value_batch_fn):
+            try:
+                maybe = value_batch_fn(
+                    obs_batch=obs_batch,
+                    action_space_batch=action_space_batch,
+                )
+            except TypeError:
+                maybe = value_batch_fn(obs_batch, action_space_batch)
+            except Exception:
+                maybe = None
+            if isinstance(maybe, (list, tuple)) and int(len(maybe)) == n:
+                values_raw = list(maybe)
+
+        if values_raw is None:
+            values_raw = [
+                agent.value(obs=obs, action_space=action_space)
+                for obs, action_space in zip(obs_batch, action_space_batch)
+            ]
+
+        out: List[float] = []
+        for v in values_raw:
+            if isinstance(v, torch.Tensor):
+                out.append(float(v.view(-1)[0].item()) if v.numel() > 0 else 0.0)
+            else:
+                try:
+                    out.append(float(v))
+                except Exception:
+                    out.append(0.0)
+        return out
 
     @abstractmethod
     def select(

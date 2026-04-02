@@ -48,6 +48,19 @@ class GreedyAgent:
         priors[valid_idx] = probs
         return priors
 
+    def policy_batch(
+        self,
+        *,
+        obs_batch: list[dict],
+        action_space_batch: list[ActionSpace],
+    ) -> list[torch.Tensor]:
+        if len(obs_batch) != len(action_space_batch):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        return [
+            self.policy(obs=obs, action_space=action_space)
+            for obs, action_space in zip(obs_batch, action_space_batch)
+        ]
+
     def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         N = int(action_space.centers.shape[0])
         if N <= 0:
@@ -73,6 +86,19 @@ class GreedyAgent:
         if isinstance(v, (float, int)):
             return float(v)
         return 0.0
+
+    def value_batch(
+        self,
+        *,
+        obs_batch: list[dict],
+        action_space_batch: list[ActionSpace],
+    ) -> list[float]:
+        if len(obs_batch) != len(action_space_batch):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        return [
+            self.value(obs=obs, action_space=action_space)
+            for obs, action_space in zip(obs_batch, action_space_batch)
+        ]
 
 
 if __name__ == "__main__":

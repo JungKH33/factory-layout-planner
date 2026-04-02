@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import Batch, Data
 
 from envs.action_space import ActionSpace
 from ...base import Agent
@@ -97,6 +97,50 @@ class AlphaChipAgent:
         scores = torch.softmax(logits, dim=-1)
         return scores
 
+    @torch.no_grad()
+    def policy_batch(
+        self,
+        *,
+        obs_batch: list[dict],
+        action_space_batch: list[ActionSpace],
+    ) -> list[torch.Tensor]:
+        if len(obs_batch) != len(action_space_batch):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        if not obs_batch:
+            return []
+
+        expected_n = int(self.coarse_grid * self.coarse_grid)
+        for action_space in action_space_batch:
+            n = int(action_space.valid_mask.shape[0])
+            if n != expected_n:
+                return [
+                    self.policy(obs=obs, action_space=action_space)
+                    for obs, action_space in zip(obs_batch, action_space_batch)
+                ]
+
+        data_batch = Batch.from_data_list([_obs_to_pyg_data(obs) for obs in obs_batch]).to(self.device)
+        mask_flat = torch.cat(
+            [
+                action_space.valid_mask.view(1, -1).to(dtype=torch.int32, device=self.device)
+                for action_space in action_space_batch
+            ],
+            dim=0,
+        )
+        logits_flat, _value = self.model(data_batch, mask_flat=mask_flat, is_eval=True)
+        probs = torch.softmax(logits_flat.to(dtype=torch.float32), dim=-1)
+
+        out: list[torch.Tensor] = []
+        for i, action_space in enumerate(action_space_batch):
+            dev = action_space.centers.device
+            pri = probs[i].to(device=dev, dtype=torch.float32).view(-1)
+            mask = action_space.valid_mask.to(device=dev, dtype=torch.bool).view(-1)
+            pri = pri.masked_fill(~mask, 0.0)
+            s = float(pri.sum().item())
+            if s > 0.0:
+                pri = pri / s
+            out.append(pri)
+        return out
+
     def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
         pol = self.policy(obs=obs, action_space=action_space)
         pol = pol.masked_fill(~action_space.valid_mask, float("-inf"))
@@ -116,6 +160,39 @@ class AlphaChipAgent:
         mask_flat = action_space.valid_mask.view(1, -1).to(dtype=torch.int32, device=self.device)
         _logits_flat, value_t = self.model(data, mask_flat=mask_flat, is_eval=True)
         return float(value_t.view(-1)[0].item()) if isinstance(value_t, torch.Tensor) and value_t.numel() > 0 else 0.0
+
+    @torch.no_grad()
+    def value_batch(
+        self,
+        *,
+        obs_batch: list[dict],
+        action_space_batch: list[ActionSpace],
+    ) -> list[float]:
+        if len(obs_batch) != len(action_space_batch):
+            raise ValueError("obs_batch and action_space_batch length mismatch")
+        if not obs_batch:
+            return []
+
+        expected_n = int(self.coarse_grid * self.coarse_grid)
+        for action_space in action_space_batch:
+            n = int(action_space.valid_mask.shape[0])
+            if n != expected_n:
+                return [
+                    self.value(obs=obs, action_space=action_space)
+                    for obs, action_space in zip(obs_batch, action_space_batch)
+                ]
+
+        data_batch = Batch.from_data_list([_obs_to_pyg_data(obs) for obs in obs_batch]).to(self.device)
+        mask_flat = torch.cat(
+            [
+                action_space.valid_mask.view(1, -1).to(dtype=torch.int32, device=self.device)
+                for action_space in action_space_batch
+            ],
+            dim=0,
+        )
+        _logits_flat, value_t = self.model(data_batch, mask_flat=mask_flat, is_eval=True)
+        value_t = value_t.to(dtype=torch.float32).view(-1)
+        return [float(value_t[i].item()) for i in range(int(value_t.shape[0]))]
 
 
 if __name__ == "__main__":
