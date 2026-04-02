@@ -169,12 +169,10 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
             ).view(-1)
             priors = priors.masked_fill(~valid_mask, float("-inf"))
             manager_topk = min(max(1, int(self.config.manager_topk)), valid_n)
-            top_manager_actions = torch.topk(priors, k=manager_topk).indices.tolist()
+            top_manager_actions = torch.topk(priors, k=manager_topk).indices
 
             for manager_action in top_manager_actions:
                 manager_action = int(manager_action)
-                if not bool(valid_mask[manager_action].item()):
-                    continue
 
                 self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                 try:
@@ -188,7 +186,6 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                     worker_candidates = []
 
                 if not worker_candidates:
-                    self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                     reward = float(engine.failure_penalty())
                     child_cum = float(node.cum_reward) + float(reward)
                     root_manager_action = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
@@ -340,8 +337,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         worker_action_space: ActionSpace,
     ) -> List[int]:
         valid = worker_action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
-        valid_n = int(valid.to(torch.int64).sum().item())
-        if valid_n <= 0:
+        valid_idx = torch.where(valid)[0]
+        if int(valid_idx.numel()) <= 0:
             return []
 
         costs = adapter.sub_action_costs(parent_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
@@ -354,17 +351,18 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         elif int(costs.shape[0]) > m:
             costs = costs[:m]
 
-        costs = costs.masked_fill(~valid, float("inf"))
-        finite_valid = valid & torch.isfinite(costs)
-        candidate_mask = finite_valid if bool(finite_valid.any().item()) else valid
-        candidate_n = int(candidate_mask.to(torch.int64).sum().item())
+        valid_costs = costs.index_select(0, valid_idx)
+        finite_valid_idx = torch.where(torch.isfinite(valid_costs))[0]
+        candidate_idx = valid_idx.index_select(0, finite_valid_idx) if int(finite_valid_idx.numel()) > 0 else valid_idx
+        candidate_n = int(candidate_idx.numel())
         if candidate_n <= 0:
             return []
 
         worker_topk = min(max(1, int(self.config.worker_topk)), candidate_n)
-        rank_scores = (-costs).masked_fill(~candidate_mask, float("-inf"))
+        rank_scores = -costs.index_select(0, candidate_idx)
         top_local = torch.topk(rank_scores, k=worker_topk).indices
-        return [int(i.item()) for i in top_local]
+        top_idx = candidate_idx.index_select(0, top_local)
+        return [int(i) for i in top_idx.detach().cpu().tolist()]
 
     def _fallback_pair(
         self,

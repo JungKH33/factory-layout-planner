@@ -129,12 +129,10 @@ class BeamSearch(BaseSearch):
                 if topk <= 0:
                     continue
 
-                top_actions = torch.topk(priors, k=topk).indices.tolist()
+                top_actions = torch.topk(priors, k=topk).indices
 
                 for a in top_actions:
                     a = int(a)
-                    if not bool(valid_mask[a].item()):
-                        continue
 
                     self._restore_snapshot(engine=engine, adapter=adapter, snapshot=beam.snapshot)
                     reward, terminated, truncated, _info = self._apply_action_index(

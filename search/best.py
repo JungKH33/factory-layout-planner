@@ -160,12 +160,10 @@ class BestFirstSearch(BaseSearch):
             ).view(-1)
             priors = priors.masked_fill(~valid_mask, float("-inf"))
             topk = min(max(1, int(self.config.expansion_topk)), valid_n)
-            top_actions = torch.topk(priors, k=topk).indices.tolist()
+            top_actions = torch.topk(priors, k=topk).indices
 
             for action in top_actions:
                 action = int(action)
-                if not bool(valid_mask[action].item()):
-                    continue
 
                 self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                 reward, terminated, truncated, _info = self._apply_action_index(
