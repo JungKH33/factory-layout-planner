@@ -1,50 +1,24 @@
-"""Cell-based adapter with hierarchical search support.
-
-ActionSpace = [R] cells (variable R, non-empty cells only).
-Each cell contains up to ``top_per_cell`` (center, variant) candidates.
-Agent evaluates Q(cell) from per-cell data (greedy: min cost within cell).
-Search operates on cells; ``resolve_action`` maps cell -> best placement.
-
-Supports both flat search (via resolve_action) and hierarchical search
-(via sub_action_space / resolve_sub_action / sub_action_costs).
-"""
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from envs.action_space import ActionSpace
-from envs.env import GroupId
-from envs.placement.base import GroupPlacement
+from envs.env import FactoryLayoutEnv, GroupId
 from ...base import BaseAdapter
 
 
-@dataclass
-class CellData:
-    """Per-cell candidate data."""
-    cell_id: int
-    centroid_x: float
-    centroid_y: float
-    centers: torch.Tensor           # [M, 2] candidate center coords
-    costs: torch.Tensor             # [M] best-variant delta cost per candidate (sorted asc)
-    variant_indices: torch.Tensor   # [M] best variant index per candidate
-
-
 class GreedyV4Adapter(BaseAdapter):
-    """Cell-based adapter with hierarchical search support.
+    """Cell-capped top-K adapter with coarse-cell annotations.
 
-    Generates all valid center positions, scores them per-variant, groups
-    by coarse cell, and exposes cells as the action space.  Greedy agent
-    sees ``obs["action_costs"]`` = per-cell best cost.  Hierarchical search
-    can drill into ``sub_action_space(parent_idx)`` for within-cell search.
+    Scores every valid center from ``placeable_center_map`` in one
+    ``score_batch`` call, keeps the best ``top_per_cell`` centers per coarse
+    cell, then interleaves those per-cell rankings until K actions are filled.
 
-    Works with:
-    - No search (greedy agent) via resolve_action()
-    - Flat search (MCTS, Beam, BestFirst) via resolve_action()
-    - Hierarchical search (H-MCTS, H-Beam, H-BestFirst) via sub_* methods
+    Observation includes:
+    - ``action_costs``: ``[K]`` float — incremental cost per candidate
+    - ``cell_indices``: ``[K]`` int — which coarse cell each action belongs to
     """
 
     metadata = {"render_modes": []}
@@ -52,238 +26,76 @@ class GreedyV4Adapter(BaseAdapter):
     def __init__(
         self,
         *,
-        cell_size: int = 50,
-        top_per_cell: int = 20,
+        k: int = 50,
+        cell_size: int = 10,
+        top_per_cell: int = 3,
         quant_step: Optional[float] = None,
         random_seed: Optional[int] = None,
+        expand_variants: bool = False,
+        max_variants: int = 4,
         **kwargs: Any,
     ):
         super().__init__()
+        self.k = int(k)
         self.cell_size = int(cell_size)
         self.top_per_cell = int(top_per_cell)
         self.quant_step = float(quant_step) if quant_step is not None else None
+        self.expand_variants = bool(expand_variants)
+        self.max_variants = int(max_variants)
+        if self.k <= 0:
+            raise ValueError("k must be > 0")
+        if self.cell_size <= 0:
+            raise ValueError("cell_size must be > 0")
+        if self.top_per_cell <= 0:
+            raise ValueError("top_per_cell must be > 0")
+        if self.max_variants <= 0:
+            raise ValueError("max_variants must be > 0")
         self._rng = random.Random(random_seed)
 
-        # Per-step state
-        self._cells: List[CellData] = []
-
-    @property
-    def supports_hierarchical(self) -> bool:
-        return True
-
-    # ---- observation / mask ----
+        self.action_poses: Optional[torch.Tensor] = None   # float [K, 2]
+        self.action_costs: Optional[torch.Tensor] = None    # float [K]
+        self.cell_indices: Optional[torch.Tensor] = None    # int64 [K]
 
     def build_observation(self) -> Dict[str, Any]:
         self.mask = self.create_mask()
         obs: Dict[str, Any] = {}
-        if self._cells:
-            best = torch.tensor(
-                [float(c.costs[0].item()) for c in self._cells],
-                dtype=torch.float32,
-                device=self.device,
-            )
-            obs["action_costs"] = best
+        if isinstance(self.action_costs, torch.Tensor):
+            obs["action_costs"] = self.action_costs
+        if isinstance(self.cell_indices, torch.Tensor):
+            obs["cell_indices"] = self.cell_indices
         return obs
 
     def create_mask(self) -> torch.Tensor:
         self._rng = random.Random(self.action_space_seed())
         gid = self.current_gid()
         if gid is None:
-            self._cells = []
-            self.action_poses = torch.zeros((0, 2), dtype=torch.float32, device=self.device)
-            self.action_costs = torch.zeros((0,), dtype=torch.float32, device=self.device)
-            self.action_variant_indices = None
-            return torch.zeros((0,), dtype=torch.bool, device=self.device)
+            self.cell_indices = torch.zeros((self.k,), dtype=torch.int64, device=self.device)
+            return self._empty_variant_output(self.k)
 
-        self._cells = self._generate_cells(gid)
-        R = len(self._cells)
-        if R == 0:
-            self.action_poses = torch.zeros((0, 2), dtype=torch.float32, device=self.device)
-            self.action_costs = torch.zeros((0,), dtype=torch.float32, device=self.device)
-            self.action_variant_indices = None
-            return torch.zeros((0,), dtype=torch.bool, device=self.device)
+        poses, mask, cell_ids, costs = self._generate(self.engine, gid)
 
-        # ActionSpace centers = cell centroids
-        centroids = torch.tensor(
-            [[c.centroid_x, c.centroid_y] for c in self._cells],
-            dtype=torch.float32,
-            device=self.device,
-        )
-        self.action_poses = centroids
-        # Per-cell best cost
-        self.action_costs = torch.tensor(
-            [float(c.costs[0].item()) for c in self._cells],
-            dtype=torch.float32,
-            device=self.device,
-        )
-        # Best variant of best candidate per cell
-        self.action_variant_indices = torch.tensor(
-            [int(c.variant_indices[0].item()) for c in self._cells],
-            dtype=torch.int64,
-            device=self.device,
-        )
-        return torch.ones((R,), dtype=torch.bool, device=self.device)
+        if self.expand_variants:
+            self.cell_indices = cell_ids
+            out_mask = self._apply_variant_expansion(gid, poses, mask, self.k)
+            if isinstance(self.action_poses, torch.Tensor):
+                self._remap_cell_indices_after_expansion(poses, cell_ids)
+            return out_mask
 
-    # ---- cell generation ----
+        self.action_poses = poses
+        self.action_variant_indices = None
+        self.cell_indices = cell_ids
+        self.action_costs = costs
+        return mask
 
-    def _generate_cells(self, gid: GroupId) -> List[CellData]:
-        """Build per-cell candidate data from center_map + per-variant scoring."""
-        center_map = self._build_center_map(gid)
-        H, W = center_map.shape
-        cs = self.cell_size
-        W_c = (W + cs - 1) // cs
-
-        all_yx = torch.nonzero(center_map, as_tuple=False)  # [N, 2]
-        if all_yx.numel() == 0:
-            return []
-
-        all_centers = torch.stack([all_yx[:, 1].float(), all_yx[:, 0].float()], dim=-1)  # [N, 2]
-
-        # Optional quantize dedup
-        if self.quant_step is not None and self.quant_step > 0:
-            all_centers = self._quant_dedup(all_centers)
-
-        # Score per-variant, pick best variant per center
-        cost_nv = self._score_poses(gid, all_centers, per_variant=True)  # [N, V]
-        best_cost, best_vi = cost_nv.min(dim=1)  # [N], [N]
-
-        # Filter out centers with no finite cost
-        finite_mask = torch.isfinite(best_cost)
-        if not finite_mask.any():
-            return []
-
-        if not bool(finite_mask.all()):
-            finite_idx = torch.where(finite_mask)[0]
-            all_centers = all_centers[finite_idx]
-            best_cost = best_cost[finite_idx]
-            best_vi = best_vi[finite_idx]
-
-        # Recompute yx for cell assignment
-        all_yx_f = torch.stack([all_centers[:, 1], all_centers[:, 0]], dim=-1).long()  # [N, 2] (y, x)
-        flat_cell = (all_yx_f[:, 0] // cs) * W_c + (all_yx_f[:, 1] // cs)  # [N]
-
-        # Sort by (cell, cost)
-        cost_range = best_cost.max() - best_cost.min() + 1.0
-        sort_key = flat_cell.float() * cost_range + best_cost
-        order = torch.argsort(sort_key)
-
-        sorted_cells = flat_cell[order]
-        unique_cells, counts = torch.unique_consecutive(sorted_cells, return_counts=True)
-
-        tpc = self.top_per_cell
-        start = torch.cumsum(counts, dim=0) - counts  # [C]
-        n_cells = int(unique_cells.shape[0])
-
-        cells: List[CellData] = []
-        for i in range(n_cells):
-            s = int(start[i].item())
-            cnt = int(counts[i].item())
-            pick = min(cnt, tpc)
-            idx = order[s:s + pick]
-
-            c_centers = all_centers[idx]  # [pick, 2]
-            c_costs = best_cost[idx]      # [pick]
-            c_vis = best_vi[idx]          # [pick]
-
-            cx = float(c_centers[:, 0].mean().item())
-            cy = float(c_centers[:, 1].mean().item())
-
-            cells.append(CellData(
-                cell_id=int(unique_cells[i].item()),
-                centroid_x=cx,
-                centroid_y=cy,
-                centers=c_centers,
-                costs=c_costs,
-                variant_indices=c_vis,
-            ))
-
-        return cells
-
-    def _quant_dedup(self, centers: torch.Tensor) -> torch.Tensor:
-        """Keep one center per quantized bin."""
-        q = self.quant_step
-        qx = torch.div(centers[:, 0], q, rounding_mode="trunc").long()
-        qy = torch.div(centers[:, 1], q, rounding_mode="trunc").long()
-        qy_range = qy.max() - qy.min() + 1 if qy.numel() > 0 else 1
-        bin_key = qx * qy_range + (qy - qy.min())
-        _, inv, counts = torch.unique(bin_key, return_inverse=True, return_counts=True)
-        first = torch.full((int(inv.max().item()) + 1,), centers.shape[0], dtype=torch.long, device=centers.device)
-        idx = torch.arange(centers.shape[0], device=centers.device)
-        first.scatter_(0, inv, torch.minimum(first[inv], idx))
-        keep = first[first < centers.shape[0]]
-        return centers[keep]
-
-    # ---- resolve ----
-
-    def resolve_action(self, action_idx: int, action_space: ActionSpace) -> GroupPlacement:
-        """Cell index -> GroupPlacement using best candidate in cell."""
-        a = self.validate_action_index(action_idx, action_space)
-        cell = self._cells[a]
-
-        # Best candidate (already sorted by cost)
-        center = cell.centers[0]
-        vi_idx = int(cell.variant_indices[0].item())
-
-        gid = action_space.group_id
-        spec = self.engine.group_specs[gid]
-        vi = spec.variants[vi_idx]
-        x_bl = int(round(float(center[0].item()) - float(vi.body_width) / 2.0))
-        y_bl = int(round(float(center[1].item()) - float(vi.body_height) / 2.0))
-        return spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
-
-    # ---- hierarchical support ----
-
-    def sub_action_space(self, parent_idx: int) -> ActionSpace:
-        """Within-cell candidates as ActionSpace for hierarchical search."""
-        cell = self._cells[parent_idx]
-        return ActionSpace(
-            centers=cell.centers,
-            valid_mask=torch.ones(cell.centers.shape[0], dtype=torch.bool, device=self.device),
-            group_id=self.current_gid(),
-            variant_indices=cell.variant_indices,
-        )
-
-    def resolve_sub_action(
-        self,
-        action_idx: int,
-        action_space: ActionSpace,
-        *,
-        parent_idx: int,
-    ) -> GroupPlacement:
-        """Within-cell candidate index -> concrete placement."""
-        a = self.validate_action_index(action_idx, action_space)
-        if parent_idx < 0 or parent_idx >= len(self._cells):
-            raise IndexError(f"parent_idx out of range: {parent_idx}")
-
-        gid = action_space.group_id
-        spec = self.engine.group_specs[gid]
-        center = action_space.centers[a]
-        vi_idx = int(action_space.variant_indices[a].item()) if action_space.variant_indices is not None else 0
-        cell = self._cells[int(parent_idx)]
-        if a >= int(cell.costs.shape[0]):
-            raise IndexError(f"sub action index out of range for cell {parent_idx}: {a}")
-
-        vi = spec.variants[vi_idx]
-        x_bl = int(round(float(center[0].item()) - float(vi.body_width) / 2.0))
-        y_bl = int(round(float(center[1].item()) - float(vi.body_height) / 2.0))
-        return spec.build_placement(variant_index=vi_idx, x_bl=x_bl, y_bl=y_bl)
-
-    def sub_action_costs(self, parent_idx: int) -> torch.Tensor:
-        if parent_idx < 0 or parent_idx >= len(self._cells):
-            raise IndexError(f"parent_idx out of range: {parent_idx}")
-        return self._cells[parent_idx].costs
-
-    # ---- state snapshot (for search) ----
+    # ---- state api (for search) ----
 
     def get_state_copy(self) -> Dict[str, object]:
-        state = super().get_state_copy()
-        state["rng_state"] = self._rng.getstate()
-        state["_cells"] = list(self._cells)
-        ap = getattr(self, "action_poses", None)
-        state["action_poses"] = ap.clone() if isinstance(ap, torch.Tensor) else None
-        ac = getattr(self, "action_costs", None)
-        state["action_costs"] = ac.clone() if isinstance(ac, torch.Tensor) else None
-        return state
+        snap = dict(super().get_state_copy())
+        snap["rng_state"] = self._rng.getstate()
+        snap["action_poses"] = self.action_poses.clone() if isinstance(self.action_poses, torch.Tensor) else None
+        snap["action_costs"] = self.action_costs.clone() if isinstance(self.action_costs, torch.Tensor) else None
+        snap["cell_indices"] = self.cell_indices.clone() if isinstance(self.cell_indices, torch.Tensor) else None
+        return snap
 
     def set_state(self, state: Dict[str, object]) -> None:
         super().set_state(state)
@@ -293,28 +105,246 @@ class GreedyV4Adapter(BaseAdapter):
                 self._rng.setstate(rs)
             except Exception:
                 pass
-        self._cells = list(state.get("_cells", []))
-        ap = state.get("action_poses", None)
-        self.action_poses = ap.to(device=self.device, dtype=torch.float32).clone() if isinstance(ap, torch.Tensor) else None
-        ac = state.get("action_costs", None)
-        self.action_costs = ac.to(device=self.device, dtype=torch.float32).clone() if isinstance(ac, torch.Tensor) else None
+        ax = state.get("action_poses", None)
+        self.action_poses = ax.to(device=self.device, dtype=torch.float32).clone() if isinstance(ax, torch.Tensor) else None
+        ad = state.get("action_costs", None)
+        self.action_costs = ad.to(device=self.device, dtype=torch.float32).clone() if isinstance(ad, torch.Tensor) else None
+        ci = state.get("cell_indices", None)
+        self.cell_indices = ci.to(device=self.device, dtype=torch.int64).clone() if isinstance(ci, torch.Tensor) else None
+
+    # ---- candidate generation ----
+
+    def _generate(
+        self, env: FactoryLayoutEnv, gid: GroupId
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Generate per-cell top-N candidates with coarse-cell annotations."""
+        device = env.device
+
+        center_map = self._build_center_map(gid)
+        W = int(center_map.shape[1])
+        cs = self.cell_size
+        W_c = (W + cs - 1) // cs
+
+        all_yx = torch.nonzero(center_map, as_tuple=False)  # [M, 2] (y, x)
+        if all_yx.numel() == 0:
+            return self._empty_generate(device)
+
+        all_centers = torch.stack([all_yx[:, 1].float(), all_yx[:, 0].float()], dim=-1)  # [M, 2]
+        flat_cell = (all_yx[:, 0] // cs) * W_c + (all_yx[:, 1] // cs)  # [M]
+
+        # Score all valid centers in one batch call
+        all_costs = self._score_poses(gid, all_centers)  # [M]
+
+        # Filter to finite costs
+        finite_mask = torch.isfinite(all_costs)
+        if not finite_mask.any():
+            return self._empty_generate(device)
+
+        if bool(finite_mask.all()):
+            f_centers = all_centers
+            f_costs = all_costs
+            f_cells = flat_cell
+        else:
+            finite_idx = torch.where(finite_mask)[0]
+            f_centers = all_centers[finite_idx]
+            f_costs = all_costs[finite_idx]
+            f_cells = flat_cell[finite_idx]
+
+        # Quantize-dedup: keep lowest cost per quantized bin
+        if self.quant_step is not None and self.quant_step > 0:
+            f_centers, f_costs, f_cells = self._quant_dedup(f_centers, f_costs, f_cells)
+
+        selected_idx = self._select_top_per_cell(f_costs, f_cells)
+        pick = min(self.k, int(selected_idx.shape[0]))
+
+        # Build output
+        poses = torch.zeros((self.k, 2), dtype=torch.float32, device=device)
+        mask = torch.zeros((self.k,), dtype=torch.bool, device=device)
+        cell_ids = torch.zeros((self.k,), dtype=torch.int64, device=device)
+        out_costs = torch.full((self.k,), float("inf"), dtype=torch.float32, device=device)
+
+        if pick > 0:
+            chosen = selected_idx[:pick]
+            poses[:pick] = f_centers[chosen]
+            mask[:pick] = True
+            cell_ids[:pick] = f_cells[chosen]
+            out_costs[:pick] = f_costs[chosen]
+
+        return poses, mask, cell_ids, out_costs
+
+    def _select_top_per_cell(
+        self,
+        costs: torch.Tensor,
+        cells: torch.Tensor,
+    ) -> torch.Tensor:
+        """Select up to ``top_per_cell`` entry_points per cell, then round-robin trim."""
+        if costs.numel() == 0:
+            return torch.zeros((0,), dtype=torch.long, device=cells.device)
+
+        # Sort by (cell, cost) in one pass via composite key.
+        cost_range = costs.max() - costs.min() + 1.0
+        sort_key = cells.float() * cost_range + costs
+        order = torch.argsort(sort_key)
+
+        sorted_cells = cells[order]
+        unique_cells, counts = torch.unique_consecutive(sorted_cells, return_counts=True)
+
+        tpc = self.top_per_cell
+        n_cells = int(unique_cells.shape[0])
+
+        # Per-cell top-N and round-robin interleave.
+        start = torch.cumsum(counts, dim=0) - counts
+        rank = torch.arange(tpc, device=cells.device, dtype=torch.long)
+        take = torch.clamp(counts, max=tpc)
+        valid_rank = rank.unsqueeze(0) < take.unsqueeze(1)
+        gather_pos = start.unsqueeze(1) + rank.unsqueeze(0)
+
+        per_cell_idx = torch.full((n_cells, tpc), -1, dtype=torch.long, device=cells.device)
+        if bool(valid_rank.any()):
+            per_cell_idx[valid_rank] = order[gather_pos[valid_rank]]
+        per_cell_len = take
+        best_cost = costs[order[start]]
+
+        cell_order = torch.argsort(best_cost)
+        per_cell_idx = per_cell_idx[cell_order]
+        per_cell_len = per_cell_len[cell_order]
+
+        valid_rr = (
+            torch.arange(tpc, device=cells.device, dtype=torch.long).unsqueeze(1)
+            < per_cell_len.unsqueeze(0)
+        )
+        selected = per_cell_idx.transpose(0, 1)[valid_rr]
+
+        if int(selected.numel()) == 0:
+            return torch.zeros((0,), dtype=torch.long, device=cells.device)
+        if int(selected.shape[0]) > self.k:
+            selected = selected[:self.k]
+        return selected
+
+    def _quant_dedup(
+        self,
+        centers: torch.Tensor,
+        costs: torch.Tensor,
+        cells: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Keep lowest-cost entry per quantized (x, y) bin."""
+        q = self.quant_step
+        qx = torch.div(centers[:, 0], q, rounding_mode="trunc").long()
+        qy = torch.div(centers[:, 1], q, rounding_mode="trunc").long()
+        qy_range = qy.max() - qy.min() + 1 if qy.numel() > 0 else 1
+        bin_key = qx * qy_range + (qy - qy.min())
+
+        sort_key = bin_key.float() * (costs.max() - costs.min() + 1.0) + costs
+        order = torch.argsort(sort_key)
+        sorted_keys = bin_key[order]
+
+        first_mask = torch.ones(sorted_keys.shape[0], dtype=torch.bool, device=centers.device)
+        if sorted_keys.shape[0] > 1:
+            first_mask[1:] = sorted_keys[1:] != sorted_keys[:-1]
+
+        keep = order[first_mask]
+        return centers[keep], costs[keep], cells[keep]
+
+    def _empty_generate(
+        self,
+        device: torch.device,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        poses = torch.zeros((self.k, 2), dtype=torch.float32, device=device)
+        mask = torch.zeros((self.k,), dtype=torch.bool, device=device)
+        cell_ids = torch.zeros((self.k,), dtype=torch.int64, device=device)
+        out_costs = torch.full((self.k,), float("inf"), dtype=torch.float32, device=device)
+        return poses, mask, cell_ids, out_costs
+
+    def _empty_variant_output(self, k: int) -> torch.Tensor:
+        self.action_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
+        self.action_costs = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
+        self.action_variant_indices = None
+        return torch.zeros((k,), dtype=torch.bool, device=self.device)
+
+    def _apply_variant_expansion(
+        self,
+        gid: GroupId,
+        center_poses: torch.Tensor,
+        center_mask: torch.Tensor,
+        k: int,
+    ) -> torch.Tensor:
+        """Expand center candidates into (center, variant) pairs and keep top-k."""
+        spec = self.engine.group_specs[gid]
+        V = len(spec.variants)
+        max_vi = min(V, self.max_variants)
+
+        vmask = center_mask.to(dtype=torch.bool, device=self.device).view(-1)
+        vidx = torch.where(vmask)[0]
+
+        empty = self._empty_variant_output(k)
+        if int(vidx.numel()) == 0:
+            return empty
+
+        valid_poses = center_poses[vidx]  # [M, 2]
+
+        # Single batch call — inf where not placeable
+        cost_nv = self._score_poses(gid, valid_poses, per_variant=True)  # [M, V]
+
+        # Per-center: keep only top max_variants variants
+        if V > max_vi:
+            cost_nv = cost_nv.clone()
+            _, top_vi = torch.topk(cost_nv, k=max_vi, dim=1, largest=False)
+            keep = torch.zeros_like(cost_nv, dtype=torch.bool)
+            keep.scatter_(1, top_vi, True)
+            cost_nv[~keep] = float("inf")
+
+        flat_cost = cost_nv.reshape(-1)  # [M*V]
+        n_finite = int(torch.isfinite(flat_cost).sum().item())
+        if n_finite == 0:
+            return empty
+
+        pick_k = min(k, n_finite)
+        _, topk_flat = torch.topk(flat_cost, k=pick_k, largest=False)
+        ci = topk_flat // V
+        vi = topk_flat % V
+
+        out_poses = torch.zeros((k, 2), dtype=torch.float32, device=self.device)
+        out_delta = torch.full((k,), float("inf"), dtype=torch.float32, device=self.device)
+        out_vi = torch.zeros((k,), dtype=torch.int64, device=self.device)
+        out_mask = torch.zeros((k,), dtype=torch.bool, device=self.device)
+
+        out_poses[:pick_k] = valid_poses[ci]
+        out_delta[:pick_k] = flat_cost[topk_flat]
+        out_vi[:pick_k] = vi
+        out_mask[:pick_k] = True
+
+        self.action_poses = out_poses
+        self.action_costs = out_delta
+        self.action_variant_indices = out_vi
+        return out_mask
+
+    def _remap_cell_indices_after_expansion(
+        self,
+        original_poses: torch.Tensor,
+        original_cell_ids: torch.Tensor,
+    ) -> None:
+        """Remap cell_indices to match expanded action_poses from variant expansion."""
+        expanded_poses = self.action_poses
+        if expanded_poses is None:
+            return
+        diffs = (expanded_poses[:, None, :] - original_poses[None, :, :]).abs().sum(dim=-1)
+        best = torch.argmin(diffs, dim=1)
+        self.cell_indices = original_cell_ids[best]
 
 
 if __name__ == "__main__":
     import time
-    import torch
 
     from envs.env_loader import load_env
-    from envs.visualizer import plot_layout
 
-    ENV_JSON = "envs/env_configs/mixed_01.json"
+    ENV_JSON = "envs/env_configs/basic_01.json"
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device)
     engine = loaded.env
     engine.log = False
 
     adapter = GreedyV4Adapter(
-        cell_size=50, top_per_cell=20, quant_step=10.0,
+        k=50, cell_size=10, top_per_cell=3, quant_step=10.0, random_seed=0,
     )
 
     t0 = time.perf_counter()
@@ -322,52 +352,24 @@ if __name__ == "__main__":
     adapter.bind(engine)
     obs = adapter.build_observation()
     candidates = adapter.build_action_space()
-    dt_ms = (time.perf_counter() - t0) * 1000.0
+    dt_reset_ms = (time.perf_counter() - t0) * 1000.0
 
-    R = int(candidates.valid_mask.sum().item())
+    valid = int(candidates.valid_mask.sum().item())
+    a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
+
     print("GreedyV4Adapter demo")
-    print(f"  env={ENV_JSON}  device={device}")
-    print(f"  cell_size={adapter.cell_size}  top_per_cell={adapter.top_per_cell}")
-    print(f"  cells={R}  total_candidates={sum(len(c.centers) for c in adapter._cells)}")
-    print(f"  reset_ms={dt_ms:.3f}")
+    print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3  quant_step=10.0")
+    print(f"  valid_actions={valid}  first_valid_action={a}")
+    if obs.get("cell_indices") is not None:
+        ci = obs["cell_indices"]
+        unique_cells = int(ci[:valid].unique().shape[0]) if valid > 0 else 0
+        print(f"  unique_cells_in_actions={unique_cells}")
+    print(f"  reset_ms={dt_reset_ms:.3f}")
 
-    if R > 0:
-        costs = obs.get("action_costs")
-        if costs is not None:
-            print(f"  best_cell_cost={float(costs.min().item()):.3f}")
-            print(f"  worst_cell_cost={float(costs.max().item()):.3f}")
-
-        # Resolve best cell
-        best_cell = int(torch.argmin(costs).item())
-        placement = adapter.resolve_action(best_cell, candidates)
-        print(
-            f"  best_cell={best_cell}  gid={placement.group_id}  "
-            f"pos=({placement.x_center:.1f},{placement.y_center:.1f})"
-        )
-
-    # Step through all groups
-    print("\n  Full episode:")
-    engine.reset(options=loaded.reset_kwargs)
-    adapter.bind(engine)
-    step = 0
-    total_reward = 0.0
-    while engine.get_state().remaining:
-        step += 1
-        obs = adapter.build_observation()
-        candidates = adapter.build_action_space()
-        R = int(candidates.valid_mask.sum().item())
-        if R == 0:
-            print(f"    step {step}: no valid cells")
-            break
-        costs = obs["action_costs"]
-        best = int(torch.argmin(costs).item())
-        placement = adapter.resolve_action(best, candidates)
-        _, reward, terminated, truncated, info = engine.step_placement(placement)
-        total_reward += reward
-        print(
-            f"    step {step}: gid={placement.group_id}  cells={R}  "
-            f"pos=({placement.x_center:.1f},{placement.y_center:.1f})  reward={reward:.3f}"
-        )
-        if terminated or truncated:
-            break
-    print(f"  total_cost={engine.total_cost():.3f}  total_reward={total_reward:.3f}")
+    if valid > 0:
+        placement = adapter.resolve_action(a, candidates)
+        _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
+        obs2 = adapter.build_observation()
+        candidates2 = adapter.build_action_space()
+        valid2 = int(candidates2.valid_mask.sum().item())
+        print(f"  valid_after_step={valid2}")

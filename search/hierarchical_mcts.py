@@ -1,11 +1,11 @@
 """2-Level Hierarchical MCTS.
 
-StepNode (manager): selects which coarse cell to place in.
-RegionNode (worker): selects which (position, variant) within the cell.
+ManagerNode (manager): selects which manager action to take.
+WorkerNode (worker): selects which (position, variant) under a manager action.
 
-Manager uses agent priors (softmax over cell costs).
-Worker uses greedy priors (softmax over within-cell candidate costs).
-RegionNode shares parent StepNode's snapshot — cell selection doesn't change env.
+Manager uses agent priors (softmax over manager-action costs).
+Worker uses greedy priors (softmax over within-parent candidate costs).
+WorkerNode shares parent ManagerNode's snapshot — manager-action selection doesn't change env.
 """
 from __future__ import annotations
 
@@ -63,8 +63,8 @@ def _greedy_worker_priors(costs: torch.Tensor, temperature: float = 0.5) -> torc
     return probs
 
 
-class _StepNode:
-    """Manager level — which cell to place in."""
+class _ManagerNode:
+    """Manager level — which action to select."""
 
     __slots__ = (
         "decision_cache", "priors", "action", "reward",
@@ -87,15 +87,15 @@ class _StepNode:
         self.terminal = bool(terminal)
         self.visits = 0
         self.total_value = 0.0
-        self.children: Dict[int, _RegionNode] = {}
+        self.children: Dict[int, _WorkerNode] = {}
 
         valid = decision_cache.action_space.valid_mask
         self.valid_actions = torch.where(
             valid.to(dtype=torch.bool, device=priors.device).view(-1)
         )[0].to(dtype=torch.long)
 
-    def best_cell(self, c_puct: float, pw_enabled: bool = False, pw_c: float = 1.5, pw_alpha: float = 0.5) -> int:
-        """PUCT selection over cells. Returns cell_idx or -1."""
+    def best_manager_action(self, c_puct: float, pw_enabled: bool = False, pw_c: float = 1.5, pw_alpha: float = 0.5) -> int:
+        """PUCT selection over manager actions. Returns manager_action or -1."""
         acts = self.valid_actions
         if acts.numel() == 0:
             return -1
@@ -105,8 +105,8 @@ class _StepNode:
             allowed = max(1, int(math.ceil(pw_c * (max(1, self.visits) ** pw_alpha))))
             allowed = min(int(acts.numel()), allowed)
             if len(self.children) < allowed:
-                return self._best_unexpanded_cell()
-            return self._best_expanded_cell(c_puct)
+                return self._best_unexpanded_manager_action()
+            return self._best_expanded_manager_action(c_puct)
 
         fpu_val = (self.total_value / self.visits) if self.visits > 0 else 0.0
         pri = self.priors.index_select(0, acts)
@@ -132,7 +132,7 @@ class _StepNode:
         score = q + u
         return int(acts[int(torch.argmax(score).item())].item())
 
-    def _best_unexpanded_cell(self) -> int:
+    def _best_unexpanded_manager_action(self) -> int:
         acts = self.valid_actions
         if not self.children:
             return int(acts[int(torch.argmax(self.priors.index_select(0, acts)).item())].item())
@@ -145,7 +145,7 @@ class _StepNode:
             return -1
         return int(acts[int(torch.argmax(pri).item())].item())
 
-    def _best_expanded_cell(self, c_puct: float) -> int:
+    def _best_expanded_manager_action(self, c_puct: float) -> int:
         if not self.children:
             return -1
         sorted_ch = sorted((int(a), ch) for a, ch in self.children.items())
@@ -164,30 +164,30 @@ class _StepNode:
         return int(ch_acts[int(torch.argmax(score).item())].item())
 
 
-class _RegionNode:
-    """Worker level — which (pos, variant) within the selected cell."""
+class _WorkerNode:
+    """Worker level — which (pos, variant) under the selected manager action."""
 
     __slots__ = (
-        "cell_idx", "priors", "worker_action_space",
+        "manager_action", "priors", "worker_action_space",
         "visits", "total_value", "children",
     )
 
     def __init__(
         self,
         *,
-        cell_idx: int,
+        manager_action: int,
         priors: torch.Tensor,
         worker_action_space: ActionSpace,
     ):
-        self.cell_idx = cell_idx
+        self.manager_action = manager_action
         self.priors = priors
         self.worker_action_space = worker_action_space
         self.visits = 0
         self.total_value = 0.0
-        self.children: Dict[int, _StepNode] = {}
+        self.children: Dict[int, _ManagerNode] = {}
 
-    def best_candidate(self, c_puct: float) -> int:
-        """PUCT over within-cell candidates. Returns local_cand_idx or -1."""
+    def best_worker_action(self, c_puct: float) -> int:
+        """PUCT over within-parent candidates. Returns local_cand_idx or -1."""
         M = int(self.priors.shape[0])
         if M == 0:
             return -1
@@ -217,7 +217,7 @@ class _RegionNode:
 
 
 class HierarchicalMCTSSearch(BaseHierarchicalSearch):
-    """2-Level MCTS: manager (cell selection) + worker (pos/var selection)."""
+    """2-Level MCTS: manager (manager-action selection) + worker (pos/var selection)."""
 
     def __init__(self, *, config: HierarchicalMCTSConfig):
         super().__init__()
@@ -232,7 +232,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         agent: Agent,
         root_action_space: ActionSpace,
     ) -> Tuple[int, int]:
-        """Run H-MCTS. Returns (cell_idx, local_cand_idx) for the caller to resolve."""
+        """Run H-MCTS. Returns (manager_action, local_cand_idx) for the caller to resolve."""
         adapter = self.adapter
         if adapter is None:
             raise ValueError("adapter not set")
@@ -248,109 +248,109 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         )
         priors = self._safe_priors(agent=agent, obs=obs, action_space=root_action_space)
         priors = self._apply_dirichlet(priors, root_action_space.valid_mask)
-        root = _StepNode(decision_cache=root_cache, priors=priors)
+        root = _ManagerNode(decision_cache=root_cache, priors=priors)
 
         cfg = self.config
         for _ in range(cfg.num_simulations):
             self._simulate(engine=engine, adapter=adapter, root=root, agent=agent)
 
-        # Select best cell by visit count
+        # Select best manager action by visit count
         if not root.children:
             self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
             return 0, 0
 
-        best_cell: int
+        best_manager_action: int
         temp = float(cfg.temperature)
         if temp <= 0.0:
-            best_cell = max(root.children.items(), key=lambda kv: kv[1].visits)[0]
+            best_manager_action = max(root.children.items(), key=lambda kv: kv[1].visits)[0]
         else:
-            cells = list(root.children.keys())
-            visits = torch.tensor([float(root.children[c].visits) for c in cells], dtype=torch.float32)
+            manager_actions = list(root.children.keys())
+            visits = torch.tensor([float(root.children[a].visits) for a in manager_actions], dtype=torch.float32)
             w = torch.pow(torch.clamp(visits, min=0.0), 1.0 / temp)
             s = float(w.sum().item())
             if s <= 0:
-                best_cell = cells[0]
+                best_manager_action = manager_actions[0]
             else:
                 idx = int(torch.multinomial(w / s, 1).item())
-                best_cell = cells[idx]
+                best_manager_action = manager_actions[idx]
 
-        # Select best candidate within cell by visit count
-        region_node = root.children[best_cell]
-        if not region_node.children:
-            best_local = 0
+        # Select best worker action by visit count
+        worker_node = root.children[best_manager_action]
+        if not worker_node.children:
+            best_worker_action = 0
         else:
-            best_local = max(region_node.children.items(), key=lambda kv: kv[1].visits)[0]
+            best_worker_action = max(worker_node.children.items(), key=lambda kv: kv[1].visits)[0]
 
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
-        return best_cell, best_local
+        return best_manager_action, best_worker_action
 
     def _simulate(
         self,
         *,
         engine: FactoryLayoutEnv,
         adapter: BaseAdapter,
-        root: _StepNode,
+        root: _ManagerNode,
         agent: Agent,
     ) -> None:
         cfg = self.config
-        step_node = root
-        path: List[Tuple[_StepNode, Optional[_RegionNode]]] = []
+        manager_node = root
+        path: List[Tuple[_ManagerNode, Optional[_WorkerNode]]] = []
         path_rewards: List[float] = []
 
-        while not step_node.terminal:
-            # Manager: select cell
-            cell_idx = step_node.best_cell(
+        while not manager_node.terminal:
+            # Manager: select action
+            manager_action = manager_node.best_manager_action(
                 cfg.c_puct,
                 pw_enabled=cfg.pw_enabled,
                 pw_c=cfg.pw_c,
                 pw_alpha=cfg.pw_alpha,
             )
-            if cell_idx == -1:
+            if manager_action == -1:
                 break
 
-            # Get or create RegionNode
-            if cell_idx not in step_node.children:
-                # Restore snapshot so adapter's cell cache matches this node state.
+            # Get or create worker node
+            if manager_action not in manager_node.children:
+                # Restore snapshot so adapter's parent-level cache matches this node state.
                 self._restore_snapshot(
                     engine=engine, adapter=adapter,
-                    snapshot=step_node.decision_cache.snapshot,
+                    snapshot=manager_node.decision_cache.snapshot,
                 )
-                worker_as = adapter.sub_action_space(cell_idx)
+                worker_as = adapter.sub_action_space(manager_action)
                 worker_priors = _greedy_worker_priors(
-                    adapter.sub_action_costs(cell_idx),
+                    adapter.sub_action_costs(manager_action),
                     cfg.worker_temperature,
                 )
-                region_node = _RegionNode(
-                    cell_idx=cell_idx,
+                worker_node = _WorkerNode(
+                    manager_action=manager_action,
                     priors=worker_priors,
                     worker_action_space=worker_as,
                 )
-                step_node.children[cell_idx] = region_node
+                manager_node.children[manager_action] = worker_node
             else:
-                region_node = step_node.children[cell_idx]
+                worker_node = manager_node.children[manager_action]
 
-            # Worker: select candidate within cell
-            local_idx = region_node.best_candidate(cfg.worker_c_puct)
-            if local_idx == -1:
+            # Worker: select action
+            worker_action = worker_node.best_worker_action(cfg.worker_c_puct)
+            if worker_action == -1:
                 break
 
-            if local_idx in region_node.children:
+            if worker_action in worker_node.children:
                 # Traverse existing child
-                child_step = region_node.children[local_idx]
-                path.append((step_node, region_node))
+                child_step = worker_node.children[worker_action]
+                path.append((manager_node, worker_node))
                 path_rewards.append(child_step.reward)
-                step_node = child_step
+                manager_node = child_step
             else:
-                # Expand: restore parent snapshot, apply action, create child StepNode
+                # Expand: restore parent snapshot, apply action, create child ManagerNode
                 self._restore_snapshot(
                     engine=engine, adapter=adapter,
-                    snapshot=step_node.decision_cache.snapshot,
+                    snapshot=manager_node.decision_cache.snapshot,
                 )
 
-                worker_as = region_node.worker_action_space
+                worker_as = worker_node.worker_action_space
                 try:
                     placement = adapter.resolve_sub_action(
-                        local_idx, worker_as, parent_idx=cell_idx,
+                        worker_action, worker_as, parent_idx=manager_action,
                     )
                     _, reward, terminated, truncated, _info = engine.step_placement(
                         placement,
@@ -383,18 +383,18 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                         child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
                         child_priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
 
-                child_step = _StepNode(
+                child_step = _ManagerNode(
                     decision_cache=child_cache,
                     priors=child_priors,
-                    action=local_idx,
+                    action=worker_action,
                     reward=float(reward),
                     terminal=terminal,
                 )
-                region_node.children[local_idx] = child_step
+                worker_node.children[worker_action] = child_step
 
-                path.append((step_node, region_node))
+                path.append((manager_node, worker_node))
                 path_rewards.append(float(reward))
-                step_node = child_step
+                manager_node = child_step
 
                 if child_step.terminal:
                     cum_reward = sum(path_rewards)
@@ -403,11 +403,11 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
 
         # Leaf evaluation
         leaf_value = 0.0
-        if not step_node.terminal:
+        if not manager_node.terminal:
             if cfg.rollout_enabled:
                 self._restore_snapshot(
                     engine=engine, adapter=adapter,
-                    snapshot=step_node.decision_cache.snapshot,
+                    snapshot=manager_node.decision_cache.snapshot,
                 )
                 leaf_value = self._rollout(
                     engine=engine, adapter=adapter, agent=agent,
@@ -415,24 +415,24 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                 )
             else:
                 leaf_value = float(agent.value(
-                    obs=step_node.decision_cache.obs,
-                    action_space=step_node.decision_cache.action_space,
+                    obs=manager_node.decision_cache.obs,
+                    action_space=manager_node.decision_cache.action_space,
                 ))
 
         # Backup through path — update ALL nodes (leaf → root)
         total = float(leaf_value)
 
-        # Update leaf step_node
-        step_node.visits += 1
-        step_node.total_value += total
+        # Update leaf manager_node
+        manager_node.visits += 1
+        manager_node.total_value += total
 
-        # Walk backwards: each path entry is (parent_step, region_node)
+        # Walk backwards: each path entry is (parent_step, worker_node)
         for i in range(len(path) - 1, -1, -1):
             total += path_rewards[i]
-            parent_step, region_node = path[i]
-            if region_node is not None:
-                region_node.visits += 1
-                region_node.total_value += total
+            parent_step, worker_node = path[i]
+            if worker_node is not None:
+                worker_node.visits += 1
+                worker_node.total_value += total
             parent_step.visits += 1
             parent_step.total_value += total
 

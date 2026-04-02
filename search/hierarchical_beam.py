@@ -31,15 +31,15 @@ class HierarchicalBeamConfig(BaseSearchConfig):
 @dataclass
 class _HierBeamItem:
     cum_reward: float
-    first_cell: int
-    first_local: int
+    first_manager_action: int
+    first_worker_action: int
     snapshot: SearchSnapshot
     obs: Optional[dict] = None
     action_space: Optional[ActionSpace] = None
 
 
 class HierarchicalBeamSearch(BaseHierarchicalSearch):
-    """Beam search over hierarchical adapter (manager cell -> worker candidate)."""
+    """Beam search over hierarchical adapter (manager action -> worker action)."""
 
     def __init__(self, *, config: HierarchicalBeamConfig):
         super().__init__()
@@ -75,17 +75,17 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
         if has_callback:
             n_actions = int(root_action_space.valid_mask.shape[0])
             mask_np = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
-            root_cell_scores: Dict[int, float] = {}
+            root_manager_scores: Dict[int, float] = {}
         else:
-            root_cell_scores = {}  # unused when no callback
+            root_manager_scores = {}  # unused when no callback
             n_actions = 0
             mask_np = np.zeros((0,), dtype=bool)
 
         beams: List[_HierBeamItem] = [
             _HierBeamItem(
                 cum_reward=0.0,
-                first_cell=-1,
-                first_local=-1,
+                first_manager_action=-1,
+                first_worker_action=-1,
                 snapshot=root_snapshot,
                 obs=obs,
                 action_space=root_action_space,
@@ -114,8 +114,8 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                     new_beams.append(
                         _HierBeamItem(
                             cum_reward=beam.cum_reward,
-                            first_cell=beam.first_cell if beam.first_cell >= 0 else 0,
-                            first_local=beam.first_local if beam.first_local >= 0 else 0,
+                            first_manager_action=beam.first_manager_action if beam.first_manager_action >= 0 else 0,
+                            first_worker_action=beam.first_worker_action if beam.first_worker_action >= 0 else 0,
                             snapshot=node_snapshot,
                             obs=obs_node if bool(self.config.cache_decision_state) else None,
                             action_space=action_space if bool(self.config.cache_decision_state) else None,
@@ -128,39 +128,39 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                 ).view(-1)
                 priors = priors.masked_fill(~valid_mask, float("-inf"))
                 manager_topk = min(max(1, int(self.config.manager_topk)), valid_n)
-                top_cells = torch.topk(priors, k=manager_topk).indices.tolist()
+                top_manager_actions = torch.topk(priors, k=manager_topk).indices.tolist()
 
-                for cell_idx in top_cells:
-                    cell_idx = int(cell_idx)
-                    if not bool(valid_mask[cell_idx].item()):
+                for manager_action in top_manager_actions:
+                    manager_action = int(manager_action)
+                    if not bool(valid_mask[manager_action].item()):
                         continue
 
                     self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                     try:
-                        worker_as = adapter.sub_action_space(cell_idx)
-                        local_candidates = self._top_worker_candidates(
+                        worker_as = adapter.sub_action_space(manager_action)
+                        worker_candidates = self._top_worker_candidates(
                             adapter=adapter,
-                            parent_idx=cell_idx,
+                            parent_idx=manager_action,
                             worker_action_space=worker_as,
                         )
-                    except Exception:
-                        local_candidates = []
+                    except (IndexError, ValueError):
+                        worker_candidates = []
 
-                    if not local_candidates:
+                    if not worker_candidates:
                         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                         reward = float(engine.failure_penalty())
                         terminated = False
                         truncated = True
                         terminal = True
                         new_cum = float(beam.cum_reward) + float(reward)
-                        root_cell = cell_idx if beam.first_cell < 0 else int(beam.first_cell)
-                        root_local = 0 if beam.first_local < 0 else int(beam.first_local)
+                        root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
+                        root_worker_action = 0 if beam.first_worker_action < 0 else int(beam.first_worker_action)
                         child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
                         new_beams.append(
                             _HierBeamItem(
                                 cum_reward=new_cum,
-                                first_cell=root_cell,
-                                first_local=root_local,
+                                first_manager_action=root_manager_action,
+                                first_worker_action=root_worker_action,
                                 snapshot=child_snapshot,
                                 obs={} if terminal else None,
                                 action_space=self._empty_action_space(device=adapter.device) if terminal else None,
@@ -169,14 +169,14 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                         self._track_terminal(engine=engine, cum_reward=new_cum)
                         continue
 
-                    for local_idx in local_candidates:
+                    for worker_action in worker_candidates:
                         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
-                        worker_as = adapter.sub_action_space(cell_idx)
+                        worker_as = adapter.sub_action_space(manager_action)
                         try:
                             placement = adapter.resolve_sub_action(
-                                int(local_idx),
+                                int(worker_action),
                                 worker_as,
-                                parent_idx=cell_idx,
+                                parent_idx=manager_action,
                             )
                             _, reward, terminated, truncated, _info = engine.step_placement(placement)
                         except (IndexError, ValueError):
@@ -186,8 +186,8 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                         terminal = bool(terminated or truncated)
 
                         new_cum = float(beam.cum_reward) + float(reward)
-                        root_cell = cell_idx if beam.first_cell < 0 else int(beam.first_cell)
-                        root_local = int(local_idx) if beam.first_local < 0 else int(beam.first_local)
+                        root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
+                        root_worker_action = int(worker_action) if beam.first_worker_action < 0 else int(beam.first_worker_action)
 
                         if terminal:
                             child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
@@ -206,8 +206,8 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                         new_beams.append(
                             _HierBeamItem(
                                 cum_reward=new_cum,
-                                first_cell=root_cell,
-                                first_local=root_local,
+                                first_manager_action=root_manager_action,
+                                first_worker_action=root_worker_action,
                                 snapshot=child_snapshot,
                                 obs=child_obs,
                                 action_space=child_action_space,
@@ -225,34 +225,34 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
 
             if has_callback:
                 for beam in beams:
-                    if beam.first_cell >= 0:
-                        best = root_cell_scores.get(beam.first_cell, float("-inf"))
+                    if beam.first_manager_action >= 0:
+                        best = root_manager_scores.get(beam.first_manager_action, float("-inf"))
                         if beam.cum_reward > best:
-                            root_cell_scores[beam.first_cell] = beam.cum_reward
+                            root_manager_scores[beam.first_manager_action] = beam.cum_reward
                 self._emit_hbeam_progress(
                     depth=depth + 1,
                     total_depth=total_depth,
                     n_actions=n_actions,
                     mask=mask_np,
-                    root_cell_scores=root_cell_scores,
+                    root_manager_scores=root_manager_scores,
                     beams=beams,
                 )
 
-        best_cell = int(beams[0].first_cell) if beams else 0
-        best_local = int(beams[0].first_local) if beams else 0
+        best_manager_action = int(beams[0].first_manager_action) if beams else 0
+        best_worker_action = int(beams[0].first_worker_action) if beams else 0
 
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
-        if best_cell < 0:
+        if best_manager_action < 0:
             return 0, 0
-        if best_local < 0:
-            return best_cell, 0
-        return best_cell, best_local
+        if best_worker_action < 0:
+            return best_manager_action, 0
+        return best_manager_action, best_worker_action
 
     def _top_worker_candidates(
         self,
         *,
         adapter: BaseAdapter,
-        cell_idx: int,
+        parent_idx: int,
         worker_action_space: ActionSpace,
     ) -> List[int]:
         valid = worker_action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
@@ -260,7 +260,7 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
         if valid_n <= 0:
             return []
 
-        costs = adapter.sub_action_costs(cell_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
+        costs = adapter.sub_action_costs(parent_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
         m = int(valid.shape[0])
         if int(costs.shape[0]) < m:
             padded = torch.full((m,), float("inf"), dtype=torch.float32, device=adapter.device)
@@ -289,20 +289,20 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
         total_depth: int,
         n_actions: int,
         mask: np.ndarray,
-        root_cell_scores: Dict[int, float],
+        root_manager_scores: Dict[int, float],
         beams: List[_HierBeamItem],
     ) -> None:
         visits = np.zeros(n_actions, dtype=np.int32)
         values = np.zeros(n_actions, dtype=np.float32)
 
         for beam in beams:
-            if 0 <= beam.first_cell < n_actions:
-                visits[beam.first_cell] += 1
-                values[beam.first_cell] = max(values[beam.first_cell], float(beam.cum_reward))
+            if 0 <= beam.first_manager_action < n_actions:
+                visits[beam.first_manager_action] += 1
+                values[beam.first_manager_action] = max(values[beam.first_manager_action], float(beam.cum_reward))
 
-        for root_cell, score in root_cell_scores.items():
-            if 0 <= root_cell < n_actions:
-                values[root_cell] = max(values[root_cell], float(score))
+        for root_manager_action, score in root_manager_scores.items():
+            if 0 <= root_manager_action < n_actions:
+                values[root_manager_action] = max(values[root_manager_action], float(score))
 
         if n_actions > 0:
             valid_values = np.where(mask, values, -np.inf)
@@ -322,7 +322,7 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                 best_value=best_value,
                 extra={
                     "beam_size": len(beams),
-                    "active_root_cells": len(root_cell_scores),
+                    "active_root_actions": len(root_manager_scores),
                     "hierarchical": True,
                 },
             )

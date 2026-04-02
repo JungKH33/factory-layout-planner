@@ -55,16 +55,16 @@ class DecisionPipeline:
                     f"{type(self.search).__name__} requires adapter with "
                     f"supports_hierarchical=True, got {type(adapter).__name__}"
                 )
-            cell_idx, local_idx = self.search.select_h(
+            manager_action, worker_action = self.search.select_h(
                 obs=observation,
                 agent=self.agent,
                 root_action_space=action_space,
             )
-            worker_as = adapter.sub_action_space(cell_idx)
+            worker_as = adapter.sub_action_space(manager_action)
             placement = adapter.resolve_sub_action(
-                local_idx, worker_as, parent_idx=cell_idx,
+                worker_action, worker_as, parent_idx=manager_action,
             )
-            action_index = cell_idx
+            action_index = manager_action
             search_name = type(self.search).__name__
         elif self.search is None:
             action_index = int(self.agent.select_action(obs=observation, action_space=action_space))

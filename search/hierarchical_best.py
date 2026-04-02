@@ -35,8 +35,8 @@ class _HierBestItem:
     score: float
     cum_reward: float
     depth: int
-    first_cell: int
-    first_local: int
+    first_manager_action: int
+    first_worker_action: int
     snapshot: SearchSnapshot
     obs: Optional[dict] = None
     action_space: Optional[ActionSpace] = None
@@ -101,8 +101,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                     score=float(root_score),
                     cum_reward=0.0,
                     depth=0,
-                    first_cell=-1,
-                    first_local=-1,
+                    first_manager_action=-1,
+                    first_worker_action=-1,
                     snapshot=root_snapshot,
                     obs=obs,
                     action_space=root_action_space,
@@ -111,8 +111,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         )
         push_order += 1
 
-        best_cell = -1
-        best_local = -1
+        best_manager_action = -1
+        best_worker_action = -1
         best_score = float("-inf")
         expansions = 0
 
@@ -130,9 +130,9 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                 node_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
 
             if node.depth >= max_depth:
-                if node.first_cell >= 0 and float(node.score) > best_score:
-                    best_cell = int(node.first_cell)
-                    best_local = int(node.first_local) if node.first_local >= 0 else 0
+                if node.first_manager_action >= 0 and float(node.score) > best_score:
+                    best_manager_action = int(node.first_manager_action)
+                    best_worker_action = int(node.first_worker_action) if node.first_worker_action >= 0 else 0
                     best_score = float(node.score)
                 expansions += 1
                 self._maybe_emit_progress(
@@ -149,9 +149,9 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
             valid_n = int(valid_mask.to(torch.int64).sum().item())
             if valid_n <= 0:
                 self._track_terminal(engine=engine, cum_reward=float(node.cum_reward))
-                if node.first_cell >= 0 and float(node.score) > best_score:
-                    best_cell = int(node.first_cell)
-                    best_local = int(node.first_local) if node.first_local >= 0 else 0
+                if node.first_manager_action >= 0 and float(node.score) > best_score:
+                    best_manager_action = int(node.first_manager_action)
+                    best_worker_action = int(node.first_worker_action) if node.first_worker_action >= 0 else 0
                     best_score = float(node.score)
                 expansions += 1
                 self._maybe_emit_progress(
@@ -169,50 +169,50 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
             ).view(-1)
             priors = priors.masked_fill(~valid_mask, float("-inf"))
             manager_topk = min(max(1, int(self.config.manager_topk)), valid_n)
-            top_cells = torch.topk(priors, k=manager_topk).indices.tolist()
+            top_manager_actions = torch.topk(priors, k=manager_topk).indices.tolist()
 
-            for cell_idx in top_cells:
-                cell_idx = int(cell_idx)
-                if not bool(valid_mask[cell_idx].item()):
+            for manager_action in top_manager_actions:
+                manager_action = int(manager_action)
+                if not bool(valid_mask[manager_action].item()):
                     continue
 
                 self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                 try:
-                    worker_as = adapter.sub_action_space(cell_idx)
-                    local_candidates = self._top_worker_candidates(
+                    worker_as = adapter.sub_action_space(manager_action)
+                    worker_candidates = self._top_worker_candidates(
                         adapter=adapter,
-                        parent_idx=cell_idx,
+                        parent_idx=manager_action,
                         worker_action_space=worker_as,
                     )
-                except Exception:
-                    local_candidates = []
+                except (IndexError, ValueError):
+                    worker_candidates = []
 
-                if not local_candidates:
+                if not worker_candidates:
                     self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                     reward = float(engine.failure_penalty())
                     child_cum = float(node.cum_reward) + float(reward)
-                    root_cell = cell_idx if node.first_cell < 0 else int(node.first_cell)
-                    root_local = 0 if node.first_local < 0 else int(node.first_local)
+                    root_manager_action = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
+                    root_worker_action = 0 if node.first_worker_action < 0 else int(node.first_worker_action)
                     score = float(child_cum)
                     self._track_terminal(engine=engine, cum_reward=child_cum)
 
-                    if root_cell >= 0 and score > best_score:
-                        best_cell = int(root_cell)
-                        best_local = int(root_local)
+                    if root_manager_action >= 0 and score > best_score:
+                        best_manager_action = int(root_manager_action)
+                        best_worker_action = int(root_worker_action)
                         best_score = float(score)
 
-                    if has_callback and 0 <= root_cell < n_actions:
-                        root_visits[root_cell] += 1
-                        root_values[root_cell] = max(float(root_values[root_cell]), float(score))
+                    if has_callback and 0 <= root_manager_action < n_actions:
+                        root_visits[root_manager_action] += 1
+                        root_values[root_manager_action] = max(float(root_values[root_manager_action]), float(score))
                     continue
 
-                for local_idx in local_candidates:
+                for worker_action in worker_candidates:
                     self._restore_snapshot(engine=engine, adapter=adapter, snapshot=node_snapshot)
                     try:
                         placement = adapter.resolve_sub_action(
-                            int(local_idx),
+                            int(worker_action),
                             worker_as,
-                            parent_idx=cell_idx,
+                            parent_idx=manager_action,
                         )
                         _, reward, terminated, truncated, _info = engine.step_placement(placement)
                     except (IndexError, ValueError):
@@ -223,8 +223,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                     terminal = bool(terminated or truncated)
                     child_depth = int(node.depth) + 1
                     child_cum = float(node.cum_reward) + float(reward)
-                    root_cell = cell_idx if node.first_cell < 0 else int(node.first_cell)
-                    root_local = int(local_idx) if node.first_local < 0 else int(node.first_local)
+                    root_manager_action = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
+                    root_worker_action = int(worker_action) if node.first_worker_action < 0 else int(node.first_worker_action)
 
                     if terminal:
                         child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
@@ -264,14 +264,14 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                             value_term = 0.0
                         score = float(child_cum) + float(value_term)
 
-                    if root_cell >= 0 and score > best_score:
-                        best_cell = int(root_cell)
-                        best_local = int(root_local)
+                    if root_manager_action >= 0 and score > best_score:
+                        best_manager_action = int(root_manager_action)
+                        best_worker_action = int(root_worker_action)
                         best_score = float(score)
 
-                    if has_callback and 0 <= root_cell < n_actions:
-                        root_visits[root_cell] += 1
-                        root_values[root_cell] = max(float(root_values[root_cell]), float(score))
+                    if has_callback and 0 <= root_manager_action < n_actions:
+                        root_visits[root_manager_action] += 1
+                        root_values[root_manager_action] = max(float(root_values[root_manager_action]), float(score))
 
                     if (not terminal) and child_depth <= max_depth:
                         heapq.heappush(
@@ -283,8 +283,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                                     score=float(score),
                                     cum_reward=float(child_cum),
                                     depth=child_depth,
-                                    first_cell=int(root_cell),
-                                    first_local=int(root_local),
+                                    first_manager_action=int(root_manager_action),
+                                    first_worker_action=int(root_worker_action),
                                     snapshot=child_snapshot,
                                     obs=child_obs,
                                     action_space=child_action_space,
@@ -303,8 +303,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                 frontier_size=len(frontier),
             )
 
-        if best_cell < 0:
-            best_cell, best_local = self._fallback_pair(
+        if best_manager_action < 0:
+            best_manager_action, best_worker_action = self._fallback_pair(
                 adapter=adapter,
                 agent=agent,
                 obs=obs,
@@ -312,7 +312,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
             )
 
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
-        return int(best_cell), int(best_local)
+        return int(best_manager_action), int(best_worker_action)
 
     def _safe_value(
         self,
@@ -336,7 +336,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         self,
         *,
         adapter: BaseAdapter,
-        cell_idx: int,
+        parent_idx: int,
         worker_action_space: ActionSpace,
     ) -> List[int]:
         valid = worker_action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
@@ -344,7 +344,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         if valid_n <= 0:
             return []
 
-        costs = adapter.sub_action_costs(cell_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
+        costs = adapter.sub_action_costs(parent_idx).to(dtype=torch.float32, device=adapter.device).view(-1)
         m = int(valid.shape[0])
         if int(costs.shape[0]) < m:
             padded = torch.full((m,), float("inf"), dtype=torch.float32, device=adapter.device)
@@ -379,27 +379,27 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         if int(valid_idx.numel()) <= 0:
             return 0, 0
 
-        best_cell = int(valid_idx[0].item())
+        best_manager_action = int(valid_idx[0].item())
         try:
             priors = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=adapter.device).view(-1)
             priors = priors.masked_fill(~valid, float("-inf"))
             if bool(torch.isfinite(priors).any().item()):
-                best_cell = int(torch.argmax(priors).item())
+                best_manager_action = int(torch.argmax(priors).item())
         except Exception:
             pass
 
         try:
-            worker_as = adapter.sub_action_space(best_cell)
+            worker_as = adapter.sub_action_space(best_manager_action)
             locals_top = self._top_worker_candidates(
                 adapter=adapter,
-                cell_idx=best_cell,
+                parent_idx=best_manager_action,
                 worker_action_space=worker_as,
             )
             if locals_top:
-                return best_cell, int(locals_top[0])
+                return best_manager_action, int(locals_top[0])
         except Exception:
             pass
-        return best_cell, 0
+        return best_manager_action, 0
 
     def _maybe_emit_progress(
         self,
