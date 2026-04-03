@@ -259,9 +259,38 @@ def load_env(
             raise ValueError(
                 f"zones.constraints.{cname}.op must be one of {sorted(valid_ops)}, got {op!r}"
             )
+        exclusive_raw = raw.get("exclusive", False)
+        if isinstance(exclusive_raw, str):
+            ex = exclusive_raw.strip().lower()
+            if ex in {"true", "1", "yes", "on", "body"}:
+                exclusive = True
+            elif ex in {"false", "0", "no", "off", "none"}:
+                exclusive = False
+            else:
+                raise ValueError(
+                    f"zones.constraints.{cname}.exclusive must be bool or 'body', got {exclusive_raw!r}"
+                )
+        else:
+            exclusive = bool(exclusive_raw)
         if "default" not in raw:
             raise ValueError(f"zones.constraints.{cname}.default is required")
-        default_value = raw["default"]
+        default_raw = raw["default"]
+        default_id = raw.get("default_id", None)
+        if isinstance(default_raw, dict):
+            if "value" not in default_raw:
+                raise ValueError(
+                    f"zones.constraints.{cname}.default object must contain key 'value'"
+                )
+            if default_id is None:
+                default_id = default_raw.get("id", None)
+            default_value = default_raw["value"]
+        else:
+            default_value = default_raw
+        if exclusive and default_id is None:
+            raise ValueError(
+                f"zones.constraints.{cname}: exclusive=true requires default id "
+                f"(use default={{'value':..., 'id':...}} or default_id)"
+            )
         areas = raw.get("areas", [])
         if not isinstance(areas, list):
             raise ValueError(f"zones.constraints.{cname}.areas must be a list")
@@ -274,12 +303,22 @@ def load_env(
             rect = a["rect"]
             if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
                 raise ValueError(f"zones.constraints.{cname}.areas[{i}].rect must be [x0,y0,x1,y1]")
-            norm_areas.append({"rect": list(rect), "value": a["value"]})
+            area_id = a.get("id", None)
+            if exclusive and area_id is None:
+                raise ValueError(
+                    f"zones.constraints.{cname}.areas[{i}]: exclusive=true requires key 'id'"
+                )
+            area_out: Dict[str, Any] = {"rect": list(rect), "value": a["value"]}
+            if area_id is not None:
+                area_out["id"] = area_id
+            norm_areas.append(area_out)
         zone_constraints[str(cname)] = {
             "dtype": dtype,
             "op": op,
             "default": default_value,
+            "default_id": default_id,
             "areas": norm_areas,
+            "exclusive": exclusive,
         }
 
     env = FactoryLayoutEnv(

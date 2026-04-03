@@ -50,6 +50,8 @@ class GridMaps:
             self._constraint_maps,
             self._constraint_ops,
             self._constraint_dtypes,
+            self._constraint_exclusive,
+            self._constraint_id_maps,
         ) = self._build_constraint_maps(
             self._H,
             self._W,
@@ -75,6 +77,13 @@ class GridMaps:
             Tuple[int, int, int, int, int],
             Tuple[torch.Tensor, torch.Tensor],
         ] = {}
+        self._body_edge_offsets_cache: Dict[Tuple[int, int, int, int], Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._has_exclusive_edges = False
+        self._exclusive_edge_x: Optional[torch.Tensor] = None
+        self._exclusive_edge_y: Optional[torch.Tensor] = None
+        self._exclusive_edge_x_ps: Optional[torch.Tensor] = None
+        self._exclusive_edge_y_ps: Optional[torch.Tensor] = None
+        self._build_exclusive_edge_cache()
 
         # Runtime prefix caches are always maintained for rectangular fast paths.
         self._occ_invalid_ps: torch.Tensor = torch.zeros((self._H + 1, self._W + 1), dtype=torch.int32, device=self._device)
@@ -214,6 +223,75 @@ class GridMaps:
         out = (body_offsets, clear_offsets)
         self._mask_linear_offsets_cache[key] = out
         return out
+
+    def _get_body_edge_linear_offsets(self, *, body_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return local edge indices for adjacent occupied body-cell pairs.
+
+        - x_offsets index into flattened edge_x map [H, W-1]
+        - y_offsets index into flattened edge_y map [H-1, W]
+        """
+        h = int(body_mask.shape[0])
+        w = int(body_mask.shape[1])
+        key = (
+            int(body_mask.data_ptr()),
+            h,
+            w,
+            int(self._W),
+        )
+        cached = self._body_edge_offsets_cache.get(key, None)
+        if cached is not None:
+            return cached
+
+        body_mask = body_mask.to(device=self._device, dtype=torch.bool)
+        if w > 1:
+            h_pairs = body_mask[:, :-1] & body_mask[:, 1:]
+            hy, hx = torch.where(h_pairs)
+            x_offsets = hy.to(dtype=torch.long) * int(self._W - 1) + hx.to(dtype=torch.long)
+        else:
+            x_offsets = torch.empty((0,), dtype=torch.long, device=self._device)
+
+        if h > 1:
+            v_pairs = body_mask[:-1, :] & body_mask[1:, :]
+            vy, vx = torch.where(v_pairs)
+            y_offsets = vy.to(dtype=torch.long) * int(self._W) + vx.to(dtype=torch.long)
+        else:
+            y_offsets = torch.empty((0,), dtype=torch.long, device=self._device)
+
+        out = (x_offsets, y_offsets)
+        self._body_edge_offsets_cache[key] = out
+        return out
+
+    def _build_exclusive_edge_cache(self) -> None:
+        active = [name for name, enabled in self._constraint_exclusive.items() if bool(enabled)]
+        if not active:
+            self._has_exclusive_edges = False
+            self._exclusive_edge_x = None
+            self._exclusive_edge_y = None
+            self._exclusive_edge_x_ps = None
+            self._exclusive_edge_y_ps = None
+            return
+
+        edge_x = torch.zeros((self._H, max(self._W - 1, 0)), dtype=torch.bool, device=self._device)
+        edge_y = torch.zeros((max(self._H - 1, 0), self._W), dtype=torch.bool, device=self._device)
+        for cname in active:
+            id_map = self._constraint_id_maps.get(cname, None)
+            if not isinstance(id_map, torch.Tensor):
+                continue
+            if self._W > 1:
+                edge_x |= (id_map[:, 1:] != id_map[:, :-1])
+            if self._H > 1:
+                edge_y |= (id_map[1:, :] != id_map[:-1, :])
+
+        self._exclusive_edge_x = edge_x
+        self._exclusive_edge_y = edge_y
+        self._exclusive_edge_x_ps = self._build_prefix(edge_x) if int(edge_x.shape[1]) > 0 else None
+        self._exclusive_edge_y_ps = self._build_prefix(edge_y) if int(edge_y.shape[0]) > 0 else None
+        self._has_exclusive_edges = bool(
+            (int(edge_x.numel()) > 0 and bool(edge_x.any().item()))
+            or (int(edge_y.numel()) > 0 and bool(edge_y.any().item()))
+        )
+        # TODO: If disconnected-body specs become common, add a class-moment
+        # (XOR-generalized) fallback path for strict same-partition checks.
 
     def _ensure_static_prefix_cache(self) -> torch.Tensor:
         return self._static_invalid_ps
@@ -371,6 +449,26 @@ class GridMaps:
         )
         if body_hit != 0:
             return False
+        if self._has_exclusive_edges:
+            edge_hit = 0
+            if bw > 1 and isinstance(self._exclusive_edge_x_ps, torch.Tensor):
+                edge_hit += self._rect_sum(
+                    self._exclusive_edge_x_ps,
+                    x0=body_x0,
+                    y0=body_y0,
+                    x1=body_x1 - 1,
+                    y1=body_y1,
+                )
+            if bh > 1 and isinstance(self._exclusive_edge_y_ps, torch.Tensor):
+                edge_hit += self._rect_sum(
+                    self._exclusive_edge_y_ps,
+                    x0=body_x0,
+                    y0=body_y0,
+                    x1=body_x1,
+                    y1=body_y1 - 1,
+                )
+            if edge_hit != 0:
+                return False
         body_clear_hit = self._rect_sum(clear_ps, x0=body_x0, y0=body_y0, x1=body_x1, y1=body_y1)
         if body_clear_hit != 0:
             return False
@@ -438,6 +536,18 @@ class GridMaps:
 
         if bool(static_f[body_idx].any().item()) or bool(occ_f[body_idx].any().item()) or bool(zone_f[body_idx].any().item()):
             return False
+        if self._has_exclusive_edges:
+            x_offsets, y_offsets = self._get_body_edge_linear_offsets(body_mask=body_mask)
+            if int(x_offsets.numel()) > 0 and isinstance(self._exclusive_edge_x, torch.Tensor):
+                edge_x_f = self._exclusive_edge_x.reshape(-1)
+                base_x = int(body_y0) * int(self._W - 1) + int(body_x0)
+                if bool(edge_x_f[base_x + x_offsets].any().item()):
+                    return False
+            if int(y_offsets.numel()) > 0 and isinstance(self._exclusive_edge_y, torch.Tensor):
+                edge_y_f = self._exclusive_edge_y.reshape(-1)
+                base_y = int(body_y0) * int(self._W) + int(body_x0)
+                if bool(edge_y_f[base_y + y_offsets].any().item()):
+                    return False
         if bool(clear_f[body_idx].any().item()):
             return False
         if bool(static_f[pad_idx].any().item()) or bool(occ_f[pad_idx].any().item()) or bool(zone_f[pad_idx].any().item()):
@@ -466,10 +576,25 @@ class GridMaps:
         body_inv = F.conv2d(inv_f, body_kernel, padding=0).squeeze(0).squeeze(0)
         body_clear = F.conv2d(clear_f, body_kernel, padding=0).squeeze(0).squeeze(0)
         pad_inv = F.conv2d(inv_f, clearance_kernel, padding=0).squeeze(0).squeeze(0)
-
         body_inv_slice = body_inv[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
         body_clear_slice = body_clear[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
-        return (body_inv_slice == 0) & (body_clear_slice == 0) & (pad_inv == 0)
+        if not self._has_exclusive_edges:
+            return (body_inv_slice == 0) & (body_clear_slice == 0) & (pad_inv == 0)
+
+        body_exclusive = torch.zeros_like(body_inv)
+        if self._has_exclusive_edges:
+            if int(body_mask.shape[1]) > 1 and isinstance(self._exclusive_edge_x, torch.Tensor):
+                pair_x = (body_mask[:, :-1] & body_mask[:, 1:]).to(device=self._device, dtype=torch.float32)
+                pair_x_kernel = pair_x.unsqueeze(0).unsqueeze(0)
+                edge_x_f = self._exclusive_edge_x.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+                body_exclusive = body_exclusive + F.conv2d(edge_x_f, pair_x_kernel, padding=0).squeeze(0).squeeze(0)
+            if int(body_mask.shape[0]) > 1 and isinstance(self._exclusive_edge_y, torch.Tensor):
+                pair_y = (body_mask[:-1, :] & body_mask[1:, :]).to(device=self._device, dtype=torch.float32)
+                pair_y_kernel = pair_y.unsqueeze(0).unsqueeze(0)
+                edge_y_f = self._exclusive_edge_y.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+                body_exclusive = body_exclusive + F.conv2d(edge_y_f, pair_y_kernel, padding=0).squeeze(0).squeeze(0)
+        body_exclusive_slice = body_exclusive[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
+        return (body_inv_slice == 0) & (body_clear_slice == 0) & (body_exclusive_slice == 0) & (pad_inv == 0)
 
     def _is_placeable_map_prefixsum(
         self,
@@ -500,13 +625,30 @@ class GridMaps:
         body_occ = self._window_sum(occ_ps, body_height, body_width)
         body_zone = self._window_sum(zone_ps, body_height, body_width)
         body_clear = self._window_sum(clear_ps, body_height, body_width)
-
         body_hit = (
             body_static[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
             + body_occ[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
             + body_zone[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
             + body_clear[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
         )
+        if not self._has_exclusive_edges:
+            return (pad_hit == 0) & (body_hit == 0)
+
+        body_exclusive = torch.zeros_like(body_static)
+        if self._has_exclusive_edges:
+            if body_width > 1 and isinstance(self._exclusive_edge_x_ps, torch.Tensor):
+                body_exclusive = body_exclusive + self._window_sum(
+                    self._exclusive_edge_x_ps,
+                    body_height,
+                    body_width - 1,
+                )
+            if body_height > 1 and isinstance(self._exclusive_edge_y_ps, torch.Tensor):
+                body_exclusive = body_exclusive + self._window_sum(
+                    self._exclusive_edge_y_ps,
+                    body_height - 1,
+                    body_width,
+                )
+        body_hit = body_hit + body_exclusive[pad_bottom: pad_bottom + valid_h, pad_left: pad_left + valid_w]
         return (pad_hit == 0) & (body_hit == 0)
 
     def _is_placeable_batch_prefixsum(
@@ -618,11 +760,27 @@ class GridMaps:
             y1=pad_y1[in_bounds],
         )
 
-        result[in_bounds] = (
-            (body_static + body_occ + body_zone == 0)
-            & (body_clear == 0)
-            & (pad_static + pad_occ + pad_zone == 0)
-        )
+        body_ok = (body_static + body_occ + body_zone == 0) & (body_clear == 0)
+        if self._has_exclusive_edges:
+            body_exclusive = torch.zeros_like(body_static)
+            if bw > 1 and isinstance(self._exclusive_edge_x_ps, torch.Tensor):
+                body_exclusive = body_exclusive + self._rect_sum_batch(
+                    self._exclusive_edge_x_ps,
+                    x0=body_x0[in_bounds],
+                    y0=body_y0[in_bounds],
+                    x1=body_x1[in_bounds] - 1,
+                    y1=body_y1[in_bounds],
+                )
+            if bh > 1 and isinstance(self._exclusive_edge_y_ps, torch.Tensor):
+                body_exclusive = body_exclusive + self._rect_sum_batch(
+                    self._exclusive_edge_y_ps,
+                    x0=body_x0[in_bounds],
+                    y0=body_y0[in_bounds],
+                    x1=body_x1[in_bounds],
+                    y1=body_y1[in_bounds] - 1,
+                )
+            body_ok &= (body_exclusive == 0)
+        result[in_bounds] = body_ok & (pad_static + pad_occ + pad_zone == 0)
         return result
 
     def _is_placeable_batch_gather(
@@ -694,8 +852,24 @@ class GridMaps:
         occ_f = self.occ_invalid.reshape(-1)
         zone_f = self._get_zone_invalid(gid).reshape(-1)
         clear_f = self.clear_invalid.reshape(-1)
+        edge_x_offsets = torch.empty((0,), dtype=torch.long, device=self._device)
+        edge_y_offsets = torch.empty((0,), dtype=torch.long, device=self._device)
+        edge_x_f = None
+        edge_y_f = None
+        if self._has_exclusive_edges:
+            edge_x_offsets, edge_y_offsets = self._get_body_edge_linear_offsets(body_mask=body_mask)
+            if int(edge_x_offsets.numel()) > 0 and isinstance(self._exclusive_edge_x, torch.Tensor):
+                edge_x_f = self._exclusive_edge_x.reshape(-1)
+            if int(edge_y_offsets.numel()) > 0 and isinstance(self._exclusive_edge_y, torch.Tensor):
+                edge_y_f = self._exclusive_edge_y.reshape(-1)
 
-        offset_count = max(int(body_offsets.numel()), int(pad_offsets.numel()), 1)
+        offset_count = max(
+            int(body_offsets.numel()),
+            int(pad_offsets.numel()),
+            int(edge_x_offsets.numel()),
+            int(edge_y_offsets.numel()),
+            1,
+        )
         chunk_size = max(1, 1_048_576 // offset_count)
         flat_result = result.reshape(-1)
 
@@ -712,8 +886,17 @@ class GridMaps:
             pad_hit = static_f[pad_idx].any(dim=1)
             pad_hit |= occ_f[pad_idx].any(dim=1)
             pad_hit |= zone_f[pad_idx].any(dim=1)
+            edge_hit = torch.zeros((stop - start,), dtype=torch.bool, device=self._device)
+            if edge_x_f is not None and int(edge_x_offsets.numel()) > 0:
+                base_edge_x = y_valid[start:stop] * int(self._W - 1) + x_valid[start:stop]
+                edge_x_idx = base_edge_x[:, None] + edge_x_offsets[None, :]
+                edge_hit |= edge_x_f[edge_x_idx].any(dim=1)
+            if edge_y_f is not None and int(edge_y_offsets.numel()) > 0:
+                base_edge_y = y_valid[start:stop] * int(self._W) + x_valid[start:stop]
+                edge_y_idx = base_edge_y[:, None] + edge_y_offsets[None, :]
+                edge_hit |= edge_y_f[edge_y_idx].any(dim=1)
 
-            flat_result[valid_idx[start:stop]] = (~body_hit) & (~body_clear_hit) & (~pad_hit)
+            flat_result[valid_idx[start:stop]] = (~body_hit) & (~body_clear_hit) & (~pad_hit) & (~edge_hit)
         return result
 
     def placeable_batch(
@@ -1077,11 +1260,19 @@ class GridMaps:
         out._constraint_maps = self._constraint_maps
         out._constraint_ops = self._constraint_ops
         out._constraint_dtypes = self._constraint_dtypes
+        out._constraint_exclusive = self._constraint_exclusive
+        out._constraint_id_maps = self._constraint_id_maps
         out._group_specs = self._group_specs
         out._zone_invalid_by_gid = self._zone_invalid_by_gid
         out._static_invalid_ps = self._static_invalid_ps
         out._zone_invalid_ps_by_gid = self._zone_invalid_ps_by_gid
         out._mask_linear_offsets_cache = self._mask_linear_offsets_cache
+        out._body_edge_offsets_cache = self._body_edge_offsets_cache
+        out._has_exclusive_edges = self._has_exclusive_edges
+        out._exclusive_edge_x = self._exclusive_edge_x
+        out._exclusive_edge_y = self._exclusive_edge_y
+        out._exclusive_edge_x_ps = self._exclusive_edge_x_ps
+        out._exclusive_edge_y_ps = self._exclusive_edge_y_ps
         out._occ_invalid_ps = self._occ_invalid_ps
         out._clear_invalid_ps = self._clear_invalid_ps
         out._backend_selection = self._backend_selection
@@ -1230,10 +1421,18 @@ class GridMaps:
         W: int,
         device: torch.device,
         constraints: Dict[str, Dict[str, Any]],
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, str], Dict[str, str]]:
+    ) -> Tuple[
+        Dict[str, torch.Tensor],
+        Dict[str, str],
+        Dict[str, str],
+        Dict[str, bool],
+        Dict[str, torch.Tensor],
+    ]:
         maps: Dict[str, torch.Tensor] = {}
         ops: Dict[str, str] = {}
         dtypes: Dict[str, str] = {}
+        exclusive: Dict[str, bool] = {}
+        id_maps: Dict[str, torch.Tensor] = {}
 
         for cname, cfg in constraints.items():
             if not isinstance(cfg, dict):
@@ -1241,6 +1440,17 @@ class GridMaps:
             dtype = str(cfg.get("dtype", "float")).lower()
             op = str(cfg.get("op", "=="))
             areas = cfg.get("areas", [])
+            ex_raw = cfg.get("exclusive", False)
+            if isinstance(ex_raw, str):
+                ex = ex_raw.strip().lower()
+                if ex in {"true", "1", "yes", "on", "body"}:
+                    ex_enabled = True
+                elif ex in {"false", "0", "no", "off", "none"}:
+                    ex_enabled = False
+                else:
+                    raise ValueError(f"invalid exclusive for constraint {cname!r}: {ex_raw!r}")
+            else:
+                ex_enabled = bool(ex_raw)
             if dtype not in {"float", "int", "bool"}:
                 raise ValueError(f"invalid dtype for constraint {cname!r}: {dtype!r}")
             if op not in {"<", "<=", ">", ">=", "==", "!="}:
@@ -1252,8 +1462,23 @@ class GridMaps:
             if "default" not in cfg:
                 raise ValueError(f"constraint {cname!r}.default is required")
 
+            default_raw = cfg["default"]
+            default_id = cfg.get("default_id", None)
+            if isinstance(default_raw, dict):
+                if "value" not in default_raw:
+                    raise ValueError(f"constraint {cname!r}.default object must contain key 'value'")
+                if default_id is None:
+                    default_id = default_raw.get("id", None)
+                default_value = default_raw["value"]
+            else:
+                default_value = default_raw
+            if ex_enabled and default_id is None:
+                raise ValueError(
+                    f"constraint {cname!r}: exclusive=true requires default id "
+                    f"(use default={{'value':..., 'id':...}} or default_id)"
+                )
             default_v = self._coerce_constraint_value(
-                cfg["default"],
+                default_value,
                 dtype=dtype,
                 cname=str(cname),
                 ctx="default",
@@ -1264,6 +1489,13 @@ class GridMaps:
                 m = torch.full((H, W), int(default_v), dtype=torch.int64, device=device)
             else:
                 m = torch.full((H, W), bool(default_v), dtype=torch.bool, device=device)
+            id_map = None
+            id_code: Dict[str, int] = {}
+            if ex_enabled:
+                id_map = torch.zeros((H, W), dtype=torch.int64, device=device)
+                default_label = self._coerce_constraint_id(default_id, cname=str(cname), ctx="default")
+                id_code[default_label] = 0
+                id_map.fill_(0)
 
             for area in areas:
                 if not isinstance(area, dict):
@@ -1286,13 +1518,37 @@ class GridMaps:
                     ctx="area",
                 )
                 m[y0:y1, x0:x1] = v
+                if ex_enabled:
+                    area_id = area.get("id", None)
+                    if area_id is None:
+                        raise ValueError(
+                            f"constraint {cname!r}.areas requires key 'id' when exclusive=true"
+                        )
+                    area_label = self._coerce_constraint_id(area_id, cname=str(cname), ctx="area")
+                    if area_label not in id_code:
+                        id_code[area_label] = int(len(id_code))
+                    id_map[y0:y1, x0:x1] = int(id_code[area_label])
 
             name = str(cname)
             maps[name] = m
             ops[name] = op
             dtypes[name] = dtype
+            exclusive[name] = bool(ex_enabled)
+            if ex_enabled and isinstance(id_map, torch.Tensor):
+                id_maps[name] = id_map
 
-        return maps, ops, dtypes
+        return maps, ops, dtypes, exclusive, id_maps
+
+    @staticmethod
+    def _coerce_constraint_id(v: Any, *, cname: str, ctx: str) -> str:
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "":
+                raise ValueError(f"{ctx} id for {cname!r} must not be empty")
+            return s
+        if isinstance(v, (int, float, bool)):
+            return str(v)
+        raise ValueError(f"{ctx} id for {cname!r} must be scalar (str/int/float/bool), got {v!r}")
 
     def _coerce_group_value(self, v: Any, *, dtype: str, cname: str) -> Any:
         return self._coerce_constraint_value(v, dtype=dtype, cname=cname, ctx="group")

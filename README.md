@@ -325,6 +325,15 @@ Attribute-based spatial zones. Each constraint has a grid-wide default value and
       "areas": [
         { "rect": [300, 0, 500, 500], "value": 25.0 }
       ]
+    },
+    "dry": {
+      "dtype": "float",
+      "op": ">=",
+      "exclusive": "body",
+      "default": { "value": 0.0, "id": "outside_dry_room" },
+      "areas": [
+        { "rect": [120, 80, 260, 240], "value": 1.0, "id": "dry_room_A" }
+      ]
     }
   }
 }
@@ -334,9 +343,11 @@ Attribute-based spatial zones. Each constraint has a grid-wide default value and
 |---|---|---|
 | `dtype` | string | `"float"`, `"int"`, or `"bool"` |
 | `op` | string | Comparison operator: `<`, `<=`, `>`, `>=`, `==`, `!=` |
-| `default` | value | Grid-wide default zone value |
+| `exclusive` | bool or `"body"` | Optional. If enabled, facility body must not cross this constraint's zone-id boundary |
+| `default` | value or object | Grid-wide default value. Exclusive mode also accepts `{ "value": ..., "id": ... }` |
 | `areas[].rect` | `[x0,y0,x1,y1]` | Region with override value |
 | `areas[].value` | value | Override zone value in this region |
+| `areas[].id` | scalar | Required in exclusive mode. Physical partition id for boundary checks |
 
 > See [Zone Constraints](#zone-constraints) for the validation logic and examples.
 
@@ -744,6 +755,33 @@ Grid layout:
 
 - **Facility with `dry: 2.0`** (op `>=`): 2.0 >= 1.0 = valid in default area; 2.0 >= 0.0 = valid in override area --> valid everywhere
 - **Facility with `dry: 0.5`** (op `>=`): 0.5 >= 1.0 = **invalid** in default area; 0.5 >= 0.0 = valid in override area
+
+#### Exclusive Zone Boundaries
+
+`exclusive` controls whether crossing this constraint's partition boundary is allowed:
+
+- `exclusive=false` (default): only value rule is checked (`facility_value op zone_value`).
+- `exclusive=true` / `"body"`: value rule is still checked, and the facility **body** must stay inside one partition id.
+
+Use `exclusive=false` for scalar constraints without physical walls (for example, ceiling height or floor load capacity).
+Use `exclusive=true` for physically partitioned spaces (for example, industrial **dry rooms** / clean rooms with walls).
+
+Exclusive example (`dry`):
+
+```json
+"dry": {
+  "dtype": "float",
+  "op": ">=",
+  "exclusive": "body",
+  "default": { "value": 0.0, "id": "outside" },
+  "areas": [
+    { "rect": [120, 80, 260, 240], "value": 1.0, "id": "dry_room_A" },
+    { "rect": [280, 80, 420, 240], "value": 1.0, "id": "dry_room_B" }
+  ]
+}
+```
+
+With this config, a facility can satisfy dry values but still be invalid if its body crosses from `outside` to `dry_room_A`, or from `dry_room_A` to `dry_room_B`.
 
 ### Clearance Rotation
 
