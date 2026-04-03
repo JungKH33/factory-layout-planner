@@ -141,7 +141,7 @@ DecisionPipeline.decide():
                           "facility_clearance_*", "facility_weight/height/dry", "allowed_areas",
                           "variants": [{"width", "height", "entries_rel", "exits_rel", ...}, ...] } },
   "flow": [["<src>", "<dst>", <weight>], ...],
-  "zones": { "forbidden_areas", "weight_areas", "height_areas", "dry_areas", "placement_areas" },
+  "zones": { "forbidden", "weight_areas", "height_areas", "dry_areas", "placement_areas" },
   "reset": { "initial_placements": {"<gid>": [x_c, y_c, variant_index, source_index]}, "remaining_order": [...] }
 }
 ```

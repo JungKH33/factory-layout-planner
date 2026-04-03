@@ -789,7 +789,7 @@ function render() {
     
     // Draw zones (back to front)
     if (settings.showConstraintZones) drawConstraintZones(scaleX, scaleY, currentState.constraint_zones, COLORS.constraintZone, '#1e90ff');
-    if (settings.showForbidden) drawZones(scaleX, scaleY, currentState.forbidden_areas, COLORS.forbidden, '#d62728', '');
+    if (settings.showForbidden) drawZones(scaleX, scaleY, currentState.forbidden, COLORS.forbidden, '#d62728', '');
     
     // Draw candidates (before placed so they appear behind)
     if (settings.showCandidates) {

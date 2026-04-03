@@ -45,13 +45,13 @@ def main():
     }
     flow = {"A": {"B": 1.0}, "B": {"C": 0.7}}
 
-    forbidden_areas = [{"rect": [0, 0, 30, 20]}]
+    forbidden = [{"shape_type": "rect", "rect": [0, 0, 30, 20]}]
 
     zone_constraints = {
-        "weight": {"dtype": "float", "op": "<=", "default": 10.0, "areas": [{"rect": [60, 0, 120, 80], "value": 20.0}]},
-        "height": {"dtype": "float", "op": "<=", "default": 20.0, "areas": [{"rect": [0, 60, 120, 80], "value": 5.0}]},
-        "dry": {"dtype": "float", "op": ">=", "default": 0.0, "areas": [{"rect": [0, 40, 60, 80], "value": 2.0}]},
-        "placeable": {"dtype": "int", "op": "==", "default": 0, "areas": [{"rect": [30, 20, 120, 80], "value": 1}]},
+        "weight": {"dtype": "float", "op": "<=", "default": 10.0, "areas": [{"shape_type": "rect", "rect": [60, 0, 120, 80], "value": 20.0}]},
+        "height": {"dtype": "float", "op": "<=", "default": 20.0, "areas": [{"shape_type": "rect", "rect": [0, 60, 120, 80], "value": 5.0}]},
+        "dry": {"dtype": "float", "op": ">=", "default": 0.0, "areas": [{"shape_type": "rect", "rect": [0, 40, 60, 80], "value": 2.0}]},
+        "placeable": {"dtype": "int", "op": "==", "default": 0, "areas": [{"shape_type": "rect", "rect": [30, 20, 120, 80], "value": 1}]},
     }
 
     initial_placements = {
@@ -65,7 +65,7 @@ def main():
         grid_height=80,
         group_specs=groups,
         group_flow=flow,
-        forbidden_areas=forbidden_areas,
+        forbidden=forbidden,
         zone_constraints=zone_constraints,
         device=dev,
         max_steps=10,

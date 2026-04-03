@@ -302,14 +302,18 @@ Permanently blocked regions where no facility body or clearance may overlap.
 
 ```json
 "zones": {
-  "forbidden_areas": [
-    { "rect": [0, 0, 150, 200] },
-    { "rect": [400, 300, 500, 500] }
+  "forbidden": [
+    { "shape_type": "rect", "rect": [0, 0, 150, 200] },
+    { "shape_type": "irregular", "polygon": [[320, 320], [420, 320], [420, 420], [360, 470], [320, 420]] }
   ]
 }
 ```
 
-Each `rect` is `[x0, y0, x1, y1]` (half-open: covers `[x0, x1) x [y0, y1)`).
+Area shape rules:
+
+- `shape_type` is required.
+- `shape_type: "rect"` uses `rect: [x0, y0, x1, y1]` (half-open: covers `[x0, x1) x [y0, y1)`).
+- `shape_type: "irregular"` uses `polygon: [[x, y], ...]` in world/grid coordinates.
 
 #### Constraint Zones
 
@@ -323,7 +327,7 @@ Attribute-based spatial zones. Each constraint has a grid-wide default value and
       "op": "<=",
       "default": 10.0,
       "areas": [
-        { "rect": [300, 0, 500, 500], "value": 25.0 }
+        { "shape_type": "rect", "rect": [300, 0, 500, 500], "value": 25.0 }
       ]
     },
     "dry": {
@@ -332,7 +336,8 @@ Attribute-based spatial zones. Each constraint has a grid-wide default value and
       "exclusive": "body",
       "default": { "value": 0.0, "id": "outside_dry_room" },
       "areas": [
-        { "rect": [120, 80, 260, 240], "value": 1.0, "id": "dry_room_A" }
+        { "shape_type": "rect", "rect": [120, 80, 260, 240], "value": 1.0, "id": "dry_room_A" },
+        { "shape_type": "irregular", "polygon": [[280, 90], [410, 90], [430, 220], [300, 250]], "value": 1.0, "id": "dry_room_B" }
       ]
     }
   }
@@ -345,7 +350,9 @@ Attribute-based spatial zones. Each constraint has a grid-wide default value and
 | `op` | string | Comparison operator: `<`, `<=`, `>`, `>=`, `==`, `!=` |
 | `exclusive` | bool or `"body"` | Optional. If enabled, facility body must not cross this constraint's zone-id boundary |
 | `default` | value or object | Grid-wide default value. Exclusive mode also accepts `{ "value": ..., "id": ... }` |
-| `areas[].rect` | `[x0,y0,x1,y1]` | Region with override value |
+| `areas[].shape_type` | string | Required. `"rect"` or `"irregular"` |
+| `areas[].rect` | `[x0,y0,x1,y1]` | Required when `shape_type="rect"` |
+| `areas[].polygon` | `[[x,y], ...]` | Required when `shape_type="irregular"` |
 | `areas[].value` | value | Override zone value in this region |
 | `areas[].id` | scalar | Required in exclusive mode. Physical partition id for boundary checks |
 
@@ -718,7 +725,7 @@ The `op` is read as "the facility's value must be `op` the zone's value".
       "op": "<=",
       "default": 10.0,
       "areas": [
-        { "rect": [300, 0, 500, 500], "value": 25.0 }
+        { "shape_type": "rect", "rect": [300, 0, 500, 500], "value": 25.0 }
       ]
     }
   }
@@ -740,21 +747,21 @@ Grid layout:
 - **Facility A** (`weight: 3.0`, op `<=`): 3.0 <= 10.0 = valid everywhere
 - **Facility E** (`weight: 15.0`, op `<=`): 15.0 <= 10.0 = **invalid** in left zone; 15.0 <= 25.0 = valid in right zone
 
-**Example with dry constraint:**
+**Example with height constraint (non-exclusive):**
 
 ```json
-"dry": {
+"height": {
   "dtype": "float",
-  "op": ">=",
-  "default": 1.0,
+  "op": "<=",
+  "default": 20.0,
   "areas": [
-    { "rect": [0, 250, 250, 500], "value": 0.0 }
+    { "shape_type": "rect", "rect": [0, 350, 500, 500], "value": 30.0 }
   ]
 }
 ```
 
-- **Facility with `dry: 2.0`** (op `>=`): 2.0 >= 1.0 = valid in default area; 2.0 >= 0.0 = valid in override area --> valid everywhere
-- **Facility with `dry: 0.5`** (op `>=`): 0.5 >= 1.0 = **invalid** in default area; 0.5 >= 0.0 = valid in override area
+- **Facility with `height: 18.0`** (op `<=`): 18.0 <= 20.0 and 18.0 <= 30.0 -> valid everywhere
+- **Facility with `height: 24.0`** (op `<=`): 24.0 <= 20.0 is **invalid** in default area; 24.0 <= 30.0 is valid in override area
 
 #### Exclusive Zone Boundaries
 
@@ -775,8 +782,8 @@ Exclusive example (`dry`):
   "exclusive": "body",
   "default": { "value": 0.0, "id": "outside" },
   "areas": [
-    { "rect": [120, 80, 260, 240], "value": 1.0, "id": "dry_room_A" },
-    { "rect": [280, 80, 420, 240], "value": 1.0, "id": "dry_room_B" }
+    { "shape_type": "rect", "rect": [120, 80, 260, 240], "value": 1.0, "id": "dry_room_A" },
+    { "shape_type": "rect", "rect": [280, 80, 420, 240], "value": 1.0, "id": "dry_room_B" }
   ]
 }
 ```

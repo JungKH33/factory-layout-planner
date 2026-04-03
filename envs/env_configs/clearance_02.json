@@ -112,14 +112,15 @@
     ]
   ],
   "zones": {
-    "forbidden_areas": [
+    "forbidden": [
       {
         "rect": [
           0,
           0,
           150,
           200
-        ]
+        ],
+        "shape_type": "rect"
       }
     ]
   },

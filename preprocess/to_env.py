@@ -475,7 +475,7 @@ def build_zones(
     area_ceilings: List[Dict],
     area_weights: List[Dict],
     area_dry: List[Dict],
-    forbidden_areas: List[Dict],
+    forbidden: List[Dict],
     column_areas: List[Dict],
     scale: float,
     *,
@@ -499,6 +499,7 @@ def build_zones(
     placeable_constraint_areas = []
     for area in placeable_areas:
         placeable_constraint_areas.append({
+            "shape_type": "rect",
             "rect": convert_rect(area, scale),
             "value": 1,
         })
@@ -514,6 +515,7 @@ def build_zones(
     height_constraint_areas = []
     for area in area_ceilings:
         height_constraint_areas.append({
+            "shape_type": "rect",
             "rect": convert_rect(area, scale),
             "value": area.get("ceilingHeight", area.get("value", 0)),
         })
@@ -530,6 +532,7 @@ def build_zones(
     weight_constraint_areas = []
     for area in area_weights:
         weight_constraint_areas.append({
+            "shape_type": "rect",
             "rect": convert_rect(area, scale),
             "value": area.get("weight", area.get("value", 0)),
         })
@@ -546,6 +549,7 @@ def build_zones(
     dry_constraint_areas = []
     for area in area_dry:
         dry_constraint_areas.append({
+            "shape_type": "rect",
             "rect": convert_rect(area, scale),
             "value": area.get("dry", area.get("value", 0)),
         })
@@ -560,15 +564,15 @@ def build_zones(
     
     # Forbidden areas (from forbiddenAreas + columnAreas)
     forbidden_list = []
-    for area in forbidden_areas:
-        forbidden_list.append({"rect": convert_rect(area, scale)})
+    for area in forbidden:
+        forbidden_list.append({"shape_type": "rect", "rect": convert_rect(area, scale)})
     for area in column_areas:
-        forbidden_list.append({"rect": convert_rect(area, scale)})
+        forbidden_list.append({"shape_type": "rect", "rect": convert_rect(area, scale)})
     
     zones: Dict[str, Any] = {"constraints": constraints}
 
     # if forbidden_list:
-    #     zones["forbidden_areas"] = forbidden_list
+    #     zones["forbidden"] = forbidden_list
 
     return zones
 
@@ -825,7 +829,7 @@ def convert_sma_to_env(
     logger.info("Flow edges: %d", len(flow))
     
     # Zones (forbidden, placement, height, weight, dry)
-    forbidden_areas = data.get("forbiddenAreas", [])
+    forbidden = data.get("forbiddenAreas", [])
     column_areas = data.get("columnAreas", [])
     placeable_areas = data.get("placeableAreas", [])
     area_ceilings = data.get("areaCeilings", [])
@@ -833,13 +837,13 @@ def convert_sma_to_env(
     area_dry = data.get("areaDry", [])
     zones = build_zones(
         placeable_areas, area_ceilings, area_weights, area_dry,
-        forbidden_areas, column_areas, scale,
+        forbidden, column_areas, scale,
         default_height=factory_dim.get("ceilingHeight", None),
         default_weight=factory_dim.get("weight", None),
         default_dry=factory_dim.get("dry", None),
         default_placeable=0,
     )
-    logger.info("Forbidden areas: %d", len(zones.get("forbidden_areas", [])))
+    logger.info("Forbidden areas: %d", len(zones.get("forbidden", [])))
     constraints = zones.get("constraints", {})
     logger.info("Constraints: %d", len(constraints) if isinstance(constraints, dict) else 0)
     if isinstance(constraints, dict):

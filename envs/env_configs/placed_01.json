@@ -1,41 +1,132 @@
 {
-  "grid": { "width": 500, "height": 500, "grid_size": 1.0 },
+  "grid": {
+    "width": 500,
+    "height": 500,
+    "grid_size": 1.0
+  },
   "env": {
     "max_candidates": 70,
     "log": true
   },
   "groups": {
-    "A": { "width": 160, "height": 80, "rotatable": true },
-    "B": { "width": 120, "height": 120, "rotatable": false },
-    "C": { "width": 100, "height": 60, "rotatable": true },
-    "D": { "width": 80, "height": 80, "rotatable": true },
-    "E": { "width": 140, "height": 100, "rotatable": true },
-    "F": { "width": 180, "height": 60, "rotatable": false },
-    "G": { "width": 70, "height": 70, "rotatable": true },
-    "H": { "width": 240, "height": 100, "rotatable": true },
-    "I": { "width": 110, "height": 90, "rotatable": true }
+    "A": {
+      "width": 160,
+      "height": 80,
+      "rotatable": true
+    },
+    "B": {
+      "width": 120,
+      "height": 120,
+      "rotatable": false
+    },
+    "C": {
+      "width": 100,
+      "height": 60,
+      "rotatable": true
+    },
+    "D": {
+      "width": 80,
+      "height": 80,
+      "rotatable": true
+    },
+    "E": {
+      "width": 140,
+      "height": 100,
+      "rotatable": true
+    },
+    "F": {
+      "width": 180,
+      "height": 60,
+      "rotatable": false
+    },
+    "G": {
+      "width": 70,
+      "height": 70,
+      "rotatable": true
+    },
+    "H": {
+      "width": 240,
+      "height": 100,
+      "rotatable": true
+    },
+    "I": {
+      "width": 110,
+      "height": 90,
+      "rotatable": true
+    }
   },
   "flow": [
-    ["A", "B", 1.0],
-    ["A", "D", 0.6],
-    ["B", "C", 1.0],
-    ["B", "E", 0.4],
-    ["C", "F", 0.7],
-    ["D", "E", 0.5],
-    ["D", "G", 0.3],
-    ["E", "H", 0.6],
-    ["F", "I", 0.4]
+    [
+      "A",
+      "B",
+      1.0
+    ],
+    [
+      "A",
+      "D",
+      0.6
+    ],
+    [
+      "B",
+      "C",
+      1.0
+    ],
+    [
+      "B",
+      "E",
+      0.4
+    ],
+    [
+      "C",
+      "F",
+      0.7
+    ],
+    [
+      "D",
+      "E",
+      0.5
+    ],
+    [
+      "D",
+      "G",
+      0.3
+    ],
+    [
+      "E",
+      "H",
+      0.6
+    ],
+    [
+      "F",
+      "I",
+      0.4
+    ]
   ],
   "zones": {
-    "forbidden_areas": [
-      { "rect": [0, 0, 150, 200] }
+    "forbidden": [
+      {
+        "rect": [
+          0,
+          0,
+          150,
+          200
+        ],
+        "shape_type": "rect"
+      }
     ]
   },
   "reset": {
     "initial_placements": {
-      "B": [260.0, 160.0, 0],
-      "A": [280.0, 290.0, 0]
+      "B": [
+        260.0,
+        160.0,
+        0
+      ],
+      "A": [
+        280.0,
+        290.0,
+        0
+      ]
     }
   }
 }
-

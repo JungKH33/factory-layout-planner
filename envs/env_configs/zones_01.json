@@ -222,14 +222,15 @@
     ]
   ],
   "zones": {
-    "forbidden_areas": [
+    "forbidden": [
       {
         "rect": [
           0,
           0,
           150,
           200
-        ]
+        ],
+        "shape_type": "rect"
       }
     ],
     "constraints": {
@@ -245,7 +246,8 @@
               500,
               500
             ],
-            "value": 25.0
+            "value": 25.0,
+            "shape_type": "rect"
           }
         ]
       },
@@ -261,7 +263,8 @@
               500,
               500
             ],
-            "value": 30.0
+            "value": 30.0,
+            "shape_type": "rect"
           }
         ]
       },
@@ -277,7 +280,8 @@
               250,
               500
             ],
-            "value": 0.0
+            "value": 0.0,
+            "shape_type": "rect"
           }
         ]
       }

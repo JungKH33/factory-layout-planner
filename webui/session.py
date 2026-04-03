@@ -219,16 +219,16 @@ class Session:
                 id=id_value,
             )
 
-        # Extract forbidden_areas from engine
-        forbidden_areas_out: list[ZoneRect] = []
-        areas = getattr(engine, "forbidden_areas", None)
+        # Extract forbidden from engine
+        forbidden_out: list[ZoneRect] = []
+        areas = getattr(engine, "forbidden", None)
         if isinstance(areas, list):
             for a in areas:
                 if not isinstance(a, dict):
                     continue
                 z = _zone_rect_from_dict(a)
                 if z is not None:
-                    forbidden_areas_out.append(z)
+                    forbidden_out.append(z)
 
         # Extract generic constraints zones
         constraint_zones: Dict[str, List[ZoneRect]] = {}
@@ -286,7 +286,7 @@ class Session:
             terminated=self.terminated or len(engine.get_state().remaining) == 0,
             can_undo=self.can_undo(),
             can_redo=self.can_redo(),
-            forbidden_areas=forbidden_areas_out,
+            forbidden=forbidden_out,
             constraint_zones=constraint_zones,
             flow_edges=flow_edges,
         )

@@ -66,7 +66,7 @@ def _set_visible_group(group: list, v: bool) -> None:
 
 def _default_layer_visibility(constraint_names: list = ()) -> dict:
     vis = {
-        "forbidden_areas": True,
+        "forbidden": True,
         "invalid_mask": False,
         "clearance_mask": True,
         "flow": True,
@@ -88,7 +88,7 @@ def _apply_layer_visibility(groups: dict, vis: dict) -> None:
 
 def _legend_proxies(constraint_names: list = ()) -> list:
     proxies = [
-        patches.Patch(facecolor="#d62728", edgecolor="#d62728", alpha=0.15, label="forbidden_areas"),
+        patches.Patch(facecolor="#d62728", edgecolor="#d62728", alpha=0.15, label="forbidden"),
         patches.Patch(facecolor="#8b0000", edgecolor="#8b0000", alpha=0.10, label="invalid_mask"),
         patches.Patch(facecolor="lightgray", edgecolor="gray", alpha=0.30, label="clearance_mask"),
         Line2D([0], [0], color="blue", lw=1.8, alpha=0.45, label="flow"),
@@ -379,7 +379,7 @@ def _draw_layout_from_data(
             misc_artists["routes"].append(label)
 
     groups: dict = {
-        "forbidden_areas": forbidden_artists,
+        "forbidden": forbidden_artists,
         "invalid_mask": misc_artists["invalid_mask"],
         "clearance_mask": misc_artists["clearance_mask"],
         "flow": misc_artists["flow"],
@@ -474,7 +474,7 @@ class MatplotlibBackend(VisualizerBackend):
         groups = _draw_layout_from_data(ax, data)
 
         if not show_masks:
-            for a in groups.get("forbidden_areas", []):
+            for a in groups.get("forbidden", []):
                 a.set_visible(False)
             for a in groups.get("clearance_mask", []):
                 a.set_visible(False)

@@ -193,8 +193,8 @@ def extract_layout_data(
 
     # --- Forbidden areas ---
     forbidden_rects: List[Tuple[int, int, int, int]] = []
-    if hasattr(engine, "forbidden_areas") and isinstance(engine.forbidden_areas, list):
-        for a in engine.forbidden_areas:
+    if hasattr(engine, "forbidden") and isinstance(engine.forbidden, list):
+        for a in engine.forbidden:
             if not isinstance(a, dict):
                 continue
             rect = a.get("rect", None)

@@ -27,7 +27,7 @@ class GridMaps:
         grid_height: int,
         grid_width: int,
         device: torch.device,
-        forbidden_areas: List[Dict[str, Any]],
+        forbidden: List[Dict[str, Any]],
         zone_constraints: Dict[str, Dict[str, Any]],
         backend_selection: str = "static",
     ) -> None:
@@ -43,7 +43,7 @@ class GridMaps:
             self._H,
             self._W,
             self._device,
-            forbidden_areas,
+            forbidden,
         )
         self._zone_constraints = dict(zone_constraints or {})
         (
@@ -1400,20 +1400,87 @@ class GridMaps:
         H: int,
         W: int,
         device: torch.device,
-        forbidden_areas: List[Dict[str, Any]],
+        forbidden: List[Dict[str, Any]],
     ) -> torch.Tensor:
         inv = torch.zeros((H, W), dtype=torch.bool, device=device)
-        for area in forbidden_areas:
-            if not isinstance(area, dict) or "rect" not in area:
+        for i, area in enumerate(forbidden):
+            if not isinstance(area, dict):
                 continue
-            rect = area["rect"]
-            x0 = max(0, min(W, int(rect[0])))
-            x1 = max(0, min(W, int(rect[2])))
-            y0 = max(0, min(H, int(rect[1])))
-            y1 = max(0, min(H, int(rect[3])))
-            if x1 > x0 and y1 > y0:
-                inv[y0:y1, x0:x1] = True
+            area_mask = GridMaps._build_area_mask(
+                H=H,
+                W=W,
+                device=device,
+                area=area,
+                path=f"forbidden[{i}]",
+            )
+            inv |= area_mask
         return inv
+
+    @staticmethod
+    def _build_area_mask(
+        *,
+        H: int,
+        W: int,
+        device: torch.device,
+        area: Dict[str, Any],
+        path: str,
+    ) -> torch.Tensor:
+        """Rasterize one area config into a bool mask over the full grid."""
+        mask = torch.zeros((H, W), dtype=torch.bool, device=device)
+        if "shape_type" not in area:
+            raise ValueError(f"{path}.shape_type is required ('rect' or 'irregular')")
+        area_type = str(area.get("shape_type", "")).strip().lower()
+        if area_type == "rect":
+            rect = area.get("rect", None)
+            if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
+                raise ValueError(f"{path}.rect must be [x0,y0,x1,y1]")
+            try:
+                x0 = max(0, min(W, int(float(rect[0]))))
+                x1 = max(0, min(W, int(float(rect[2]))))
+                y0 = max(0, min(H, int(float(rect[1]))))
+                y1 = max(0, min(H, int(float(rect[3]))))
+            except Exception as e:
+                raise ValueError(f"{path}.rect must contain numeric coordinates") from e
+            if x1 > x0 and y1 > y0:
+                mask[y0:y1, x0:x1] = True
+            return mask
+
+        if area_type == "irregular":
+            polygon = area.get("polygon", None)
+            if not (isinstance(polygon, (list, tuple)) and len(polygon) >= 3):
+                raise ValueError(f"{path}.polygon must be [[x,y], ...] with at least 3 points")
+
+            points: list[tuple[float, float]] = []
+            for pi, p in enumerate(polygon):
+                if not (isinstance(p, (list, tuple)) and len(p) == 2):
+                    raise ValueError(f"{path}.polygon[{pi}] must be [x,y]")
+                try:
+                    points.append((float(p[0]), float(p[1])))
+                except Exception as e:
+                    raise ValueError(f"{path}.polygon[{pi}] must contain numeric x,y") from e
+
+            verts = np.asarray(points, dtype=np.float64)
+            x_min = max(0, min(W, int(np.floor(float(verts[:, 0].min())))))
+            x_max = max(0, min(W, int(np.ceil(float(verts[:, 0].max())))))
+            y_min = max(0, min(H, int(np.floor(float(verts[:, 1].min())))))
+            y_max = max(0, min(H, int(np.ceil(float(verts[:, 1].max())))))
+            if x_max <= x_min or y_max <= y_min:
+                return mask
+
+            from matplotlib.path import Path as MplPath
+
+            xs = np.arange(x_min, x_max, dtype=np.float64) + 0.5
+            ys = np.arange(y_min, y_max, dtype=np.float64) + 0.5
+            gx, gy = np.meshgrid(xs, ys)
+            pts = np.column_stack([gx.ravel(), gy.ravel()])
+            inside = MplPath(verts).contains_points(pts).reshape(y_max - y_min, x_max - x_min)
+            if np.any(inside):
+                mask[y_min:y_max, x_min:x_max] = torch.as_tensor(
+                    inside, dtype=torch.bool, device=device
+                )
+            return mask
+
+        raise ValueError(f"{path}.shape_type must be 'rect' or 'irregular', got {area_type!r}")
 
     def _build_constraint_maps(
         self,
@@ -1497,19 +1564,20 @@ class GridMaps:
                 id_code[default_label] = 0
                 id_map.fill_(0)
 
-            for area in areas:
+            for i, area in enumerate(areas):
                 if not isinstance(area, dict):
                     continue
-                rect = area.get("rect", None)
                 value = area.get("value", None)
-                if rect is None or value is None:
+                if value is None:
                     continue
-                x0, y0, x1, y1 = rect
-                x0 = max(0, min(W, int(x0)))
-                x1 = max(0, min(W, int(x1)))
-                y0 = max(0, min(H, int(y0)))
-                y1 = max(0, min(H, int(y1)))
-                if x1 <= x0 or y1 <= y0:
+                area_mask = self._build_area_mask(
+                    H=H,
+                    W=W,
+                    device=device,
+                    area=area,
+                    path=f"constraints.{cname}.areas[{i}]",
+                )
+                if not bool(area_mask.any().item()):
                     continue
                 v = self._coerce_constraint_value(
                     value,
@@ -1517,7 +1585,7 @@ class GridMaps:
                     cname=str(cname),
                     ctx="area",
                 )
-                m[y0:y1, x0:x1] = v
+                m[area_mask] = v
                 if ex_enabled:
                     area_id = area.get("id", None)
                     if area_id is None:
@@ -1527,7 +1595,7 @@ class GridMaps:
                     area_label = self._coerce_constraint_id(area_id, cname=str(cname), ctx="area")
                     if area_label not in id_code:
                         id_code[area_label] = int(len(id_code))
-                    id_map[y0:y1, x0:x1] = int(id_code[area_label])
+                    id_map[area_mask] = int(id_code[area_label])
 
             name = str(cname)
             maps[name] = m

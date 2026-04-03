@@ -80,7 +80,7 @@ class SessionState(BaseModel):
     can_redo: bool
     
     # Zones and overlays
-    forbidden_areas: List[ZoneRect] = []
+    forbidden: List[ZoneRect] = []
     constraint_zones: Dict[str, List[ZoneRect]] = {}
     flow_edges: List[FlowEdge] = []
 

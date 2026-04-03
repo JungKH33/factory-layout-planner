@@ -45,10 +45,16 @@ class FactoryLayoutEnv(gym.Env):
         grid_height: int,
         group_specs: Dict[GroupId, GroupSpec],
         group_flow: Optional[Dict[GroupId, Dict[GroupId, float]]] = None,
-        # Forbidden areas: [{"rect": [x0, y0, x1, y1]}, ...]
-        forbidden_areas: Optional[List[Dict[str, Any]]] = None,
+        # Forbidden zones:
+        # - rect: {"shape_type": "rect", "rect": [x0, y0, x1, y1]}
+        # - irregular: {"shape_type": "irregular", "polygon": [[x, y], ...]}
+        forbidden: Optional[List[Dict[str, Any]]] = None,
         # Generic map constraints:
-        # zones.constraints.<name> = {"dtype": ..., "op": ..., "default": ..., "areas": [{"rect": [...], "value": ...}]}
+        # zones.constraints.<name> = {
+        #   "dtype": ..., "op": ..., "default": ...,
+        #   "areas": [{"shape_type": "rect", "rect": [...], "value": ...}] or
+        #            [{"shape_type": "irregular", "polygon": [[x,y], ...], "value": ...}]
+        # }
         zone_constraints: Optional[Dict[str, Dict[str, Any]]] = None,
         device: Optional[torch.device] = None,
         max_steps: Optional[int] = None,
@@ -63,7 +69,7 @@ class FactoryLayoutEnv(gym.Env):
         self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
         group_specs_norm = self._normalize_group_specs(group_specs)
         group_flow_norm = dict(group_flow or {})
-        self.forbidden_areas = list(forbidden_areas or [])
+        self.forbidden = list(forbidden or [])
         self.zone_constraints = dict(zone_constraints or {})
         self.max_steps = max_steps
         self.reward_scale = float(reward_scale)
@@ -95,7 +101,7 @@ class FactoryLayoutEnv(gym.Env):
             grid_height=self.grid_height,
             grid_width=self.grid_width,
             device=self.device,
-            forbidden_areas=self.forbidden_areas,
+            forbidden=self.forbidden,
             zone_constraints=self.zone_constraints,
             backend_selection=backend_selection,
         )
@@ -595,7 +601,7 @@ class FactoryLayoutEnv(gym.Env):
             "placements": placements,
             "groups": groups_data,
             "flow_edges": flow_edges,
-            "forbidden_areas": list(self.forbidden_areas),
+            "forbidden": list(self.forbidden),
             "zone_constraints": dict(self.zone_constraints),
         }
     
@@ -802,31 +808,31 @@ if __name__ == "__main__":
     group_flow = {"A": {"B": 1.0}, "B": {"C": 0.7}}
 
     # 왼쪽 하단 forbidden + 제약 맵
-    forbidden_areas = [{"rect": [0, 0, 30, 20]}]
+    forbidden = [{"shape_type": "rect", "rect": [0, 0, 30, 20]}]
     zone_constraints = {
         "weight": {
             "dtype": "float",
             "op": "<=",
             "default": 10.0,
-            "areas": [{"rect": [60, 0, 120, 80], "value": 20.0}],
+            "areas": [{"shape_type": "rect", "rect": [60, 0, 120, 80], "value": 20.0}],
         },
         "height": {
             "dtype": "float",
             "op": "<=",
             "default": 20.0,
-            "areas": [{"rect": [0, 60, 120, 80], "value": 5.0}],
+            "areas": [{"shape_type": "rect", "rect": [0, 60, 120, 80], "value": 5.0}],
         },
         "dry": {
             "dtype": "float",
             "op": ">=",
             "default": 0.0,
-            "areas": [{"rect": [0, 40, 60, 80], "value": 2.0}],
+            "areas": [{"shape_type": "rect", "rect": [0, 40, 60, 80], "value": 2.0}],
         },
         "placeable": {
             "dtype": "int",
             "op": "==",
             "default": 0,
-            "areas": [{"rect": [30, 20, 120, 80], "value": 1}],
+            "areas": [{"shape_type": "rect", "rect": [30, 20, 120, 80], "value": 1}],
         },
     }
 
@@ -835,7 +841,7 @@ if __name__ == "__main__":
     env = FactoryLayoutEnv(
         grid_width=120, grid_height=80,
         group_specs=group_specs, group_flow=group_flow,
-        forbidden_areas=forbidden_areas,
+        forbidden=forbidden,
         zone_constraints=zone_constraints,
         device=dev, max_steps=10, log=True,
     )

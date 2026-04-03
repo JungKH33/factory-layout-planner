@@ -1,96 +1,252 @@
 {
-  "grid": { "width": 300, "height": 300, "grid_size": 1.0 },
+  "grid": {
+    "width": 300,
+    "height": 300,
+    "grid_size": 1.0
+  },
   "env": {
     "reward_scale": 100.0,
     "penalty_weight": 50000.0
   },
   "groups": {
     "A": {
-      "zone_values": { "weight": 20 },
+      "zone_values": {
+        "weight": 20
+      },
       "clearance": 3,
       "variants": [
         {
-          "width": 60, "height": 30,
-          "entries_rel": [[0, 15]],
-          "exits_rel": [[60, 15]],
-          "rotatable": true, "mirrorable": false
+          "width": 60,
+          "height": 30,
+          "entries_rel": [
+            [
+              0,
+              15
+            ]
+          ],
+          "exits_rel": [
+            [
+              60,
+              15
+            ]
+          ],
+          "rotatable": true,
+          "mirrorable": false
         },
         {
-          "width": 40, "height": 40,
-          "entries_rel": [[0, 20]],
-          "exits_rel": [[40, 20]],
-          "rotatable": false, "mirrorable": false
+          "width": 40,
+          "height": 40,
+          "entries_rel": [
+            [
+              0,
+              20
+            ]
+          ],
+          "exits_rel": [
+            [
+              40,
+              20
+            ]
+          ],
+          "rotatable": false,
+          "mirrorable": false
         }
       ]
     },
     "B": {
-      "zone_values": { "weight": 15 },
+      "zone_values": {
+        "weight": 15
+      },
       "clearance": 2,
       "variants": [
         {
-          "width": 80, "height": 30,
-          "entries_rel": [[0, 15]],
-          "exits_rel": [[80, 15]],
-          "rotatable": true, "mirrorable": false
+          "width": 80,
+          "height": 30,
+          "entries_rel": [
+            [
+              0,
+              15
+            ]
+          ],
+          "exits_rel": [
+            [
+              80,
+              15
+            ]
+          ],
+          "rotatable": true,
+          "mirrorable": false
         },
         {
-          "width": 50, "height": 50,
-          "entries_rel": [[0, 25], [25, 0]],
-          "exits_rel": [[50, 25], [25, 50]],
-          "rotatable": true, "mirrorable": false
+          "width": 50,
+          "height": 50,
+          "entries_rel": [
+            [
+              0,
+              25
+            ],
+            [
+              25,
+              0
+            ]
+          ],
+          "exits_rel": [
+            [
+              50,
+              25
+            ],
+            [
+              25,
+              50
+            ]
+          ],
+          "rotatable": true,
+          "mirrorable": false
         }
       ]
     },
     "C": {
-      "width": 60, "height": 40,
-      "entries_rel": [[0, 20]],
-      "exits_rel": [[60, 20]],
+      "width": 60,
+      "height": 40,
+      "entries_rel": [
+        [
+          0,
+          20
+        ]
+      ],
+      "exits_rel": [
+        [
+          60,
+          20
+        ]
+      ],
       "rotatable": true,
       "clearance": 2
     },
     "D": {
-      "width": 45, "height": 35,
-      "entries_rel": [[0, 17]],
-      "exits_rel": [[45, 17]],
+      "width": 45,
+      "height": 35,
+      "entries_rel": [
+        [
+          0,
+          17
+        ]
+      ],
+      "exits_rel": [
+        [
+          45,
+          17
+        ]
+      ],
       "rotatable": true,
       "clearance": 2
     },
     "E": {
-      "zone_values": { "weight": 25 },
+      "zone_values": {
+        "weight": 25
+      },
       "clearance": 3,
       "variants": [
         {
-          "width": 70, "height": 25,
-          "entries_rel": [[0, 12]],
-          "exits_rel": [[70, 12]],
-          "rotatable": true, "mirrorable": false
+          "width": 70,
+          "height": 25,
+          "entries_rel": [
+            [
+              0,
+              12
+            ]
+          ],
+          "exits_rel": [
+            [
+              70,
+              12
+            ]
+          ],
+          "rotatable": true,
+          "mirrorable": false
         },
         {
-          "width": 55, "height": 35,
-          "entries_rel": [[0, 17]],
-          "exits_rel": [[55, 17]],
-          "rotatable": true, "mirrorable": false
+          "width": 55,
+          "height": 35,
+          "entries_rel": [
+            [
+              0,
+              17
+            ]
+          ],
+          "exits_rel": [
+            [
+              55,
+              17
+            ]
+          ],
+          "rotatable": true,
+          "mirrorable": false
         },
         {
-          "width": 35, "height": 50,
-          "entries_rel": [[0, 25]],
-          "exits_rel": [[35, 25]],
-          "rotatable": true, "mirrorable": false
+          "width": 35,
+          "height": 50,
+          "entries_rel": [
+            [
+              0,
+              25
+            ]
+          ],
+          "exits_rel": [
+            [
+              35,
+              25
+            ]
+          ],
+          "rotatable": true,
+          "mirrorable": false
         }
       ]
     }
   },
   "flow": [
-    ["A", "B", 1.0],
-    ["A", "C", 0.6],
-    ["B", "C", 0.8],
-    ["B", "D", 0.5],
-    ["C", "E", 1.0],
-    ["D", "E", 0.7]
+    [
+      "A",
+      "B",
+      1.0
+    ],
+    [
+      "A",
+      "C",
+      0.6
+    ],
+    [
+      "B",
+      "C",
+      0.8
+    ],
+    [
+      "B",
+      "D",
+      0.5
+    ],
+    [
+      "C",
+      "E",
+      1.0
+    ],
+    [
+      "D",
+      "E",
+      0.7
+    ]
   ],
   "zones": {
-    "forbidden_areas": [
-      { "rect": [0, 0, 50, 50] }
+    "forbidden": [
+      {
+        "rect": [
+          0,
+          0,
+          50,
+          50
+        ],
+        "shape_type": "rect"
+      }
     ]
   },
   "reset": {}

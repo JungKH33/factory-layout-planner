@@ -266,7 +266,7 @@ class PlotlyBackend(VisualizerBackend):
                 fig.add_trace(_build_rect_trace(
                     go, x0, y0, x1, y1,
                     color="#d62728", alpha=0.15,
-                    name="forbidden_areas", showlegend=first_forb,
+                    name="forbidden", showlegend=first_forb,
                 ))
                 first_forb = False
 

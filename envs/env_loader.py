@@ -93,6 +93,58 @@ def load_env(
             return (n, n, n, n)
         return None
 
+    def _normalize_zone_area(
+        area: Any,
+        *,
+        path: str,
+        require_value: bool = False,
+    ) -> Dict[str, Any]:
+        if not isinstance(area, dict):
+            raise ValueError(f"{path} must be an object")
+
+        if "shape_type" not in area:
+            raise ValueError(f"{path}.shape_type is required ('rect' or 'irregular')")
+        area_type = str(area.get("shape_type", "")).strip().lower()
+        if area_type not in {"rect", "irregular"}:
+            raise ValueError(f"{path}.shape_type must be 'rect' or 'irregular', got {area_type!r}")
+
+        out: Dict[str, Any] = {"shape_type": area_type}
+
+        if area_type == "rect":
+            rect = area.get("rect", None)
+            if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
+                raise ValueError(f"{path}.rect must be [x0,y0,x1,y1]")
+            vals: List[float] = []
+            for j, v in enumerate(rect):
+                try:
+                    vals.append(float(v))
+                except Exception as e:
+                    raise ValueError(f"{path}.rect[{j}] must be a number, got {v!r}") from e
+            out["rect"] = vals
+        else:
+            polygon = area.get("polygon", None)
+            if not (isinstance(polygon, (list, tuple)) and len(polygon) >= 3):
+                raise ValueError(f"{path}.polygon must be [[x,y], ...] with at least 3 points")
+            pts: List[List[float]] = []
+            for pi, p in enumerate(polygon):
+                if not (isinstance(p, (list, tuple)) and len(p) == 2):
+                    raise ValueError(f"{path}.polygon[{pi}] must be [x,y]")
+                try:
+                    x = float(p[0])
+                    y = float(p[1])
+                except Exception as e:
+                    raise ValueError(f"{path}.polygon[{pi}] must contain numeric x,y") from e
+                pts.append([x, y])
+            out["polygon"] = pts
+
+        if require_value:
+            if "value" not in area:
+                raise ValueError(f"{path} must contain key 'value'")
+            out["value"] = area["value"]
+        if "id" in area and area["id"] is not None:
+            out["id"] = area["id"]
+        return out
+
     group_specs: Dict[GroupId, GroupSpec] = {}
     for gid, g in groups_cfg.items():
         variants_raw = g.get("variants")
@@ -232,12 +284,16 @@ def load_env(
         raise ValueError("flow must be a dict adjacency or an edge list")
 
     zones = data.get("zones", {}) if isinstance(data.get("zones"), dict) else {}
-    forbidden_areas: List[Dict[str, Any]] = list(zones.get("forbidden_areas", []))
-    if not isinstance(forbidden_areas, list):
-        raise ValueError("zones.forbidden_areas must be a list")
-    for i, a in enumerate(forbidden_areas):
-        if not isinstance(a, dict) or "rect" not in a:
-            raise ValueError(f"zones.forbidden_areas[{i}] must contain key 'rect'")
+    if "forbidden_areas" in zones:
+        raise ValueError("zones.forbidden_areas is not supported; use zones.forbidden")
+    forbidden_raw = zones.get("forbidden", [])
+    if not isinstance(forbidden_raw, list):
+        raise ValueError("zones.forbidden must be a list")
+    forbidden: List[Dict[str, Any]] = []
+    for i, a in enumerate(forbidden_raw):
+        forbidden.append(
+            _normalize_zone_area(a, path=f"zones.forbidden[{i}]")
+        )
 
     constraints_raw = zones.get("constraints", {})
     if not isinstance(constraints_raw, dict):
@@ -296,21 +352,16 @@ def load_env(
             raise ValueError(f"zones.constraints.{cname}.areas must be a list")
         norm_areas: List[Dict[str, Any]] = []
         for i, a in enumerate(areas):
-            if not isinstance(a, dict) or "rect" not in a or "value" not in a:
-                raise ValueError(
-                    f"zones.constraints.{cname}.areas[{i}] must contain keys 'rect' and 'value'"
-                )
-            rect = a["rect"]
-            if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
-                raise ValueError(f"zones.constraints.{cname}.areas[{i}].rect must be [x0,y0,x1,y1]")
-            area_id = a.get("id", None)
+            area_out = _normalize_zone_area(
+                a,
+                path=f"zones.constraints.{cname}.areas[{i}]",
+                require_value=True,
+            )
+            area_id = area_out.get("id", None)
             if exclusive and area_id is None:
                 raise ValueError(
                     f"zones.constraints.{cname}.areas[{i}]: exclusive=true requires key 'id'"
                 )
-            area_out: Dict[str, Any] = {"rect": list(rect), "value": a["value"]}
-            if area_id is not None:
-                area_out["id"] = area_id
             norm_areas.append(area_out)
         zone_constraints[str(cname)] = {
             "dtype": dtype,
@@ -326,7 +377,7 @@ def load_env(
         grid_height=grid_h,
         group_specs=group_specs,
         group_flow=flow,
-        forbidden_areas=forbidden_areas,
+        forbidden=forbidden,
         zone_constraints=zone_constraints,
         device=device,
         reward_scale=float(env_cfg.get("reward_scale", 100.0)),
