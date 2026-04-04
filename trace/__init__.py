@@ -2,6 +2,8 @@
 from trace.schema import (
     DecisionNode,
     DecisionTree,
+    FlowDelta,
+    PhysicalContext,
     SearchOutput,
     Signal,
     Snapshot,
@@ -14,6 +16,8 @@ __all__ = [
     "DecisionNode",
     "DecisionTree",
     "Explorer",
+    "FlowDelta",
+    "PhysicalContext",
     "SearchOutput",
     "Signal",
     "Snapshot",

@@ -14,6 +14,76 @@ from search.base import SearchOutput  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
+# PhysicalContext — physical placement result attached to a decision step
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FlowDelta:
+    """Single flow edge affected by a placement."""
+    src: str
+    dst: str
+    weight: float
+    distance: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"src": self.src, "dst": self.dst, "weight": self.weight,
+                "distance": self.distance}
+
+
+@dataclass
+class PhysicalContext:
+    """Physical placement geometry and cost impact for a decision step.
+
+    Attached to :class:`DecisionNode` after a step is executed.  Adapter- and
+    agent-agnostic — derived purely from engine-level placement results.
+    """
+
+    gid: str
+    x: float
+    """Bottom-left x."""
+    y: float
+    """Bottom-left y."""
+    w: float
+    h: float
+    rotation: int
+    variant_index: int
+
+    x_center: float
+    y_center: float
+
+    entries: List[Tuple[float, float]]
+    exits: List[Tuple[float, float]]
+
+    delta_cost: float
+    cost_before: float
+    cost_after: float
+
+    affected_flows: List[FlowDelta] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "gid": self.gid,
+            "x": self.x, "y": self.y, "w": self.w, "h": self.h,
+            "rotation": self.rotation, "variant_index": self.variant_index,
+            "x_center": self.x_center, "y_center": self.y_center,
+            "entries": self.entries, "exits": self.exits,
+            "delta_cost": self.delta_cost,
+            "cost_before": self.cost_before, "cost_after": self.cost_after,
+            "affected_flows": [f.to_dict() for f in self.affected_flows],
+        }
+
+    def summary(self) -> str:
+        """One-line human-readable summary."""
+        rot = f" R{self.rotation}" if self.rotation else ""
+        sign = "+" if self.delta_cost >= 0 else ""
+        return (
+            f"{self.gid} at ({self.x_center:.0f},{self.y_center:.0f}) "
+            f"{self.w:.0f}x{self.h:.0f}{rot} "
+            f"delta={sign}{self.delta_cost:.1f} cost={self.cost_after:.1f}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Signal — one source's recommendation at a decision point
 # ---------------------------------------------------------------------------
 
@@ -105,6 +175,9 @@ class DecisionNode:
     reward: float = 0.0
     cum_reward: float = 0.0
     cost_after: Optional[float] = None
+
+    # --- physical placement result (set after step) ---
+    physical: Optional[PhysicalContext] = None
 
     terminal: bool = False
 

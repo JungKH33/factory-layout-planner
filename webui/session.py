@@ -24,10 +24,13 @@ from webui.schemas import (
     SessionCreateRequest,
     SessionState,
     PlacedFacility,
+    PortInfo,
     CandidateInfo,
     SearchProgress,
     ZoneRect,
     FlowEdge,
+    FlowDeltaInfo,
+    PhysicalContextInfo,
 )
 
 
@@ -71,10 +74,14 @@ class Session:
         adapter = self.explorer.adapter
         node = self.explorer.current()
 
-        # Placed facilities
+        # Placed facilities — include port info from GroupPlacement
         placed = []
         for gid in engine.get_state().placed:
             p = engine.get_state().placements[gid]
+            entries = [PortInfo(x=float(pt[0]), y=float(pt[1]))
+                       for pt in getattr(p, "entry_points", [])]
+            exits = [PortInfo(x=float(pt[0]), y=float(pt[1]))
+                     for pt in getattr(p, "exit_points", [])]
             placed.append(PlacedFacility(
                 gid=str(gid),
                 x=float(p.x_bl),
@@ -82,6 +89,11 @@ class Session:
                 w=float(p.w),
                 h=float(p.h),
                 rot=int(p.rotation),
+                x_center=float(p.x_center),
+                y_center=float(p.y_center),
+                entries=entries,
+                exits=exits,
+                variant_index=int(getattr(p, "variant_index", 0)),
             ))
 
         # Candidates from node snapshot or build fresh
@@ -199,6 +211,27 @@ class Session:
                     edge.dst_y = float(getattr(p_dst, "y_center"))
                 flow_edges.append(edge)
 
+        # Physical context from the parent node (the node that performed the step to reach here)
+        last_physical_info = None
+        if node.parent_id is not None:
+            parent = self.explorer.tree.nodes[node.parent_id]
+            phys = parent.physical
+            if phys is not None:
+                last_physical_info = PhysicalContextInfo(
+                    gid=phys.gid,
+                    x=phys.x, y=phys.y, w=phys.w, h=phys.h,
+                    rotation=phys.rotation, variant_index=phys.variant_index,
+                    x_center=phys.x_center, y_center=phys.y_center,
+                    entries=[PortInfo(x=pt[0], y=pt[1]) for pt in phys.entries],
+                    exits=[PortInfo(x=pt[0], y=pt[1]) for pt in phys.exits],
+                    delta_cost=phys.delta_cost,
+                    cost_before=phys.cost_before, cost_after=phys.cost_after,
+                    affected_flows=[
+                        FlowDeltaInfo(src=fd.src, dst=fd.dst, weight=fd.weight, distance=fd.distance)
+                        for fd in phys.affected_flows
+                    ],
+                )
+
         return SessionState(
             grid_width=int(engine.grid_width),
             grid_height=int(engine.grid_height),
@@ -216,6 +249,7 @@ class Session:
             forbidden=forbidden_out,
             constraint_zones=constraint_zones,
             flow_edges=flow_edges,
+            last_physical=last_physical_info,
         )
 
 

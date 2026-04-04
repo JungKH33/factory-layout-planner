@@ -4,7 +4,8 @@ Usage::
 
     python -m trace.repl                           # default: basic_01.json, greedyv3
     python -m trace.repl --env envs/env_configs/mixed_01.json
-    python -m trace.repl --method greedyv4 --search mcts --sims 200
+    python -m trace.repl --method greedyv3 --search mcts --sims 200
+    python -m trace.repl --llm anthropic           # enable LLM critic/guided placement
 """
 from __future__ import annotations
 
@@ -55,13 +56,16 @@ def _top_actions(scores: np.ndarray, n: int = 5) -> str:
     return ", ".join(parts) if parts else "(none)"
 
 
-def _node_line(node, prefix: str = "") -> str:
+def _node_line(node, prefix: str = "", physical: bool = True) -> str:
     gid = node.group_id or "(done)"
     cost = _fmt_cost(node.cost_after)
     by = node.chosen_by or ""
     action = f"a{node.chosen_action}" if node.chosen_action is not None else ""
     term = " [TERMINAL]" if node.terminal else ""
-    return f"{prefix}[{node.id}] step={node.step} gid={gid} {action} cost={cost} by={by}{term}"
+    phys = ""
+    if physical and node.physical is not None:
+        phys = f" | {node.physical.summary()}"
+    return f"{prefix}[{node.id}] step={node.step} gid={gid} {action} cost={cost} by={by}{phys}{term}"
 
 
 # ── REPL ─────────────────────────────────────────────────────────────────
@@ -110,6 +114,17 @@ class ExplorerREPL(cmd.Cmd):
         if node.valid_actions > 0:
             print(f"  Candidates: {node.valid_actions}")
         print()
+
+    def _show_step_result(self, parent_node, child_node) -> None:
+        """Print step result with physical context."""
+        phys = parent_node.physical
+        if phys is not None:
+            print(f"  -> {phys.summary()}")
+            if phys.affected_flows:
+                for fd in phys.affected_flows:
+                    print(f"     flow {fd.src} -> {fd.dst}: w={fd.weight:.1f} dist={fd.distance:.1f}")
+        else:
+            print(f"  -> Stepped to node {child_node.id}, cost={_fmt_cost(child_node.cost_after)}")
 
     def _show_signal(self, sig: Signal, label: str = "") -> None:
         name = label or sig.source
@@ -175,8 +190,9 @@ class ExplorerREPL(cmd.Cmd):
         self._show_signal(sig, "agent")
         if arg.strip() == "predict":
             return
+        prev = self.exp.current()
         child = self.exp.step_with("agent")
-        print(f"  -> Stepped to node {child.id}, cost={_fmt_cost(child.cost_after)}")
+        self._show_step_result(prev, child)
 
     def do_search(self, arg: str) -> None:
         """Run search and step with result. Use 'search predict' to only predict."""
@@ -227,8 +243,9 @@ class ExplorerREPL(cmd.Cmd):
 
         if arg.strip() == "predict":
             return
+        prev = self.exp.current()
         child = self.exp.step_with(sig.source)
-        print(f"  -> Stepped to node {child.id}, cost={_fmt_cost(child.cost_after)}")
+        self._show_step_result(prev, child)
 
     def do_step(self, arg: str) -> None:
         """Step with a specific action index. Usage: step <action_index>"""
@@ -244,12 +261,13 @@ class ExplorerREPL(cmd.Cmd):
         except ValueError:
             print(f"  Invalid action index: {arg}")
             return
+        prev = self.exp.current()
         try:
             child = self.exp.step(action, chosen_by="human")
         except Exception as e:
             print(f"  Error: {e}")
             return
-        print(f"  -> Stepped to node {child.id}, cost={_fmt_cost(child.cost_after)}")
+        self._show_step_result(prev, child)
         self._last_agent_sig = None
         self._last_search_sig = None
 
@@ -401,6 +419,48 @@ class ExplorerREPL(cmd.Cmd):
         else:
             print("  Usage: query [best|topk [k]|agreement|stats]")
 
+    def do_detail(self, arg: str) -> None:
+        """Show physical placement detail for current or specified node. Usage: detail [node_id]"""
+        if arg.strip():
+            try:
+                nid = int(arg.strip())
+                node = self.exp.tree.nodes[nid]
+            except (ValueError, KeyError) as e:
+                print(f"  Error: {e}")
+                return
+        else:
+            node = self.exp.current()
+            # if current node has no physical, check parent
+            if node.physical is None and node.parent_id is not None:
+                parent = self.exp.tree.nodes[node.parent_id]
+                if parent.physical is not None:
+                    node = parent
+
+        phys = node.physical
+        if phys is None:
+            print(f"  Node {node.id} has no physical context (root or no step taken).")
+            return
+
+        print(f"  Node {node.id} placement:")
+        print(f"    Facility:   {phys.gid}")
+        print(f"    Position:   ({phys.x_center:.1f}, {phys.y_center:.1f}) center, ({phys.x:.1f}, {phys.y:.1f}) BL")
+        print(f"    Size:       {phys.w:.0f} x {phys.h:.0f}")
+        print(f"    Rotation:   {phys.rotation}")
+        print(f"    Variant:    {phys.variant_index}")
+        print(f"    Cost:       {phys.cost_before:.2f} -> {phys.cost_after:.2f} (delta={phys.delta_cost:+.2f})")
+        if phys.entries:
+            ent_str = ", ".join(f"({x:.0f},{y:.0f})" for x, y in phys.entries)
+            print(f"    Entries:    {ent_str}")
+        if phys.exits:
+            ext_str = ", ".join(f"({x:.0f},{y:.0f})" for x, y in phys.exits)
+            print(f"    Exits:      {ext_str}")
+        if phys.affected_flows:
+            print(f"    Flows ({len(phys.affected_flows)}):")
+            for fd in phys.affected_flows:
+                print(f"      {fd.src} -> {fd.dst}: weight={fd.weight:.1f}, avg_dist={fd.distance:.1f}")
+        else:
+            print(f"    Flows:      (none)")
+
     def do_signals(self, arg: str) -> None:
         """Show all signals on current node."""
         node = self.exp.current()
@@ -412,7 +472,65 @@ class ExplorerREPL(cmd.Cmd):
 
     def do_context(self, arg: str) -> None:
         """Show LLM-formatted context for current state."""
-        print(self.exp.get_llm_context())
+        if arg.strip() == "v2":
+            # show what the LLM tools would return
+            from trace.llm_agent import _tool_status, _tool_candidates
+            print(_tool_status(self.exp))
+            print()
+            if not self.exp.current().terminal:
+                print(_tool_candidates(self.exp, top_k=8))
+        else:
+            print(self.exp.get_llm_context())
+
+    def do_llm(self, arg: str) -> None:
+        """Run LLM agent with a goal. Usage: llm <instruction>
+
+        Examples:
+          llm place this facility near factory_A
+          llm place all remaining facilities optimizing for flow
+          llm critique the current recommendations
+          llm what would be a good position for this facility?
+        """
+        if self.exp.llm is None:
+            print("  No LLM configured. Start with --llm flag (e.g. --llm anthropic).")
+            return
+
+        goal = arg.strip()
+        if not goal:
+            print("  Usage: llm <instruction>")
+            print("  Examples:")
+            print("    llm place this near factory_A")
+            print("    llm place all remaining facilities")
+            print("    llm what's the best position for this?")
+            return
+
+        def _on_step(event_type: str, text: str) -> None:
+            if event_type == "thinking":
+                for line in text.splitlines():
+                    print(f"  [LLM] {line}")
+            elif event_type == "tool_call":
+                print(f"  [LLM] -> {text}")
+            elif event_type == "tool_result":
+                # indent tool results
+                for line in text.splitlines():
+                    print(f"         {line}")
+            elif event_type == "done":
+                print(f"  [LLM] Done: {text}")
+
+        try:
+            result = self.exp.llm_run(goal, on_step=_on_step)
+            if result.final_text and not any(
+                result.final_text in msg.get("content", "")
+                for msg in result.messages
+                if isinstance(msg.get("content"), str)
+            ):
+                print(f"  [LLM] {result.final_text}")
+            print(f"  ({result.steps_taken} turns)")
+        except Exception as e:
+            print(f"  Error: {e}")
+
+        self._last_agent_sig = None
+        self._last_search_sig = None
 
     def do_reset(self, arg: str) -> None:
         """Reset the environment and tree."""
@@ -451,13 +569,17 @@ class ExplorerREPL(cmd.Cmd):
 
   Analysis:
     candidates [n]     Show top-N candidate positions
+    detail [node_id]   Show physical placement detail
     tree [depth]       Show decision tree
     query best         Best terminal path
     query topk [k]     Top-K terminal paths
     query agreement    Signal agreement at current node
     query stats        Depth statistics
-    context            LLM-formatted state summary
+    context            LLM-formatted state summary (v2 for physical)
     status             Current state summary
+
+  LLM (requires --llm flag):
+    llm <instruction>  Run LLM agent (e.g. "llm place near A")
 
   Other:
     reset              Reset environment
@@ -532,6 +654,26 @@ def build_search(args):
         raise ValueError(f"Unknown search mode: {mode}")
 
 
+def _build_llm_agent(provider_name: str, model_override: Optional[str] = None):
+    """Create ExplorerAgent from CLI args."""
+    from trace.llm_agent import ExplorerAgent
+
+    if provider_name == "anthropic":
+        from trace.llm_agent import AnthropicBackend
+        kwargs = {}
+        if model_override:
+            kwargs["model"] = model_override
+        return ExplorerAgent(backend=AnthropicBackend(**kwargs))
+    elif provider_name == "openai":
+        from trace.llm_agent import OpenAIBackend
+        kwargs = {}
+        if model_override:
+            kwargs["model"] = model_override
+        return ExplorerAgent(backend=OpenAIBackend(**kwargs))
+    else:
+        raise ValueError(f"Unknown LLM provider: {provider_name}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive factory layout explorer")
     parser.add_argument("--env", default="envs/env_configs/basic_01.json", help="Env config JSON path")
@@ -549,6 +691,11 @@ def main() -> None:
     parser.add_argument("--topk", type=int, default=5, help="Track top-K results during search")
     parser.add_argument("--k", type=int, default=50, help="Candidate count for greedy adapters")
     parser.add_argument("--device", default=None, help="torch device (default: auto)")
+    parser.add_argument("--llm", default="none",
+                        choices=["none", "anthropic", "openai"],
+                        help="LLM provider for critic/guided placement")
+    parser.add_argument("--llm-model", default=None,
+                        help="Override LLM model name")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
@@ -571,7 +718,13 @@ def main() -> None:
     search = build_search(args)
     ordering_agent = DifficultyOrderingAgent() if args.ordering == "difficulty" else None
 
-    exp = Explorer(engine, adapter, agent, search=search, ordering_agent=ordering_agent)
+    # LLM advisor (optional)
+    llm_advisor = None
+    if args.llm != "none":
+        llm_advisor = _build_llm_agent(args.llm, args.llm_model)
+
+    exp = Explorer(engine, adapter, agent, search=search,
+                   ordering_agent=ordering_agent, llm=llm_advisor)
     exp.reset(options=loaded.reset_kwargs)
 
     # Store reset kwargs for later resets
@@ -580,6 +733,8 @@ def main() -> None:
     header = f"Factory Layout Explorer - {args.env}"
     if search is not None:
         header += f" + {type(search).__name__}"
+    if llm_advisor is not None:
+        header += f" + LLM({args.llm})"
     print(header)
     print("Type 'help' for commands.\n")
 

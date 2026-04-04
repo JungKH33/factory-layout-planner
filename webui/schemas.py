@@ -34,6 +34,11 @@ class TopKRestoreRequest(BaseModel):
     item_id: str
 
 
+class PortInfo(BaseModel):
+    x: float
+    y: float
+
+
 class PlacedFacility(BaseModel):
     gid: str
     x: float
@@ -41,6 +46,37 @@ class PlacedFacility(BaseModel):
     w: float
     h: float
     rot: int
+    x_center: Optional[float] = None
+    y_center: Optional[float] = None
+    entries: List[PortInfo] = []
+    exits: List[PortInfo] = []
+    variant_index: int = 0
+
+
+class FlowDeltaInfo(BaseModel):
+    src: str
+    dst: str
+    weight: float
+    distance: float
+
+
+class PhysicalContextInfo(BaseModel):
+    """Physical placement result for the last step."""
+    gid: str
+    x: float
+    y: float
+    w: float
+    h: float
+    rotation: int
+    variant_index: int
+    x_center: float
+    y_center: float
+    entries: List[PortInfo] = []
+    exits: List[PortInfo] = []
+    delta_cost: float
+    cost_before: float
+    cost_after: float
+    affected_flows: List[FlowDeltaInfo] = []
 
 
 class CandidateInfo(BaseModel):
@@ -92,6 +128,9 @@ class SessionState(BaseModel):
     forbidden: List[ZoneRect] = []
     constraint_zones: Dict[str, List[ZoneRect]] = {}
     flow_edges: List[FlowEdge] = []
+
+    # Physical context from last step (None at root)
+    last_physical: Optional[PhysicalContextInfo] = None
 
 
 class SearchProgress(BaseModel):

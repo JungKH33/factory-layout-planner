@@ -20,6 +20,8 @@ from search.base import BaseSearch, BaseHierarchicalSearch
 from trace.schema import (
     DecisionNode,
     DecisionTree,
+    FlowDelta,
+    PhysicalContext,
     SearchOutput,
     Signal,
     Snapshot,
@@ -41,12 +43,14 @@ class Explorer:
         agent: Agent,
         search: Optional[BaseSearch] = None,
         ordering_agent: Optional[OrderingAgent] = None,
+        llm: Optional[Any] = None,
     ) -> None:
         self.engine = engine
         self.adapter = adapter
         self.agent = agent
         self.search = search
         self.ordering_agent = ordering_agent
+        self.llm: Optional[Any] = llm  # LLMAdvisor (optional, avoids import)
 
         self.tree = DecisionTree()
 
@@ -303,12 +307,22 @@ class Explorer:
         else:
             placement = self.adapter.resolve_action(action_index, action_space)
 
+        cost_before = float(self.engine.cost())
+
         _obs, reward, terminated, truncated, info = self.engine.step_placement(placement)
+
+        cost_after = float(self.engine.cost())
+
+        # build PhysicalContext from the resolved placement
+        physical = self._build_physical_context(
+            placement, cost_before, cost_after,
+        )
 
         # record on current node
         node.chosen_action = action_index
         node.chosen_by = chosen_by
         node.reward = float(reward)
+        node.physical = physical
 
         # create child
         parent_cum = node.cum_reward
@@ -318,7 +332,7 @@ class Explorer:
             save_snapshot=True,
         )
         child.cum_reward = parent_cum + float(reward)
-        child.cost_after = float(self.engine.cost())
+        child.cost_after = cost_after
         child.terminal = bool(terminated or truncated)
 
         self.tree.nodes[child.id] = child
@@ -332,6 +346,7 @@ class Explorer:
             "reward": float(reward),
             "cost": child.cost_after,
             "terminal": child.terminal,
+            "physical": physical.to_dict() if physical else None,
         }))
         return child
 
@@ -488,6 +503,30 @@ class Explorer:
         )
         return self.step(action_index, chosen_by="llm")
 
+    def llm_run(
+        self,
+        goal: str,
+        on_step: Optional[Callable] = None,
+    ) -> Any:
+        """Run the agentic LLM loop with the given goal.
+
+        Requires ``self.llm`` to be a :class:`~trace.llm_agent.ExplorerAgent`.
+
+        Parameters
+        ----------
+        goal : str
+            Free-text instruction for the LLM.
+        on_step : callable, optional
+            ``(event_type, text)`` callback for streaming output.
+
+        Returns
+        -------
+        AgentResult from the LLM agent.
+        """
+        if self.llm is None:
+            raise RuntimeError("No LLM agent configured")
+        return self.llm.run(goal, self, on_step=on_step)
+
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
@@ -510,6 +549,7 @@ class Explorer:
                 "terminal": node.terminal,
                 "children": node.children,
                 "signals": {k: v.to_dict() for k, v in node.signals.items()},
+                "physical": node.physical.to_dict() if node.physical else None,
             }
             nodes_out[str(nid)] = nd
         return {
@@ -534,12 +574,76 @@ class Explorer:
                 "chosen_by": n.chosen_by,
                 "cost_after": n.cost_after,
                 "cum_reward": n.cum_reward,
+                "physical": n.physical.to_dict() if n.physical else None,
             })
         return {"path": steps}
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _build_physical_context(
+        self,
+        placement: GroupPlacement,
+        cost_before: float,
+        cost_after: float,
+    ) -> Optional[PhysicalContext]:
+        """Extract PhysicalContext from a resolved placement after engine step."""
+        try:
+            gid = placement.group_id
+            state = self.engine.get_state()
+            p = state.placements.get(gid)
+            if p is None:
+                return None
+
+            # geometry — use the stored placement which has x_bl, w, h, rotation
+            x_bl = float(getattr(p, "x_bl", placement.min_x))
+            y_bl = float(getattr(p, "y_bl", placement.min_y))
+            w = float(getattr(p, "w", placement.max_x - placement.min_x))
+            h = float(getattr(p, "h", placement.max_y - placement.min_y))
+            rotation = int(getattr(p, "rotation", 0))
+            variant_index = int(getattr(p, "variant_index", 0))
+
+            # affected flow edges
+            affected: list[FlowDelta] = []
+            flow_pairs = state.flow.flow_port_pairs
+            group_flow = self.engine.group_flow
+            for (src, dst), pairs in flow_pairs.items():
+                if src != gid and dst != gid:
+                    continue
+                weight = 0.0
+                if src in group_flow and dst in group_flow[src]:
+                    weight = float(group_flow[src][dst])
+                elif dst in group_flow and src in group_flow[dst]:
+                    weight = float(group_flow[dst][src])
+                if weight <= 0 and not pairs:
+                    continue
+                total_dist = 0.0
+                for (ex, en) in pairs:
+                    total_dist += abs(ex[0] - en[0]) + abs(ex[1] - en[1])
+                if pairs:
+                    total_dist /= len(pairs)
+                affected.append(FlowDelta(
+                    src=str(src), dst=str(dst),
+                    weight=weight, distance=total_dist,
+                ))
+
+            return PhysicalContext(
+                gid=str(gid),
+                x=x_bl, y=y_bl, w=w, h=h,
+                rotation=rotation, variant_index=variant_index,
+                x_center=float(placement.x_center),
+                y_center=float(placement.y_center),
+                entries=list(placement.entry_points),
+                exits=list(placement.exit_points),
+                delta_cost=cost_after - cost_before,
+                cost_before=cost_before,
+                cost_after=cost_after,
+                affected_flows=affected,
+            )
+        except Exception:
+            logger.debug("Failed to build PhysicalContext", exc_info=True)
+            return None
 
     def _make_node(
         self,

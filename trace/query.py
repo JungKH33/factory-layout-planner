@@ -143,7 +143,11 @@ class TraceQuery:
         indent = "  " * depth
         action_str = f"a{node.chosen_action}" if node.chosen_action is not None else "root"
         cost_str = f"cost={node.cost_after:.1f}" if node.cost_after is not None else ""
-        lines.append(f"{indent}[{node.id}] step={node.step} {action_str} {cost_str} gid={node.group_id or '-'}")
+        phys_str = ""
+        if node.physical is not None:
+            p = node.physical
+            phys_str = f" | {p.summary()}"
+        lines.append(f"{indent}[{node.id}] step={node.step} {action_str} {cost_str} gid={node.group_id or '-'}{phys_str}")
 
         if depth >= max_depth:
             if node.children:
@@ -165,7 +169,11 @@ class TraceQuery:
         path, cost = self.best_path()
         parts.append(f"\nBest path (cost={cost:.2f}, {len(path)} steps):")
         for n in path[:10]:
-            parts.append(f"  step {n.step}: {n.group_id} → a{n.chosen_action} (by {n.chosen_by})")
+            phys = ""
+            if n.physical is not None:
+                p = n.physical
+                phys = f" [{p.gid} at ({p.x_center:.0f},{p.y_center:.0f}) {p.w:.0f}x{p.h:.0f} delta={p.delta_cost:+.1f}]"
+            parts.append(f"  step {n.step}: {n.group_id} → a{n.chosen_action} (by {n.chosen_by}){phys}")
         if len(path) > 10:
             parts.append(f"  ... {len(path) - 10} more steps")
 
