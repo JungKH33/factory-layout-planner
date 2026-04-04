@@ -8,6 +8,7 @@ from pydantic import BaseModel
 class SessionCreateRequest(BaseModel):
     env_json: str = "converters/test.json"
     collision_check: str = "auto"  # auto | conv | prefixsum
+    backend_selection: str = "benchmark"  # static | benchmark
     wrapper_mode: str = "greedyv3"  # greedy | greedyv2 | greedyv3 | alphachip | maskplace
     agent_mode: str = "greedy"  # greedy | alphachip | maskplace
     search_mode: str = "none"  # none | mcts | beam
@@ -23,6 +24,14 @@ class StepRequest(BaseModel):
 class SearchRequest(BaseModel):
     simulations: int = 100
     broadcast_interval: int = 10  # Send update every N simulations
+
+
+class GotoRequest(BaseModel):
+    node_id: int
+
+
+class TopKRestoreRequest(BaseModel):
+    item_id: str
 
 
 class PlacedFacility(BaseModel):

@@ -99,6 +99,21 @@ class Explorer:
         self._emit(TraceEvent(type="reset", node_id=root.id))
         return root
 
+    def rebase_to_current_state(self) -> DecisionNode:
+        """Rebuild tree root from the current engine/adapter state."""
+        self.tree = DecisionTree()
+        self._redo_stack.clear()
+        root = self._make_node(
+            parent_id=None,
+            step=len(self.engine.get_state().placed),
+            save_snapshot=True,
+        )
+        self.tree.nodes[root.id] = root
+        self.tree.root_id = root.id
+        self.tree.active_id = root.id
+        self._emit(TraceEvent(type="reset", node_id=root.id))
+        return root
+
     def current(self) -> DecisionNode:
         return self.tree.active_node()
 
@@ -276,8 +291,13 @@ class Explorer:
         is_hierarchical = isinstance(self.search, BaseHierarchicalSearch) and self.adapter.supports_hierarchical
         worker_action = -1
 
-        if is_hierarchical and chosen_by.startswith("search:") and "worker_action" in node.signals.get(chosen_by, Signal(source="", scores=np.array([]))).metadata:
-            worker_action = node.signals[chosen_by].metadata["worker_action"]
+        signal_meta = node.signals.get(chosen_by, Signal(source="", scores=np.array([]))).metadata
+        if (
+            is_hierarchical
+            and chosen_by.startswith("search:")
+            and int(signal_meta.get("worker_action", -1)) >= 0
+        ):
+            worker_action = int(signal_meta["worker_action"])
             worker_as = self.adapter.sub_action_space(action_index)
             placement = self.adapter.resolve_sub_action(worker_action, worker_as, parent_idx=action_index)
         else:

@@ -44,6 +44,11 @@ class Session:
 
     # Lock for thread safety
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    search_in_progress: bool = False
+    search_timeline: List[Dict[str, Any]] = field(default_factory=list)
+    topk_runs: List[Dict[str, Any]] = field(default_factory=list)
+    topk_state_map: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    topk_run_seq: int = 0
 
     def can_undo(self) -> bool:
         node = self.explorer.current()
@@ -229,14 +234,13 @@ class SessionManager:
             sid = f"session_{self._counter}"
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device("cpu")
         params = req.params or {}
 
         # Load environment
         loaded = load_env(
             req.env_json,
             device=device,
-            collision_check=req.collision_check,
+            backend_selection=req.backend_selection,
         )
         engine = loaded.env
         engine.log = False

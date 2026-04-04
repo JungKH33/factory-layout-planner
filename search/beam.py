@@ -209,7 +209,14 @@ class BeamSearch(BaseSearch):
                 best_v = float(values[best_a]) if best_a < len(values) else 0.0
                 progress_fn(depth + 1, total_depth, visits, values, best_a, best_v)
 
-        best = beams[0].first_action if beams else 0
+        best = beams[0].first_action if beams else -1
+        if best < 0:
+            best = self._fallback_action(
+                agent=agent,
+                obs=obs,
+                root_action_space=root_action_space,
+                device=adapter.device,
+            )
 
         # Build output arrays
         n_out = int(root_action_space.valid_mask.shape[0])
@@ -222,12 +229,33 @@ class BeamSearch(BaseSearch):
 
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
         return SearchOutput(
-            action=int(best) if int(best) >= 0 else 0,
+            action=int(best),
             visits=visits_out,
             values=values_out,
             iterations=total_depth,
             top_k=collect_top_k(topk_heap),
         )
+
+    def _fallback_action(
+        self,
+        *,
+        agent: Agent,
+        obs: dict,
+        root_action_space: ActionSpace,
+        device: torch.device,
+    ) -> int:
+        valid = root_action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
+        valid_idx = torch.where(valid)[0]
+        if int(valid_idx.numel()) <= 0:
+            return -1
+        try:
+            scores = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=device).view(-1)
+            scores = scores.masked_fill(~valid, float("-inf"))
+            if bool(torch.isfinite(scores).any().item()):
+                return int(torch.argmax(scores).item())
+        except Exception:
+            pass
+        return int(valid_idx[0].item())
 
 
 

@@ -27,7 +27,7 @@ from envs.action_space import ActionSpace
 # --- config (module-level constants, keep simple) ---
 ENV_JSON: str = "envs/env_configs/mixed_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
-WRAPPER_MODE: str = "greedyv4"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "greedyv5" | "alphachip" | "maskplace"
+WRAPPER_MODE: str = "greedyv5"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "greedyv5" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
@@ -39,7 +39,7 @@ TOPK_CELL_SIZE: int = 50
 TOPK_PER_CELL: int = 20
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
+SEARCH_MODE: str = "hierarchical_mcts"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 BEST_MAX_EXPANSIONS: int = 20
@@ -310,11 +310,12 @@ def main() -> None:
 
     # Sort and deduplicate top-K results across all search steps
     if all_top_k:
-        seen_costs: set[float] = set()
+        seen_cost_keys: set[int] = set()
         unique_top_k = []
         for entry in sorted(all_top_k, key=lambda r: r["cost"]):
-            if entry["cost"] not in seen_costs:
-                seen_costs.add(entry["cost"])
+            cost_key = int(round(float(entry["cost"]) * 1000.0))
+            if cost_key not in seen_cost_keys:
+                seen_cost_keys.add(cost_key)
                 unique_top_k.append(entry)
         all_top_k = unique_top_k[:TRACK_TOP_K]
         logger.info("Top-%s Search Results (aggregated across steps)", len(all_top_k))

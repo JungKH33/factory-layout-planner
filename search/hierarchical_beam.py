@@ -261,8 +261,15 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                     best_v = 0.0
                 progress_fn(depth + 1, total_depth, visits, values, best_a, best_v)
 
-        best_manager_action = int(beams[0].first_manager_action) if beams else 0
-        best_worker_action = int(beams[0].first_worker_action) if beams else 0
+        best_manager_action = int(beams[0].first_manager_action) if beams else -1
+        best_worker_action = int(beams[0].first_worker_action) if beams else -1
+        if best_manager_action < 0:
+            best_manager_action, best_worker_action = self._fallback_pair(
+                adapter=adapter,
+                agent=agent,
+                obs=obs,
+                root_action_space=root_action_space,
+            )
 
         # Build output arrays
         n_out = int(root_action_space.valid_mask.shape[0])
@@ -274,10 +281,6 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                 values_out[beam.first_manager_action] = max(values_out[beam.first_manager_action], beam.cum_reward)
 
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
-        if best_manager_action < 0:
-            best_manager_action = 0
-        if best_worker_action < 0:
-            best_worker_action = 0
         return SearchOutput(
             action=best_manager_action,
             worker_action=best_worker_action,
@@ -286,6 +289,41 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
             iterations=total_depth,
             top_k=collect_top_k(topk_heap),
         )
+
+    def _fallback_pair(
+        self,
+        *,
+        adapter: BaseAdapter,
+        agent: Agent,
+        obs: dict,
+        root_action_space: ActionSpace,
+    ) -> Tuple[int, int]:
+        valid = root_action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
+        valid_idx = torch.where(valid)[0]
+        if int(valid_idx.numel()) <= 0:
+            return -1, -1
+
+        best_ma = int(valid_idx[0].item())
+        try:
+            priors = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=adapter.device).view(-1)
+            priors = priors.masked_fill(~valid, float("-inf"))
+            if bool(torch.isfinite(priors).any().item()):
+                best_ma = int(torch.argmax(priors).item())
+        except Exception:
+            pass
+
+        try:
+            worker_as = adapter.sub_action_space(best_ma)
+            locals_top = self._top_worker_candidates(
+                adapter=adapter,
+                parent_idx=best_ma,
+                worker_action_space=worker_as,
+            )
+            if locals_top:
+                return best_ma, int(locals_top[0])
+        except Exception:
+            pass
+        return best_ma, -1
 
     def _top_worker_candidates(
         self,

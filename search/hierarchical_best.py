@@ -415,7 +415,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         valid = root_action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
         valid_idx = torch.where(valid)[0]
         if int(valid_idx.numel()) <= 0:
-            return 0, 0
+            return -1, -1
 
         best_ma = int(valid_idx[0].item())
         try:
@@ -437,7 +437,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                 return best_ma, int(locals_top[0])
         except Exception:
             pass
-        return best_ma, 0
+        return best_ma, -1
 
 
 # Backward-compatible aliases

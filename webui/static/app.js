@@ -6,9 +6,14 @@
 let sessionId = null;
 let socket = null;
 let currentState = null;
+let currentTree = null;
+let currentSignals = null;
+let currentTimeline = [];
+let currentTopkRuns = [];
 let hoveredCandidate = null;
 let selectedCandidate = null;
 let isDarkMode = false;
+let treeRequestSeq = 0;
 
 // Canvas
 const canvas = document.getElementById('layout-canvas');
@@ -24,6 +29,7 @@ const settings = {
     showVisits: false,
     showLabels: true,
     showGrid: false,
+    candidateColorSource: 'agent_score',
 };
 
 // Candidate 정렬 상태
@@ -141,6 +147,14 @@ function setupEventListeners() {
             });
         }
     });
+
+    const colorSourceEl = document.getElementById('candidate-color-source');
+    if (colorSourceEl) {
+        colorSourceEl.addEventListener('change', (e) => {
+            settings.candidateColorSource = e.target.value;
+            render();
+        });
+    }
     
     // Candidate 컬럼 헤더 클릭 정렬
     const sortColumns = ['col-index', 'col-pos', 'col-q', 'col-p', 'col-n'];
@@ -426,6 +440,7 @@ async function createSession() {
     const req = {
         env_json: document.getElementById('env-config').value,
         collision_check: document.getElementById('collision-check').value,
+        backend_selection: mapBackendSelection(document.getElementById('collision-check').value),
         wrapper_mode: document.getElementById('wrapper-mode').value,
         agent_mode: document.getElementById('agent-mode').value,
         search_mode: document.getElementById('search-mode').value,
@@ -537,7 +552,15 @@ async function runSearch() {
     } finally {
         document.getElementById('btn-search').disabled = false;
         progressBar.style.display = 'none';
+        requestSignalsUpdate();
+        requestTimelineUpdate();
+        requestTopKUpdate();
     }
+}
+
+function mapBackendSelection(v) {
+    if (v === 'prefixsum') return 'static';
+    return 'benchmark';
 }
 
 function enableControls(enabled) {
@@ -599,6 +622,10 @@ function updateState(state) {
     updateInfoPanel();
     updateCandidateList();
     updateUndoRedoButtons();
+    requestTreeUpdate();
+    requestSignalsUpdate();
+    requestTimelineUpdate();
+    requestTopKUpdate();
 }
 
 function updateSearchProgress(progress) {
@@ -614,6 +641,14 @@ function updateSearchProgress(progress) {
         render();
         updateCandidateList();
     }
+    currentTimeline.push({
+        iteration: progress.simulation,
+        total: progress.total,
+        best_action: progress.best_action,
+        best_value: progress.best_value,
+    });
+    if (currentTimeline.length > 2000) currentTimeline = currentTimeline.slice(-2000);
+    renderTimelinePanel();
 }
 
 function updateInfoPanel() {
@@ -624,6 +659,319 @@ function updateInfoPanel() {
     document.getElementById('info-value').textContent = currentState.value.toFixed(4);
     document.getElementById('info-remaining').textContent = currentState.remaining.length;
     document.getElementById('info-current').textContent = currentState.current_gid || '-';
+}
+
+async function requestTreeUpdate() {
+    if (!sessionId) {
+        currentTree = null;
+        renderTreePanel();
+        return;
+    }
+    const seq = ++treeRequestSeq;
+    try {
+        const res = await fetch(`/api/session/${sessionId}/tree`);
+        const data = await res.json();
+        if (seq !== treeRequestSeq) return;
+        if (data && data.tree) {
+            currentTree = data.tree;
+            renderTreePanel();
+        }
+    } catch (e) {
+        console.error('Failed to load tree:', e);
+    }
+}
+
+async function requestSignalsUpdate() {
+    if (!sessionId) {
+        currentSignals = null;
+        renderSignalsPanel();
+        return;
+    }
+    try {
+        const res = await fetch(`/api/session/${sessionId}/signals`);
+        const data = await res.json();
+        if (data && data.signals) {
+            currentSignals = data;
+            renderSignalsPanel();
+        }
+    } catch (e) {
+        console.error('Failed to load signals:', e);
+    }
+}
+
+async function requestTimelineUpdate() {
+    if (!sessionId) {
+        currentTimeline = [];
+        renderTimelinePanel();
+        return;
+    }
+    try {
+        const res = await fetch(`/api/session/${sessionId}/search_timeline`);
+        const data = await res.json();
+        if (data && Array.isArray(data.timeline)) {
+            currentTimeline = data.timeline;
+            renderTimelinePanel();
+        }
+    } catch (e) {
+        console.error('Failed to load timeline:', e);
+    }
+}
+
+async function requestTopKUpdate() {
+    if (!sessionId) {
+        currentTopkRuns = [];
+        renderTopKPanel();
+        return;
+    }
+    try {
+        const res = await fetch(`/api/session/${sessionId}/topk`);
+        const data = await res.json();
+        if (data && Array.isArray(data.runs)) {
+            currentTopkRuns = data.runs;
+            renderTopKPanel();
+        }
+    } catch (e) {
+        console.error('Failed to load top-k:', e);
+    }
+}
+
+function renderSignalsPanel() {
+    const agentEl = document.getElementById('signal-agent-rec');
+    const searchEl = document.getElementById('signal-search-rec');
+    const badgeEl = document.getElementById('signal-agreement-badge');
+    if (!agentEl || !searchEl || !badgeEl) return;
+
+    if (!currentSignals || !currentSignals.signals) {
+        agentEl.textContent = '-';
+        searchEl.textContent = '-';
+        badgeEl.textContent = 'N/A';
+        badgeEl.className = 'signal-badge';
+        return;
+    }
+    const signals = currentSignals.signals;
+    const agent = signals.agent;
+    const searchKey = Object.keys(signals).find((k) => k.startsWith('search:'));
+    const search = searchKey ? signals[searchKey] : null;
+    agentEl.textContent = agent ? `a${agent.recommended_action}` : '-';
+    searchEl.textContent = search ? `a${search.recommended_action}` : '-';
+
+    if (currentSignals.agreement === true) {
+        badgeEl.textContent = 'AGREE';
+        badgeEl.className = 'signal-badge agree';
+    } else if (currentSignals.agreement === false) {
+        badgeEl.textContent = 'DISAGREE';
+        badgeEl.className = 'signal-badge disagree';
+    } else {
+        badgeEl.textContent = 'N/A';
+        badgeEl.className = 'signal-badge';
+    }
+}
+
+function renderTimelinePanel() {
+    const listEl = document.getElementById('timeline-list');
+    const canvasEl = document.getElementById('timeline-canvas');
+    if (!listEl || !canvasEl) return;
+    const tctx = canvasEl.getContext('2d');
+
+    listEl.innerHTML = '';
+    if (!currentTimeline || currentTimeline.length === 0) {
+        listEl.textContent = 'No timeline yet';
+        if (tctx) {
+            tctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        }
+        return;
+    }
+
+    const tail = currentTimeline.slice(-12).reverse();
+    tail.forEach((row) => {
+        const item = document.createElement('div');
+        item.className = 'timeline-item';
+        item.textContent = `it ${row.iteration}/${row.total} | a${row.best_action} | v ${Number(row.best_value).toFixed(3)}`;
+        listEl.appendChild(item);
+    });
+
+    if (!tctx) return;
+    tctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    const vals = currentTimeline.map((r) => Number(r.best_value));
+    const minV = Math.min(...vals);
+    const maxV = Math.max(...vals);
+    const range = (maxV - minV) || 1.0;
+    tctx.strokeStyle = '#1f77b4';
+    tctx.lineWidth = 1.5;
+    tctx.beginPath();
+    vals.forEach((v, i) => {
+        const x = (i / Math.max(1, vals.length - 1)) * (canvasEl.width - 10) + 5;
+        const y = canvasEl.height - (((v - minV) / range) * (canvasEl.height - 10) + 5);
+        if (i === 0) tctx.moveTo(x, y);
+        else tctx.lineTo(x, y);
+    });
+    tctx.stroke();
+}
+
+function renderTopKPanel() {
+    const panel = document.getElementById('topk-gallery');
+    if (!panel) return;
+    panel.innerHTML = '';
+    if (!currentTopkRuns || currentTopkRuns.length === 0) {
+        panel.textContent = 'No Top-K results';
+        return;
+    }
+
+    currentTopkRuns.forEach((run) => {
+        const runDiv = document.createElement('div');
+        runDiv.className = 'topk-run';
+        const title = document.createElement('div');
+        title.className = 'topk-run-title';
+        title.textContent = `Run ${run.run_id} (${run.source || '-'})`;
+        runDiv.appendChild(title);
+
+        const items = Array.isArray(run.items) ? run.items : [];
+        items.forEach((it) => {
+            const card = document.createElement('div');
+            card.className = 'topk-card';
+            card.innerHTML = `<div>#${it.rank} cost ${Number(it.cost).toFixed(2)} | placed ${it.placed} | reward ${Number(it.cum_reward).toFixed(3)}</div>`;
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-secondary topk-restore-btn';
+            btn.textContent = 'Restore';
+            btn.addEventListener('click', () => restoreTopK(it.item_id));
+            card.appendChild(btn);
+            runDiv.appendChild(card);
+        });
+        panel.appendChild(runDiv);
+    });
+}
+
+async function restoreTopK(itemId) {
+    if (!sessionId) return;
+    try {
+        const res = await fetch(`/api/session/${sessionId}/topk/restore`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_id: itemId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            const msg = data && data.detail ? data.detail : `Failed to restore ${itemId}`;
+            showSessionMessage(msg, 'error');
+            return;
+        }
+        if (data.state) updateState(data.state);
+        if (data.tree) {
+            currentTree = data.tree;
+            renderTreePanel();
+        }
+    } catch (e) {
+        console.error('Failed to restore top-k:', e);
+        showSessionMessage(`Failed to restore top-k: ${e.message}`, 'error');
+    }
+}
+
+function renderTreePanel() {
+    const metaEl = document.getElementById('tree-meta');
+    const listEl = document.getElementById('tree-list');
+    if (!metaEl || !listEl) return;
+
+    if (!currentTree || !currentTree.nodes) {
+        metaEl.textContent = 'No tree data';
+        listEl.innerHTML = '';
+        return;
+    }
+
+    const nodesObj = currentTree.nodes || {};
+    const activeId = Number(currentTree.active_id);
+    const rootId = Number(currentTree.root_id);
+    const entries = Object.values(nodesObj).map((n) => ({
+        ...n,
+        id: Number(n.id),
+        step: Number(n.step || 0),
+        parent_id: n.parent_id === null || n.parent_id === undefined ? null : Number(n.parent_id),
+    }));
+    const entriesById = new Map(entries.map((n) => [n.id, n]));
+
+    const depthCache = new Map();
+    const depthOf = (nodeId) => {
+        if (depthCache.has(nodeId)) return depthCache.get(nodeId);
+        const node = nodesObj[String(nodeId)];
+        if (!node) return 0;
+        const parent = node.parent_id;
+        const d = parent === null || parent === undefined ? 0 : (depthOf(Number(parent)) + 1);
+        depthCache.set(nodeId, d);
+        return d;
+    };
+
+    const activePath = new Set();
+    let cursor = activeId;
+    while (cursor !== null && Number.isFinite(cursor) && nodesObj[String(cursor)]) {
+        activePath.add(cursor);
+        const parent = nodesObj[String(cursor)].parent_id;
+        cursor = parent === null || parent === undefined ? null : Number(parent);
+    }
+
+    const ordered = [];
+    const walk = (nid, depth) => {
+        const node = entriesById.get(nid);
+        if (!node) return;
+        ordered.push({ ...node, _depth: depth });
+        const childPairs = Object.entries(node.children || {}).map(([action, childId]) => ({
+            action: Number(action),
+            childId: Number(childId),
+        }));
+        childPairs.sort((a, b) => (a.action - b.action) || (a.childId - b.childId));
+        childPairs.forEach((c) => walk(c.childId, depth + 1));
+    };
+    walk(rootId, 0);
+    const seen = new Set(ordered.map((n) => n.id));
+    entries
+        .filter((n) => !seen.has(n.id))
+        .sort((a, b) => a.id - b.id)
+        .forEach((n) => ordered.push({ ...n, _depth: depthOf(n.id) }));
+
+    metaEl.textContent = `Nodes: ${entries.length} | Active: ${activeId} | Root: ${rootId}`;
+    listEl.innerHTML = '';
+
+    ordered.forEach((node) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'tree-node-item';
+        if (node.id === activeId) item.classList.add('active');
+        if (activePath.has(node.id)) item.classList.add('path');
+        if (node.terminal) item.classList.add('terminal');
+        const depth = Number(node._depth || 0);
+        item.style.paddingLeft = `${8 + depth * 12}px`;
+        const actionLabel = node.chosen_action === null || node.chosen_action === undefined ? 'root' : `a${node.chosen_action}`;
+        const costLabel = node.cost_after === null || node.cost_after === undefined ? '-' : Number(node.cost_after).toFixed(1);
+        const gidLabel = node.group_id || '-';
+        item.textContent = `[${node.id}] s${node.step} ${actionLabel} cost:${costLabel} gid:${gidLabel}`;
+        item.addEventListener('click', () => gotoNode(node.id));
+        listEl.appendChild(item);
+    });
+}
+
+async function gotoNode(nodeId) {
+    if (!sessionId) return;
+    try {
+        const res = await fetch(`/api/session/${sessionId}/goto`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node_id: Number(nodeId) }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            const msg = data && data.detail ? data.detail : `Failed to goto node ${nodeId}`;
+            showSessionMessage(msg, 'error');
+            return;
+        }
+        if (data.state) {
+            updateState(data.state);
+        }
+        if (data.tree) {
+            currentTree = data.tree;
+            renderTreePanel();
+        }
+    } catch (e) {
+        console.error('Failed to goto node:', e);
+        showSessionMessage(`Failed to goto node ${nodeId}: ${e.message}`, 'error');
+    }
 }
 
 function updateSortIndicators() {
@@ -955,8 +1303,13 @@ function drawCandidates(scaleX, scaleY) {
     
     if (visibleCandidates.length === 0) return;
     
-    // Value for color mapping: Q if searched, P otherwise
-    const getDisplayValue = (cand) => hasAnyQ ? cand.q_value : cand.score;
+    // Value for color mapping:
+    // - agent_score: agent score (or q fallback after search)
+    // - search_visits: search visit count
+    const getDisplayValue = (cand) => {
+        if (settings.candidateColorSource === 'search_visits') return Number(cand.visits || 0);
+        return hasAnyQ ? Number(cand.q_value) : Number(cand.score);
+    };
     
     // Find value range for color mapping
     const values = visibleCandidates.map(c => getDisplayValue(c));

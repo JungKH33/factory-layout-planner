@@ -120,6 +120,8 @@ from webui.schemas import (
     SessionCreateRequest,
     StepRequest,
     SearchRequest,
+    GotoRequest,
+    TopKRestoreRequest,
     SessionState,
     CandidateInfo,
     SearchProgress,
@@ -217,6 +219,8 @@ async def step(sid: str, req: StepRequest):
         session = await manager.get_session(sid)
 
         async with session._lock:
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is running; try again after it completes")
             explorer = session.explorer
             node = explorer.current()
 
@@ -252,6 +256,8 @@ async def undo(sid: str):
         session = await manager.get_session(sid)
 
         async with session._lock:
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is running; try again after it completes")
             if not session.undo():
                 raise HTTPException(status_code=400, detail="Nothing to undo")
             # Re-predict agent for restored state
@@ -271,6 +277,8 @@ async def redo(sid: str):
         session = await manager.get_session(sid)
 
         async with session._lock:
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is running; try again after it completes")
             if not session.redo():
                 raise HTTPException(status_code=400, detail="Nothing to redo")
             if not session.explorer.current().terminal:
@@ -289,7 +297,13 @@ async def reset(sid: str):
         session = await manager.get_session(sid)
 
         async with session._lock:
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is running; try again after it completes")
             session.explorer.reset(options=session.reset_kwargs)
+            session.search_timeline.clear()
+            session.topk_runs.clear()
+            session.topk_state_map.clear()
+            session.topk_run_seq = 0
             if not session.explorer.current().terminal:
                 session.explorer.predict_agent()
             state = session.get_state()
@@ -300,26 +314,127 @@ async def reset(sid: str):
         raise HTTPException(status_code=404, detail="Session not found")
 
 
+@app.get("/api/session/{sid}/tree")
+async def get_tree(sid: str):
+    try:
+        session = await manager.get_session(sid)
+        async with session._lock:
+            tree = session.explorer.export_tree()
+        return {"tree": tree}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.get("/api/session/{sid}/signals")
+async def get_signals(sid: str):
+    try:
+        session = await manager.get_session(sid)
+        async with session._lock:
+            payload = _signals_payload(session)
+        return payload
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.get("/api/session/{sid}/search_timeline")
+async def get_search_timeline(sid: str):
+    try:
+        session = await manager.get_session(sid)
+        async with session._lock:
+            return {"timeline": list(session.search_timeline)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.get("/api/session/{sid}/topk")
+async def get_topk(sid: str):
+    try:
+        session = await manager.get_session(sid)
+        async with session._lock:
+            return {"runs": list(session.topk_runs)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.post("/api/session/{sid}/topk/restore")
+async def restore_topk(sid: str, req: TopKRestoreRequest):
+    try:
+        session = await manager.get_session(sid)
+        async with session._lock:
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is running; try again after it completes")
+            item = session.topk_state_map.get(req.item_id)
+            if item is None:
+                raise HTTPException(status_code=404, detail=f"Top-K item not found: {req.item_id}")
+            engine_state = item.get("engine_state")
+            if engine_state is None:
+                raise HTTPException(status_code=400, detail="Top-K item does not contain restorable engine state")
+
+            exp = session.explorer
+            exp.engine.set_state(engine_state)
+            exp.adapter.set_state(exp.adapter.get_state_copy())
+            root = exp.rebase_to_current_state()
+            if not root.terminal:
+                exp.predict_agent()
+
+            state = session.get_state()
+            tree = exp.export_tree()
+
+        await _broadcast(session, {"type": "state", "state": state.model_dump()})
+        return {"state": state.model_dump(), "tree": tree}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.post("/api/session/{sid}/goto")
+async def goto_node(sid: str, req: GotoRequest):
+    try:
+        session = await manager.get_session(sid)
+        async with session._lock:
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is running; try again after it completes")
+            try:
+                node = session.explorer.goto(int(req.node_id))
+            except KeyError:
+                raise HTTPException(status_code=404, detail=f"Node not found: {req.node_id}")
+
+            if (not node.terminal) and ("agent" not in node.signals):
+                session.explorer.predict_agent()
+
+            state = session.get_state()
+            tree = session.explorer.export_tree()
+
+        await _broadcast(session, {"type": "state", "state": state.model_dump()})
+        return {"state": state.model_dump(), "tree": tree}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
 @app.post("/api/session/{sid}/search")
 async def run_search(sid: str, req: SearchRequest):
     """Run search with real-time WebSocket updates."""
     try:
         session = await manager.get_session(sid)
-        explorer = session.explorer
+        async with session._lock:
+            explorer = session.explorer
+            if session.search_in_progress:
+                raise HTTPException(status_code=409, detail="Search is already running")
+            if explorer.search is None:
+                raise HTTPException(status_code=400, detail="No search algorithm configured")
+            if explorer.current().terminal:
+                raise HTTPException(status_code=400, detail="Episode already terminated")
+            session.search_in_progress = True
 
-        if explorer.search is None:
-            raise HTTPException(status_code=400, detail="No search algorithm configured")
-
-        if explorer.current().terminal:
-            raise HTTPException(status_code=400, detail="Episode already terminated")
-
-        result = await _run_search_with_updates(
-            session=session,
-            simulations=req.simulations,
-            broadcast_interval=req.broadcast_interval,
-        )
-
-        return result
+        try:
+            result = await _run_search_with_updates(
+                session=session,
+                simulations=req.simulations,
+                broadcast_interval=req.broadcast_interval,
+            )
+            return result
+        finally:
+            async with session._lock:
+                session.search_in_progress = False
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
     except HTTPException:
@@ -347,6 +462,8 @@ async def _run_search_with_updates(
 
     loop = asyncio.get_event_loop()
     latest_progress: Dict[str, Any] = {}
+    progress_candidates = _build_progress_candidates(session)
+    timeline_local: List[Dict[str, Any]] = []
 
     # Register event listener that bridges sync search → async WebSocket
     from trace.schema import TraceEvent
@@ -363,11 +480,17 @@ async def _run_search_with_updates(
         values = data.get("values", [])
         best_action = data.get("best_action", 0)
         best_value = data.get("best_value", 0.0)
+        timeline_local.append({
+            "iteration": int(data.get("iteration", 0)),
+            "total": int(data.get("total", simulations)),
+            "best_action": int(best_action),
+            "best_value": float(best_value),
+        })
 
         def _schedule_broadcast():
             asyncio.create_task(_broadcast_search_progress(
                 session, data.get("iteration", 0), simulations,
-                visits, values, best_action, best_value,
+                visits, values, best_action, best_value, progress_candidates,
             ))
 
         loop.call_soon_threadsafe(_schedule_broadcast)
@@ -384,8 +507,13 @@ async def _run_search_with_updates(
         if original_config is not None:
             search.config = original_config
 
+    async with session._lock:
+        session.search_timeline = timeline_local[-2000:]
+        _store_topk_results(session, signal)
+
     return {
         "best_action": signal.recommended_action,
+        "top_k_count": len(signal.metadata.get("top_k", []) if isinstance(signal.metadata.get("top_k"), list) else []),
         **latest_progress,
     }
 
@@ -398,19 +526,23 @@ async def _broadcast_search_progress(
     values: list,
     best_action: int,
     best_value: float,
+    base_candidates: List[CandidateInfo],
 ) -> None:
     """Broadcast search progress to WebSocket clients."""
     try:
-        # Build candidate list with visits/values
-        state = session.get_state()
-        for i, cand in enumerate(state.candidates):
+        # Use immutable candidate snapshot captured at search start.
+        candidates = [
+            CandidateInfo(**cand.model_dump())
+            for cand in base_candidates
+        ]
+        for i, cand in enumerate(candidates):
             cand.visits = int(visits[i]) if i < len(visits) else 0
             cand.q_value = float(values[i]) if i < len(values) else 0.0
 
         progress = SearchProgress(
             simulation=iteration,
             total=total,
-            candidates=state.candidates,
+            candidates=candidates,
             best_action=int(best_action),
             best_value=float(best_value),
         )
@@ -418,6 +550,105 @@ async def _broadcast_search_progress(
         await asyncio.sleep(0.001)
     except Exception:
         logger.warning("WebUI Progress broadcast error", exc_info=True)
+
+
+def _build_progress_candidates(session: Session) -> List[CandidateInfo]:
+    node = session.explorer.current()
+    if node.terminal:
+        return []
+    action_space = node._snapshot.action_space if (node._snapshot and node._snapshot.action_space is not None) else None
+    if action_space is None:
+        return []
+    agent_sig = node.signals.get("agent")
+    scores = agent_sig.scores if agent_sig is not None else None
+    mask = action_space.valid_mask.detach().cpu().numpy()
+    poses = action_space.centers.detach().cpu().numpy()
+    out: List[CandidateInfo] = []
+    for i in range(len(poses)):
+        out.append(CandidateInfo(
+            index=i,
+            x=float(poses[i, 0]),
+            y=float(poses[i, 1]),
+            rot=0,
+            score=float(scores[i]) if (scores is not None and i < len(scores)) else 0.0,
+            valid=bool(mask[i]),
+            visits=0,
+            q_value=0.0,
+        ))
+    return out
+
+
+def _signals_payload(session: Session) -> Dict[str, Any]:
+    def _safe_value(v: Any) -> Any:
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        if isinstance(v, (int, float, str, bool, type(None))):
+            return v
+        if isinstance(v, list):
+            return [_safe_value(x) for x in v]
+        if isinstance(v, dict):
+            return {str(k): _safe_value(x) for k, x in v.items()}
+        return str(v)
+
+    node = session.explorer.current()
+    signals_out: Dict[str, Any] = {}
+    for src, sig in node.signals.items():
+        scores = np.array(sig.scores, dtype=np.float32) if sig.scores is not None else np.zeros((0,), dtype=np.float32)
+        top_idx = np.argsort(-scores)[:5].tolist() if scores.size > 0 else []
+        top_actions = [
+            {"action": int(i), "score": float(scores[i])}
+            for i in top_idx if 0 <= int(i) < int(scores.size)
+        ]
+        signals_out[src] = {
+            "recommended_action": int(sig.recommended_action),
+            "recommended_value": float(sig.recommended_value),
+            "top_actions": top_actions,
+            "metadata": _safe_value(sig.metadata),
+        }
+
+    agent = signals_out.get("agent")
+    search = None
+    for k in signals_out.keys():
+        if str(k).startswith("search:"):
+            search = signals_out[k]
+            break
+    agree = None
+    if agent is not None and search is not None:
+        a = int(agent["recommended_action"])
+        b = int(search["recommended_action"])
+        if a >= 0 and b >= 0:
+            agree = bool(a == b)
+
+    return {"signals": signals_out, "agreement": agree}
+
+
+def _store_topk_results(session: Session, signal: Any) -> None:
+    top_k = signal.metadata.get("top_k", None) if hasattr(signal, "metadata") else None
+    if not isinstance(top_k, list) or len(top_k) == 0:
+        return
+
+    session.topk_run_seq += 1
+    run_id = int(session.topk_run_seq)
+    run_items: List[Dict[str, Any]] = []
+    for rank, item in enumerate(top_k, start=1):
+        if not isinstance(item, dict):
+            continue
+        item_id = f"run{run_id}_k{rank}"
+        session.topk_state_map[item_id] = item
+        run_items.append({
+            "item_id": item_id,
+            "rank": int(rank),
+            "cost": float(item.get("cost", 0.0)),
+            "cum_reward": float(item.get("cum_reward", 0.0)),
+            "placed": int(len(item.get("positions", {}))) if isinstance(item.get("positions"), dict) else 0,
+        })
+
+    session.topk_runs.insert(0, {
+        "run_id": run_id,
+        "source": str(getattr(signal, "source", "")),
+        "items": run_items,
+    })
+    session.topk_runs = session.topk_runs[:20]
 
 
 @app.delete("/api/session/{sid}")

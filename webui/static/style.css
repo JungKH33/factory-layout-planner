@@ -351,6 +351,139 @@ select:focus, input:focus {
     font-family: monospace;
 }
 
+/* Decision Tree Panel */
+.tree-meta {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.tree-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--candidate-border);
+    border-radius: 4px;
+    background: var(--bg-canvas-inner);
+    padding: 4px;
+}
+
+.tree-node-item {
+    display: block;
+    width: 100%;
+    border: none;
+    background: transparent;
+    text-align: left;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.tree-node-item:hover {
+    background: var(--candidate-hover);
+}
+
+.tree-node-item.active {
+    background: rgba(31, 119, 180, 0.2);
+    outline: 1px solid var(--accent);
+}
+
+.tree-node-item.path:not(.active) {
+    background: rgba(31, 119, 180, 0.08);
+}
+
+.tree-node-item.terminal {
+    color: #d62728;
+}
+
+/* Signals */
+.signal-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    margin-bottom: 6px;
+}
+
+.signal-badge {
+    margin-top: 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    text-align: center;
+    background: var(--btn-bg);
+    color: var(--text-primary);
+}
+
+.signal-badge.agree {
+    background: rgba(46, 204, 113, 0.2);
+    color: #27ae60;
+}
+
+.signal-badge.disagree {
+    background: rgba(231, 76, 60, 0.2);
+    color: #e74c3c;
+}
+
+/* Timeline */
+#timeline-canvas {
+    width: 100%;
+    border: 1px solid var(--candidate-border);
+    border-radius: 4px;
+    background: var(--bg-canvas-inner);
+    margin-bottom: 8px;
+}
+
+.timeline-list {
+    max-height: 120px;
+    overflow-y: auto;
+    border: 1px solid var(--candidate-border);
+    border-radius: 4px;
+    background: var(--bg-canvas-inner);
+}
+
+.timeline-item {
+    font-size: 0.75rem;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-light);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Top-K */
+.topk-gallery {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.topk-run {
+    border: 1px solid var(--candidate-border);
+    border-radius: 4px;
+    background: var(--bg-canvas-inner);
+    padding: 6px;
+}
+
+.topk-run-title {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.topk-card {
+    border: 1px solid var(--border-light);
+    border-radius: 4px;
+    padding: 6px;
+    margin-bottom: 6px;
+    font-size: 0.75rem;
+}
+
+.topk-restore-btn {
+    width: 100%;
+    margin-top: 6px;
+}
+
 /* Candidate Header */
 .candidate-header {
     display: flex;

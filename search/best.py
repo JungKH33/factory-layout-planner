@@ -331,7 +331,7 @@ class BestFirstSearch(BaseSearch):
         valid = root_action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
         valid_idx = torch.where(valid)[0]
         if int(valid_idx.numel()) <= 0:
-            return 0
+            return -1
         try:
             scores = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=device).view(-1)
             scores = scores.masked_fill(~valid, float("-inf"))

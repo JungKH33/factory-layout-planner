@@ -127,6 +127,13 @@
 
                 <section class="panel-section">
                     <h3>Display</h3>
+                    <div class="form-group">
+                        <label>Candidate Colors:</label>
+                        <select id="candidate-color-source">
+                            <option value="agent_score">Agent Score</option>
+                            <option value="search_visits">Search Visits</option>
+                        </select>
+                    </div>
                     <div class="checkbox-group">
                         <label><input type="checkbox" id="show-scores" checked> Score Colors</label>
                         <label><input type="checkbox" id="show-visits"> Visit Size</label>
@@ -155,6 +162,30 @@
                         <div class="info-row"><span>Remaining:</span><span id="info-remaining">-</span></div>
                         <div class="info-row"><span>Current:</span><span id="info-current">-</span></div>
                     </div>
+                </section>
+
+                <section class="panel-section">
+                    <h3>Decision Tree</h3>
+                    <div id="tree-meta" class="tree-meta">No tree data</div>
+                    <div id="tree-list" class="tree-list"></div>
+                </section>
+
+                <section class="panel-section">
+                    <h3>Signals</h3>
+                    <div class="signal-row"><span>Agent:</span><span id="signal-agent-rec">-</span></div>
+                    <div class="signal-row"><span>Search:</span><span id="signal-search-rec">-</span></div>
+                    <div class="signal-badge" id="signal-agreement-badge">N/A</div>
+                </section>
+
+                <section class="panel-section">
+                    <h3>Search Timeline</h3>
+                    <canvas id="timeline-canvas" width="240" height="90"></canvas>
+                    <div id="timeline-list" class="timeline-list"></div>
+                </section>
+
+                <section class="panel-section">
+                    <h3>Top-K Gallery</h3>
+                    <div id="topk-gallery" class="topk-gallery"></div>
                 </section>
 
                 <section class="panel-section">

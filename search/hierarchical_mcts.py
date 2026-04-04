@@ -268,8 +268,19 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
 
         # Select best manager action by visit count
         if not root.children:
+            fallback_manager = -1
+            valid = root_action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
+            if bool(torch.isfinite(priors).any().item()) and int(valid.to(torch.int64).sum().item()) > 0:
+                masked_priors = priors.masked_fill(~valid, float("-inf"))
+                if bool(torch.isfinite(masked_priors).any().item()):
+                    fallback_manager = int(torch.argmax(masked_priors).item())
             self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
-            return SearchOutput(action=0, worker_action=0, iterations=num_sims, top_k=collect_top_k(topk_heap))
+            return SearchOutput(
+                action=fallback_manager,
+                worker_action=-1,
+                iterations=num_sims,
+                top_k=collect_top_k(topk_heap),
+            )
 
         best_manager_action: int
         temp = float(cfg.temperature)
