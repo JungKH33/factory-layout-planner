@@ -17,21 +17,94 @@ from envs.action_space import ActionSpace
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# SearchOutput — structured return from select()
+# ---------------------------------------------------------------------------
+
 @dataclass
-class SearchProgress:
-    """Progress update during search."""
-    iteration: int              # Current iteration (simulation/beam step/etc)
-    total: int                  # Total iterations
-    visits: np.ndarray          # Visit counts per candidate [N]
-    values: np.ndarray          # Q-values or scores per candidate [N]
-    best_action: int            # Current best action
-    best_value: float           # Best value
-    extra: Dict[str, Any] = field(default_factory=dict)  # Algorithm-specific data
+class SearchOutput:
+    """Structured result from a search algorithm's ``select()``."""
+
+    action: int
+    """Primary action index (manager action for hierarchical searches)."""
+
+    worker_action: int = -1
+    """Worker action index for hierarchical searches (-1 if flat)."""
+
+    visits: Optional[np.ndarray] = None
+    """[N] visit counts per root action."""
+
+    values: Optional[np.ndarray] = None
+    """[N] Q-values / scores per root action."""
+
+    iterations: int = 0
+    """Number of iterations / simulations / expansions performed."""
+
+    top_k: Optional[List[Dict[str, Any]]] = None
+    """Best terminal solutions found during search.
+    Each dict: ``{"cost", "cum_reward", "positions", "engine_state"}``."""
 
 
-# Type alias for progress callback
-ProgressCallback = Callable[[SearchProgress], None]
+# ---------------------------------------------------------------------------
+# Progress callback type — simple callable, no wrapper class
+# ---------------------------------------------------------------------------
 
+ProgressFn = Callable[[int, int, np.ndarray, np.ndarray, int, float], None]
+"""(iteration, total, visits, values, best_action, best_value)"""
+
+
+# ---------------------------------------------------------------------------
+# Top-K terminal tracking — stateless utility functions
+# ---------------------------------------------------------------------------
+
+def track_terminal(
+    heap: list,
+    counter: int,
+    engine: FactoryLayoutEnv,
+    cum_reward: float,
+    max_k: int,
+) -> int:
+    """Record a terminal engine state in a local min-heap.
+
+    Returns the updated counter.  Does nothing if *max_k* <= 0.
+    """
+    if max_k <= 0:
+        return counter
+    cost = engine.total_cost()
+    # Deduplicate by cost
+    if any(-neg_c == cost for neg_c, _, _ in heap):
+        return counter
+    positions = {
+        str(gid): p.position()
+        for gid, p in engine.get_state().placements.items()
+    }
+    entry = (
+        -cost,   # negated for max-heap behaviour (worst-cost evicted first)
+        counter,
+        {
+            "cost": cost,
+            "cum_reward": cum_reward,
+            "positions": positions,
+            "engine_state": engine.get_state().copy(),
+        },
+    )
+    if len(heap) < max_k:
+        heapq.heappush(heap, entry)
+    elif -cost > heap[0][0]:
+        heapq.heapreplace(heap, entry)
+    return counter + 1
+
+
+def collect_top_k(heap: list) -> Optional[List[Dict[str, Any]]]:
+    """Convert a local heap into a cost-ascending list of result dicts."""
+    if not heap:
+        return None
+    return sorted([item[2] for item in heap], key=lambda r: r["cost"])
+
+
+# ---------------------------------------------------------------------------
+# Snapshot / cache helpers
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SearchSnapshot:
@@ -54,8 +127,12 @@ class BaseSearchConfig:
     pass
 
 
+# ---------------------------------------------------------------------------
+# BaseSearch
+# ---------------------------------------------------------------------------
+
 class BaseSearch(ABC):
-    """Base class for search algorithms with progress callback support.
+    """Base class for search algorithms.
 
     Agent output contract used by all searches:
     - policy(obs, action_space) -> [N] non-negative scores (higher is better),
@@ -64,32 +141,12 @@ class BaseSearch(ABC):
     """
 
     def __init__(self):
-        self.top_tracker: Optional[TopKTracker] = None
-        self._progress_callback: Optional[ProgressCallback] = None
-        self._progress_interval: int = 10
         self.adapter: Optional[BaseAdapter] = None
 
     def set_adapter(self, adapter: BaseAdapter) -> None:
         self.adapter = adapter
-    
-    def set_progress_callback(
-        self,
-        callback: Optional[ProgressCallback],
-        interval: int = 10,
-    ) -> None:
-        """Set callback for progress updates during search.
-        
-        Args:
-            callback: Function called with SearchProgress at intervals
-            interval: Call callback every N iterations
-        """
-        self._progress_callback = callback
-        self._progress_interval = max(1, interval)
-    
-    def _emit_progress(self, progress: SearchProgress) -> None:
-        """Emit progress update if callback is set."""
-        if self._progress_callback is not None:
-            self._progress_callback(progress)
+
+    # ---- snapshot helpers ----
 
     def _capture_snapshot(
         self,
@@ -97,7 +154,6 @@ class BaseSearch(ABC):
         engine,
         adapter: BaseAdapter,
     ) -> SearchSnapshot:
-        """Capture engine + adapter state after a decision has been built."""
         return SearchSnapshot(
             engine_state=engine.get_state().copy(),
             adapter_state=adapter.get_state_copy(),
@@ -110,7 +166,6 @@ class BaseSearch(ABC):
         adapter: BaseAdapter,
         snapshot: SearchSnapshot,
     ) -> None:
-        """Restore engine + adapter state captured by ``_capture_snapshot``."""
         engine.set_state(snapshot.engine_state)
         adapter.set_state(snapshot.adapter_state)
 
@@ -122,7 +177,6 @@ class BaseSearch(ABC):
         obs: Dict[str, Any],
         action_space: ActionSpace,
     ) -> DecisionCache:
-        """Capture a search state together with its built observation/action space."""
         return DecisionCache(
             snapshot=self._capture_snapshot(engine=engine, adapter=adapter),
             obs=dict(obs),
@@ -130,7 +184,6 @@ class BaseSearch(ABC):
         )
 
     def _empty_action_space(self, *, device: torch.device) -> ActionSpace:
-        """Return an empty action space for terminal search nodes."""
         return ActionSpace(
             centers=torch.zeros((0, 2), dtype=torch.float32, device=device),
             valid_mask=torch.zeros((0,), dtype=torch.bool, device=device),
@@ -142,7 +195,6 @@ class BaseSearch(ABC):
         engine,
         adapter: BaseAdapter,
     ) -> DecisionCache:
-        """Capture terminal engine state with an empty decision payload."""
         return DecisionCache(
             snapshot=SearchSnapshot(
                 engine_state=engine.get_state().copy(),
@@ -151,7 +203,9 @@ class BaseSearch(ABC):
             obs={},
             action_space=self._empty_action_space(device=adapter.device),
         )
-    
+
+    # ---- action execution helper ----
+
     def _apply_action_index(
         self,
         *,
@@ -160,8 +214,6 @@ class BaseSearch(ABC):
         action: int,
         action_space: ActionSpace,
     ):
-        """Apply discrete action index via adapter → engine.
-        """
         try:
             placement = adapter.resolve_action(int(action), action_space)
             _, reward, terminated, truncated, info = engine.step_placement(
@@ -174,18 +226,7 @@ class BaseSearch(ABC):
             return float(engine.failure_penalty()), False, True, {"reason": reason}
         return float(reward), bool(terminated), bool(truncated), info
 
-    def _track_terminal(self, *, engine: FactoryLayoutEnv, cum_reward: float) -> None:
-        """Record a terminal state in the top-K tracker (if enabled)."""
-        if self.top_tracker is None:
-            return
-        cost = engine.total_cost()
-        positions = {str(gid): p.position() for gid, p in engine.get_state().placements.items()}
-        self.top_tracker.add(SearchResult(
-            cost=cost,
-            cum_reward=cum_reward,
-            positions=positions,
-            engine_state=engine.get_state().copy(),
-        ))
+    # ---- batched policy / value helpers ----
 
     def _policy_many(
         self,
@@ -195,17 +236,6 @@ class BaseSearch(ABC):
         action_space_batch: List[ActionSpace],
         device: torch.device,
     ) -> List[torch.Tensor]:
-        """Compute policy scores for multiple nodes.
-
-        Preferred path:
-        - agent.policy_batch(obs_batch=..., action_space_batch=...)
-
-        Fallback path:
-        - per-item agent.policy(...)
-
-        Output semantics are identical to Agent.policy contract:
-        [N] non-negative scores, larger = better.
-        """
         n = int(len(obs_batch))
         if n != int(len(action_space_batch)):
             raise ValueError("obs_batch and action_space_batch length mismatch")
@@ -248,17 +278,6 @@ class BaseSearch(ABC):
         obs_batch: List[dict],
         action_space_batch: List[ActionSpace],
     ) -> List[float]:
-        """Compute value estimates for multiple nodes.
-
-        Preferred path:
-        - agent.value_batch(obs_batch=..., action_space_batch=...)
-
-        Fallback path:
-        - per-item agent.value(...)
-
-        Output semantics are identical to Agent.value contract:
-        single scalar utility per node, larger = better.
-        """
         n = int(len(obs_batch))
         if n != int(len(action_space_batch)):
             raise ValueError("obs_batch and action_space_batch length mismatch")
@@ -297,6 +316,8 @@ class BaseSearch(ABC):
                     out.append(0.0)
         return out
 
+    # ---- abstract API ----
+
     @abstractmethod
     def select(
         self,
@@ -304,13 +325,23 @@ class BaseSearch(ABC):
         obs: dict,
         agent: Agent,
         root_action_space: ActionSpace,
-    ) -> int:
+        progress_fn: Optional[ProgressFn] = None,
+        progress_interval: int = 10,
+    ) -> SearchOutput:
         """Select an action from action_space."""
         ...
 
 
+# ---------------------------------------------------------------------------
+# BaseHierarchicalSearch
+# ---------------------------------------------------------------------------
+
 class BaseHierarchicalSearch(BaseSearch):
-    """Base class for hierarchical (manager/worker) search algorithms."""
+    """Base class for hierarchical (manager/worker) search algorithms.
+
+    Subclasses implement ``select()`` directly, returning a ``SearchOutput``
+    whose ``worker_action`` field carries the worker-level choice.
+    """
 
     def set_adapter(self, adapter: BaseAdapter) -> None:
         if not adapter.supports_hierarchical:
@@ -319,94 +350,3 @@ class BaseHierarchicalSearch(BaseSearch):
                 f"supports_hierarchical=True, got {type(adapter).__name__}"
             )
         super().set_adapter(adapter)
-
-    @abstractmethod
-    def select_h(
-        self,
-        *,
-        obs: dict,
-        agent: Agent,
-        root_action_space: ActionSpace,
-    ) -> Tuple[int, int]:
-        """Select hierarchical action as (manager_action, worker_action)."""
-        ...
-
-    def select(
-        self,
-        *,
-        obs: dict,
-        agent: Agent,
-        root_action_space: ActionSpace,
-    ) -> int:
-        manager_action, _worker_action = self.select_h(
-            obs=obs,
-            agent=agent,
-            root_action_space=root_action_space,
-        )
-        return int(manager_action)
-
-
-@dataclass
-class SearchResult:
-    """하나의 완료된 배치 결과"""
-    cost: float                                   # cost() 값 (낮을수록 좋음)
-    cum_reward: float                             # 누적 reward
-    positions: Dict[str, Tuple[float, float]]     # {gid: (x_center, y_center)}
-    engine_state: EnvState                        # env 복원용
-
-
-class TopKTracker:
-    """Search 중 최고 결과 K개 추적 (cost 기준 오름차순 - 낮을수록 좋음)"""
-
-    def __init__(self, k: int = 5, verbose: bool = False):
-        self.k = k
-        self.verbose = verbose  # True면 리스트 변경 시 print
-        self._heap: List[Tuple[float, int, SearchResult]] = []  # max-heap (negated cost)
-        self._counter = 0
-
-    def add(self, result: SearchResult) -> bool:
-        """결과 추가. cost가 낮을수록 좋은 결과로 간주. 리스트 변경 시 True 반환."""
-        if any(-neg_c == result.cost for neg_c, _, _ in self._heap):
-            return False
-
-        entry = (-result.cost, self._counter, result)
-        self._counter += 1
-        changed = False
-
-        if len(self._heap) < self.k:
-            heapq.heappush(self._heap, entry)
-            changed = True
-        elif -result.cost > self._heap[0][0]:  # 새 cost가 현재 worst보다 낮으면
-            heapq.heapreplace(self._heap, entry)
-            changed = True
-
-        if changed and self.verbose:
-            worst_cost = -self._heap[0][0] if self._heap else float("inf")
-            best_cost = self.best_cost()
-            logger.info(
-                "TopK New result: cost=%.2f | Top-%d range: [%.2f ~ %.2f]",
-                result.cost,
-                len(self._heap),
-                best_cost,
-                worst_cost,
-            )
-
-        return changed
-
-    def get_results(self) -> List[SearchResult]:
-        """cost 오름차순 (best first)으로 반환"""
-        return sorted([item[2] for item in self._heap], key=lambda r: r.cost)
-
-    def best_cost(self) -> float:
-        """현재 best cost 반환"""
-        if not self._heap:
-            return float("inf")
-        results = self.get_results()
-        return results[0].cost if results else float("inf")
-
-    def __len__(self) -> int:
-        return len(self._heap)
-
-    def clear(self) -> None:
-        self._heap.clear()
-        self._counter = 0

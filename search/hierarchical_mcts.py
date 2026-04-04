@@ -13,6 +13,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 
 from envs.env import FactoryLayoutEnv
@@ -22,8 +23,11 @@ from search.base import (
     BaseHierarchicalSearch,
     BaseSearchConfig,
     DecisionCache,
+    ProgressFn,
+    SearchOutput,
     SearchSnapshot,
-    TopKTracker,
+    collect_top_k,
+    track_terminal,
 )
 
 
@@ -44,7 +48,6 @@ class HierarchicalMCTSConfig(BaseSearchConfig):
     pw_alpha: float = 0.5
     # Top-K tracking
     track_top_k: int = 0
-    track_verbose: bool = False
 
 
 def _greedy_worker_priors(costs: torch.Tensor, temperature: float = 0.5) -> torch.Tensor:
@@ -222,17 +225,17 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
     def __init__(self, *, config: HierarchicalMCTSConfig):
         super().__init__()
         self.config = config
-        if config.track_top_k > 0:
-            self.top_tracker = TopKTracker(k=config.track_top_k, verbose=config.track_verbose)
 
-    def select_h(
+    def select(
         self,
         *,
         obs: dict,
         agent: Agent,
         root_action_space: ActionSpace,
-    ) -> Tuple[int, int]:
-        """Run H-MCTS. Returns (manager_action, local_cand_idx) for the caller to resolve."""
+        progress_fn: Optional[ProgressFn] = None,
+        progress_interval: int = 10,
+    ) -> SearchOutput:
+        """Run H-MCTS. Returns SearchOutput with action (manager) and worker_action."""
         adapter = self.adapter
         if adapter is None:
             raise ValueError("adapter not set")
@@ -250,14 +253,23 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         priors = self._apply_dirichlet(priors, root_action_space.valid_mask)
         root = _ManagerNode(decision_cache=root_cache, priors=priors)
 
+        # Local top-k heap
+        topk_heap: list = []
+        topk_ctr = [0]
+        max_k = int(self.config.track_top_k)
+
         cfg = self.config
-        for _ in range(cfg.num_simulations):
-            self._simulate(engine=engine, adapter=adapter, root=root, agent=agent)
+        num_sims = int(cfg.num_simulations)
+        for _ in range(num_sims):
+            self._simulate(
+                engine=engine, adapter=adapter, root=root, agent=agent,
+                topk_heap=topk_heap, topk_ctr=topk_ctr, max_k=max_k,
+            )
 
         # Select best manager action by visit count
         if not root.children:
             self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
-            return 0, 0
+            return SearchOutput(action=0, worker_action=0, iterations=num_sims, top_k=collect_top_k(topk_heap))
 
         best_manager_action: int
         temp = float(cfg.temperature)
@@ -281,8 +293,24 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         else:
             best_worker_action = max(worker_node.children.items(), key=lambda kv: kv[1].visits)[0]
 
+        # Build output arrays
+        n_out = int(root_action_space.valid_mask.shape[0])
+        visits_out = np.zeros(n_out, dtype=np.int32)
+        values_out = np.zeros(n_out, dtype=np.float32)
+        for ma, wn in root.children.items():
+            if 0 <= ma < n_out:
+                visits_out[ma] = wn.visits
+                values_out[ma] = wn.total_value / max(1, wn.visits)
+
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_cache.snapshot)
-        return best_manager_action, best_worker_action
+        return SearchOutput(
+            action=best_manager_action,
+            worker_action=best_worker_action,
+            visits=visits_out,
+            values=values_out,
+            iterations=num_sims,
+            top_k=collect_top_k(topk_heap),
+        )
 
     def _simulate(
         self,
@@ -291,6 +319,9 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         adapter: BaseAdapter,
         root: _ManagerNode,
         agent: Agent,
+        topk_heap: list,
+        topk_ctr: List[int],
+        max_k: int,
     ) -> None:
         cfg = self.config
         manager_node = root
@@ -310,7 +341,6 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
 
             # Get or create worker node
             if manager_action not in manager_node.children:
-                # Restore snapshot so adapter's parent-level cache matches this node state.
                 self._restore_snapshot(
                     engine=engine, adapter=adapter,
                     snapshot=manager_node.decision_cache.snapshot,
@@ -398,7 +428,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
 
                 if child_step.terminal:
                     cum_reward = sum(path_rewards)
-                    self._track_terminal(engine=engine, cum_reward=cum_reward)
+                    topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, cum_reward, max_k)
                 break
 
         # Leaf evaluation
@@ -412,6 +442,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                 leaf_value = self._rollout(
                     engine=engine, adapter=adapter, agent=agent,
                     path_reward_offset=float(sum(path_rewards)),
+                    topk_heap=topk_heap, topk_ctr=topk_ctr, max_k=max_k,
                 )
             else:
                 leaf_value = float(agent.value(
@@ -443,6 +474,9 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         adapter: BaseAdapter,
         agent: Agent,
         path_reward_offset: float = 0.0,
+        topk_heap: list,
+        topk_ctr: List[int],
+        max_k: int,
     ) -> float:
         """Greedy rollout — flat (no hierarchical structure during rollout)."""
         total = 0.0
@@ -455,7 +489,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                     engine=engine, adapter=adapter, action=0, action_space=action_space,
                 )
                 total += float(reward)
-                self._track_terminal(engine=engine, cum_reward=path_reward_offset + total)
+                topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, path_reward_offset + total, max_k)
                 break
             a = agent.select_action(obs=obs, action_space=action_space)
             reward, terminated, truncated, _ = self._apply_action_index(
@@ -463,15 +497,13 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
             )
             total += float(reward)
             if terminated or truncated:
-                self._track_terminal(engine=engine, cum_reward=path_reward_offset + total)
+                topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, path_reward_offset + total, max_k)
                 break
         return float(total)
 
     # ---- helpers ----
 
     def _safe_priors(self, *, agent: Agent, obs: dict, action_space: ActionSpace) -> torch.Tensor:
-        # Agent.policy contract: non-negative scores (not log-probs/logits).
-        # We normalize defensively because MCTS expects a probability distribution.
         device = action_space.centers.device if action_space.centers.numel() > 0 else torch.device("cpu")
         pri = agent.policy(obs=obs, action_space=action_space)
         if not isinstance(pri, torch.Tensor):

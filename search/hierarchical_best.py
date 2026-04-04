@@ -12,9 +12,11 @@ from envs.action_space import ActionSpace
 from search.base import (
     BaseHierarchicalSearch,
     BaseSearchConfig,
-    SearchProgress,
+    ProgressFn,
+    SearchOutput,
     SearchSnapshot,
-    TopKTracker,
+    collect_top_k,
+    track_terminal,
 )
 
 
@@ -28,7 +30,6 @@ class HierarchicalBestFirstConfig(BaseSearchConfig):
     cache_decision_state: bool = False
     use_value_heuristic: bool = True
     track_top_k: int = 0
-    track_verbose: bool = False
 
 
 @dataclass
@@ -49,21 +50,16 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
     def __init__(self, *, config: HierarchicalBestFirstConfig):
         super().__init__()
         self.config = config
-        if self.config.track_top_k > 0:
-            self.top_tracker = TopKTracker(
-                k=self.config.track_top_k,
-                verbose=self.config.track_verbose,
-            )
-        else:
-            self.top_tracker = None
 
-    def select_h(
+    def select(
         self,
         *,
         obs: dict,
         agent: Agent,
         root_action_space: ActionSpace,
-    ) -> Tuple[int, int]:
+        progress_fn: Optional[ProgressFn] = None,
+        progress_interval: int = 10,
+    ) -> SearchOutput:
         adapter = self.adapter
         if adapter is None:
             raise ValueError("HierarchicalBestFirstSearch.adapter is not set. Call search.set_adapter(...).")
@@ -79,17 +75,16 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         root_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
         root_score = self._safe_value(agent=agent, obs=obs, action_space=root_action_space) if bool(self.config.use_value_heuristic) else 0.0
 
-        has_callback = self._progress_callback is not None
-        if has_callback:
-            n_actions = int(root_action_space.valid_mask.shape[0])
-            root_mask = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
-            root_visits = np.zeros((n_actions,), dtype=np.int32)
-            root_values = np.full((n_actions,), float("-inf"), dtype=np.float32)
-        else:
-            n_actions = 0
-            root_mask = np.zeros((0,), dtype=bool)
-            root_visits = np.zeros((0,), dtype=np.int32)
-            root_values = np.zeros((0,), dtype=np.float32)
+        # Local top-k heap
+        topk_heap: list = []
+        topk_ctr = [0]
+        max_k = int(self.config.track_top_k)
+
+        has_callback = progress_fn is not None
+        n_actions = int(root_action_space.valid_mask.shape[0])
+        root_mask = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
+        root_visits = np.zeros((n_actions,), dtype=np.int32)
+        root_values = np.full((n_actions,), float("-inf"), dtype=np.float32)
 
         frontier: List[Tuple[float, int, _HierBestItem]] = []
         push_order = 0
@@ -145,33 +140,21 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                         best_worker_action = int(node.first_worker_action) if node.first_worker_action >= 0 else 0
                         best_score = float(node.score)
                     expansions += 1
-                    self._maybe_emit_progress(
-                        iteration=expansions,
-                        total=total_expansions,
-                        visits=root_visits,
-                        values=root_values,
-                        mask=root_mask,
-                        frontier_size=len(frontier),
-                    )
+                    if has_callback and (expansions % progress_interval == 0 or expansions >= total_expansions):
+                        self._emit_progress_fn(progress_fn, expansions, total_expansions, root_visits, root_values, root_mask)
                     continue
 
                 valid_mask = action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
-                    self._track_terminal(engine=engine, cum_reward=float(node.cum_reward))
+                    topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, float(node.cum_reward), max_k)
                     if node.first_manager_action >= 0 and float(node.score) > best_score:
                         best_manager_action = int(node.first_manager_action)
                         best_worker_action = int(node.first_worker_action) if node.first_worker_action >= 0 else 0
                         best_score = float(node.score)
                     expansions += 1
-                    self._maybe_emit_progress(
-                        iteration=expansions,
-                        total=total_expansions,
-                        visits=root_visits,
-                        values=root_values,
-                        mask=root_mask,
-                        frontier_size=len(frontier),
-                    )
+                    if has_callback and (expansions % progress_interval == 0 or expansions >= total_expansions):
+                        self._emit_progress_fn(progress_fn, expansions, total_expansions, root_visits, root_values, root_mask)
                     continue
 
                 expandable.append((node, node_snapshot, obs_node, action_space, valid_mask, valid_n))
@@ -216,19 +199,19 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                     if not worker_candidates:
                         reward = float(engine.failure_penalty())
                         child_cum = float(node.cum_reward) + float(reward)
-                        root_manager_action = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
-                        root_worker_action = 0 if node.first_worker_action < 0 else int(node.first_worker_action)
+                        root_ma = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
+                        root_wa = 0 if node.first_worker_action < 0 else int(node.first_worker_action)
                         score = float(child_cum)
-                        self._track_terminal(engine=engine, cum_reward=child_cum)
+                        topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, child_cum, max_k)
 
-                        if root_manager_action >= 0 and score > best_score:
-                            best_manager_action = int(root_manager_action)
-                            best_worker_action = int(root_worker_action)
+                        if root_ma >= 0 and score > best_score:
+                            best_manager_action = int(root_ma)
+                            best_worker_action = int(root_wa)
                             best_score = float(score)
 
-                        if has_callback and 0 <= root_manager_action < n_actions:
-                            root_visits[root_manager_action] += 1
-                            root_values[root_manager_action] = max(float(root_values[root_manager_action]), float(score))
+                        if 0 <= root_ma < n_actions:
+                            root_visits[root_ma] += 1
+                            root_values[root_ma] = max(float(root_values[root_ma]), float(score))
                         continue
 
                     for worker_action in worker_candidates:
@@ -248,8 +231,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                         terminal = bool(terminated or truncated)
                         child_depth = int(node.depth) + 1
                         child_cum = float(node.cum_reward) + float(reward)
-                        root_manager_action = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
-                        root_worker_action = int(worker_action) if node.first_worker_action < 0 else int(node.first_worker_action)
+                        root_ma = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
+                        root_wa = int(worker_action) if node.first_worker_action < 0 else int(node.first_worker_action)
 
                         if terminal:
                             child_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
@@ -257,7 +240,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                             child_action_space: Optional[ActionSpace] = self._empty_action_space(device=adapter.device)
                             value_term = 0.0
                             score = float(child_cum)
-                            self._track_terminal(engine=engine, cum_reward=child_cum)
+                            topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, child_cum, max_k)
                         else:
                             if bool(self.config.cache_decision_state):
                                 child_obs = adapter.build_observation()
@@ -289,14 +272,14 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                                 value_term = 0.0
                             score = float(child_cum) + float(value_term)
 
-                        if root_manager_action >= 0 and score > best_score:
-                            best_manager_action = int(root_manager_action)
-                            best_worker_action = int(root_worker_action)
+                        if root_ma >= 0 and score > best_score:
+                            best_manager_action = int(root_ma)
+                            best_worker_action = int(root_wa)
                             best_score = float(score)
 
-                        if has_callback and 0 <= root_manager_action < n_actions:
-                            root_visits[root_manager_action] += 1
-                            root_values[root_manager_action] = max(float(root_values[root_manager_action]), float(score))
+                        if 0 <= root_ma < n_actions:
+                            root_visits[root_ma] += 1
+                            root_values[root_ma] = max(float(root_values[root_ma]), float(score))
 
                         if (not terminal) and child_depth <= max_depth:
                             heapq.heappush(
@@ -308,8 +291,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                                         score=float(score),
                                         cum_reward=float(child_cum),
                                         depth=child_depth,
-                                        first_manager_action=int(root_manager_action),
-                                        first_worker_action=int(root_worker_action),
+                                        first_manager_action=int(root_ma),
+                                        first_worker_action=int(root_wa),
                                         snapshot=child_snapshot,
                                         obs=child_obs,
                                         action_space=child_action_space,
@@ -319,14 +302,8 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                             push_order += 1
 
                 expansions += 1
-                self._maybe_emit_progress(
-                    iteration=expansions,
-                    total=total_expansions,
-                    visits=root_visits,
-                    values=root_values,
-                    mask=root_mask,
-                    frontier_size=len(frontier),
-                )
+                if has_callback and (expansions % progress_interval == 0 or expansions >= total_expansions):
+                    self._emit_progress_fn(progress_fn, expansions, total_expansions, root_visits, root_values, root_mask)
 
         if best_manager_action < 0:
             best_manager_action, best_worker_action = self._fallback_pair(
@@ -336,8 +313,43 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                 root_action_space=root_action_space,
             )
 
+        # Build output
+        values_out = np.where(np.isfinite(root_values), root_values, 0.0).astype(np.float32, copy=False)
+
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
-        return int(best_manager_action), int(best_worker_action)
+        return SearchOutput(
+            action=int(best_manager_action),
+            worker_action=int(best_worker_action),
+            visits=root_visits.copy(),
+            values=values_out.copy(),
+            iterations=expansions,
+            top_k=collect_top_k(topk_heap),
+        )
+
+    @staticmethod
+    def _emit_progress_fn(
+        progress_fn: ProgressFn,
+        iteration: int,
+        total: int,
+        visits: np.ndarray,
+        values: np.ndarray,
+        mask: np.ndarray,
+    ) -> None:
+        n_actions = int(visits.shape[0])
+        values_out = np.where(np.isfinite(values), values, 0.0).astype(np.float32, copy=False)
+        if n_actions > 0:
+            valid_values = np.where(mask, values, -np.inf)
+            if np.isfinite(valid_values).any():
+                best_a = int(np.argmax(valid_values))
+                best_v = float(values_out[best_a])
+            else:
+                valid_visits = np.where(mask, visits, -1)
+                best_a = int(np.argmax(valid_visits))
+                best_v = 0.0
+        else:
+            best_a = 0
+            best_v = 0.0
+        progress_fn(iteration, total, visits.copy(), values_out.copy(), best_a, best_v)
 
     def _safe_value(
         self,
@@ -405,88 +417,27 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
         if int(valid_idx.numel()) <= 0:
             return 0, 0
 
-        best_manager_action = int(valid_idx[0].item())
+        best_ma = int(valid_idx[0].item())
         try:
             priors = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=adapter.device).view(-1)
             priors = priors.masked_fill(~valid, float("-inf"))
             if bool(torch.isfinite(priors).any().item()):
-                best_manager_action = int(torch.argmax(priors).item())
+                best_ma = int(torch.argmax(priors).item())
         except Exception:
             pass
 
         try:
-            worker_as = adapter.sub_action_space(best_manager_action)
+            worker_as = adapter.sub_action_space(best_ma)
             locals_top = self._top_worker_candidates(
                 adapter=adapter,
-                parent_idx=best_manager_action,
+                parent_idx=best_ma,
                 worker_action_space=worker_as,
             )
             if locals_top:
-                return best_manager_action, int(locals_top[0])
+                return best_ma, int(locals_top[0])
         except Exception:
             pass
-        return best_manager_action, 0
-
-    def _maybe_emit_progress(
-        self,
-        *,
-        iteration: int,
-        total: int,
-        visits: np.ndarray,
-        values: np.ndarray,
-        mask: np.ndarray,
-        frontier_size: int,
-    ) -> None:
-        if self._progress_callback is None:
-            return
-        if (iteration % self._progress_interval) != 0 and iteration < total:
-            return
-        self._emit_hbest_progress(
-            iteration=iteration,
-            total=total,
-            visits=visits,
-            values=values,
-            mask=mask,
-            frontier_size=frontier_size,
-        )
-
-    def _emit_hbest_progress(
-        self,
-        *,
-        iteration: int,
-        total: int,
-        visits: np.ndarray,
-        values: np.ndarray,
-        mask: np.ndarray,
-        frontier_size: int,
-    ) -> None:
-        n_actions = int(visits.shape[0])
-        values_out = np.where(np.isfinite(values), values, 0.0).astype(np.float32, copy=False)
-
-        if n_actions > 0:
-            valid_values = np.where(mask, values, -np.inf)
-            if np.isfinite(valid_values).any():
-                best_action = int(np.argmax(valid_values))
-                best_value = float(values_out[best_action])
-            else:
-                valid_visits = np.where(mask, visits, -1)
-                best_action = int(np.argmax(valid_visits))
-                best_value = 0.0
-        else:
-            best_action = 0
-            best_value = 0.0
-
-        self._emit_progress(
-            SearchProgress(
-                iteration=iteration,
-                total=total,
-                visits=visits.copy(),
-                values=values_out.copy(),
-                best_action=best_action,
-                best_value=best_value,
-                extra={"frontier_size": int(frontier_size), "hierarchical": True},
-            )
-        )
+        return best_ma, 0
 
 
 # Backward-compatible aliases

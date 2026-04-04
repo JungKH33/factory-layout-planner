@@ -11,9 +11,11 @@ from envs.action_space import ActionSpace
 from search.base import (
     BaseHierarchicalSearch,
     BaseSearchConfig,
-    SearchProgress,
+    ProgressFn,
+    SearchOutput,
     SearchSnapshot,
-    TopKTracker,
+    collect_top_k,
+    track_terminal,
 )
 
 
@@ -25,7 +27,6 @@ class HierarchicalBeamConfig(BaseSearchConfig):
     worker_topk: int = 4
     cache_decision_state: bool = False
     track_top_k: int = 0
-    track_verbose: bool = False
 
 
 @dataclass
@@ -44,21 +45,16 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
     def __init__(self, *, config: HierarchicalBeamConfig):
         super().__init__()
         self.config = config
-        if self.config.track_top_k > 0:
-            self.top_tracker = TopKTracker(
-                k=self.config.track_top_k,
-                verbose=self.config.track_verbose,
-            )
-        else:
-            self.top_tracker = None
 
-    def select_h(
+    def select(
         self,
         *,
         obs: dict,
         agent: Agent,
         root_action_space: ActionSpace,
-    ) -> Tuple[int, int]:
+        progress_fn: Optional[ProgressFn] = None,
+        progress_interval: int = 10,
+    ) -> SearchOutput:
         adapter = self.adapter
         if adapter is None:
             raise ValueError("HierarchicalBeamSearch.adapter is not set. Call search.set_adapter(...).")
@@ -71,13 +67,18 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
         root_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
         total_depth = int(self.config.depth)
 
-        has_callback = self._progress_callback is not None
+        # Local top-k heap
+        topk_heap: list = []
+        topk_ctr = [0]
+        max_k = int(self.config.track_top_k)
+
+        has_callback = progress_fn is not None
         if has_callback:
             n_actions = int(root_action_space.valid_mask.shape[0])
             mask_np = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
             root_manager_scores: Dict[int, float] = {}
         else:
-            root_manager_scores = {}  # unused when no callback
+            root_manager_scores = {}
             n_actions = 0
             mask_np = np.zeros((0,), dtype=bool)
 
@@ -105,13 +106,12 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                 else:
                     obs_node = adapter.build_observation()
                     action_space = adapter.build_action_space()
-                    # In non-cached mode, rebuild node snapshot so worker-level adapter cache matches this state.
                     node_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
 
                 valid_mask = action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
-                    self._track_terminal(engine=engine, cum_reward=beam.cum_reward)
+                    topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, beam.cum_reward, max_k)
                     new_beams.append(
                         _HierBeamItem(
                             cum_reward=beam.cum_reward,
@@ -180,7 +180,7 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                                     action_space=self._empty_action_space(device=adapter.device) if terminal else None,
                                 )
                             )
-                            self._track_terminal(engine=engine, cum_reward=new_cum)
+                            topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, new_cum, max_k)
                             continue
 
                         for worker_action in worker_candidates:
@@ -228,7 +228,7 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                             )
 
                             if terminal:
-                                self._track_terminal(engine=engine, cum_reward=new_cum)
+                                topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, new_cum, max_k)
 
             if not new_beams:
                 break
@@ -242,24 +242,50 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                         best = root_manager_scores.get(beam.first_manager_action, float("-inf"))
                         if beam.cum_reward > best:
                             root_manager_scores[beam.first_manager_action] = beam.cum_reward
-                self._emit_hbeam_progress(
-                    depth=depth + 1,
-                    total_depth=total_depth,
-                    n_actions=n_actions,
-                    mask=mask_np,
-                    root_manager_scores=root_manager_scores,
-                    beams=beams,
-                )
+
+                visits = np.zeros(n_actions, dtype=np.int32)
+                values = np.zeros(n_actions, dtype=np.float32)
+                for beam in beams:
+                    if 0 <= beam.first_manager_action < n_actions:
+                        visits[beam.first_manager_action] += 1
+                        values[beam.first_manager_action] = max(values[beam.first_manager_action], float(beam.cum_reward))
+                for rma, score in root_manager_scores.items():
+                    if 0 <= rma < n_actions:
+                        values[rma] = max(values[rma], float(score))
+                if n_actions > 0:
+                    valid_values = np.where(mask_np, values, -np.inf)
+                    best_a = int(np.argmax(valid_values))
+                    best_v = float(values[best_a]) if best_a < len(values) else 0.0
+                else:
+                    best_a = 0
+                    best_v = 0.0
+                progress_fn(depth + 1, total_depth, visits, values, best_a, best_v)
 
         best_manager_action = int(beams[0].first_manager_action) if beams else 0
         best_worker_action = int(beams[0].first_worker_action) if beams else 0
 
+        # Build output arrays
+        n_out = int(root_action_space.valid_mask.shape[0])
+        visits_out = np.zeros(n_out, dtype=np.int32)
+        values_out = np.zeros(n_out, dtype=np.float32)
+        for beam in beams:
+            if 0 <= beam.first_manager_action < n_out:
+                visits_out[beam.first_manager_action] += 1
+                values_out[beam.first_manager_action] = max(values_out[beam.first_manager_action], beam.cum_reward)
+
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
         if best_manager_action < 0:
-            return 0, 0
+            best_manager_action = 0
         if best_worker_action < 0:
-            return best_manager_action, 0
-        return best_manager_action, best_worker_action
+            best_worker_action = 0
+        return SearchOutput(
+            action=best_manager_action,
+            worker_action=best_worker_action,
+            visits=visits_out,
+            values=values_out,
+            iterations=total_depth,
+            top_k=collect_top_k(topk_heap),
+        )
 
     def _top_worker_candidates(
         self,
@@ -295,49 +321,3 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
         top_local = torch.topk(rank_scores, k=worker_topk).indices
         top_idx = candidate_idx.index_select(0, top_local)
         return [int(i) for i in top_idx.detach().cpu().tolist()]
-
-    def _emit_hbeam_progress(
-        self,
-        *,
-        depth: int,
-        total_depth: int,
-        n_actions: int,
-        mask: np.ndarray,
-        root_manager_scores: Dict[int, float],
-        beams: List[_HierBeamItem],
-    ) -> None:
-        visits = np.zeros(n_actions, dtype=np.int32)
-        values = np.zeros(n_actions, dtype=np.float32)
-
-        for beam in beams:
-            if 0 <= beam.first_manager_action < n_actions:
-                visits[beam.first_manager_action] += 1
-                values[beam.first_manager_action] = max(values[beam.first_manager_action], float(beam.cum_reward))
-
-        for root_manager_action, score in root_manager_scores.items():
-            if 0 <= root_manager_action < n_actions:
-                values[root_manager_action] = max(values[root_manager_action], float(score))
-
-        if n_actions > 0:
-            valid_values = np.where(mask, values, -np.inf)
-            best_action = int(np.argmax(valid_values))
-            best_value = float(values[best_action]) if best_action < len(values) else 0.0
-        else:
-            best_action = 0
-            best_value = 0.0
-
-        self._emit_progress(
-            SearchProgress(
-                iteration=depth,
-                total=total_depth,
-                visits=visits,
-                values=values,
-                best_action=best_action,
-                best_value=best_value,
-                extra={
-                    "beam_size": len(beams),
-                    "active_root_actions": len(root_manager_scores),
-                    "hierarchical": True,
-                },
-            )
-        )

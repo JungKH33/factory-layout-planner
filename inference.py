@@ -11,7 +11,7 @@ from envs.env_loader import load_env
 from envs.visualizer import plot_layout, save_layout, browse_steps, StepFrame
 from postprocess import RoutePlanner
 
-from pipeline import DecisionPipeline
+from trace.explorer import Explorer
 from search.beam import BeamConfig, BeamSearch
 from search.best import BestFirstConfig, BestFirstSearch
 from search.mcts import MCTSConfig, MCTSSearch
@@ -32,14 +32,14 @@ AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
 ALPHACHIP_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-26_00-50_b156aa\best.ckpt"
 MASKPLACE_CHECKPOINT_PATH: str | None = r"D:\developments\Projects\factory-layout\results\checkpoints\2026-01-24_01-49_4e9e28\best.ckpt"
 
-TOPK_K: int = 50
+TOPK_K: int = 100
 TOPK_SCAN_STEP: float = 5.0
 TOPK_QUANT_STEP: float = 10.0
 TOPK_CELL_SIZE: int = 50
 TOPK_PER_CELL: int = 20
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "best_first"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
+SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 BEST_MAX_EXPANSIONS: int = 20
@@ -64,7 +64,6 @@ HBEST_USE_VALUE_HEURISTIC: bool = True
 
 # Top-K tracking: search 중 최고 결과 K개 저장
 TRACK_TOP_K: int = 5  # 0이면 비활성화
-TRACK_VERBOSE: bool = True  # 리스트 변경 시 print
 
 BACKEND_SELECTION: str = "benchmark"  # "static" | "benchmark"
 
@@ -120,7 +119,6 @@ def main() -> None:
                 rollout_depth=int(ROLLOUT_DEPTH),
                 cache_decision_state=bool(MCTS_CACHE_DECISION_STATE),
                 track_top_k=TRACK_TOP_K,
-                track_verbose=TRACK_VERBOSE,
             )
         )
     elif SEARCH_MODE == "hierarchical_mcts":
@@ -130,7 +128,6 @@ def main() -> None:
                 rollout_enabled=bool(MCTS_ROLLOUT_ENABLED),
                 rollout_depth=int(ROLLOUT_DEPTH),
                 track_top_k=TRACK_TOP_K,
-                track_verbose=TRACK_VERBOSE,
                 pw_enabled=bool(MCTS_PW_ENABLED),
                 pw_c=MCTS_PW_C,
                 pw_alpha=MCTS_PW_ALPHA,
@@ -146,7 +143,6 @@ def main() -> None:
                 cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
                 use_value_heuristic=bool(HBEST_USE_VALUE_HEURISTIC),
                 track_top_k=TRACK_TOP_K,
-                track_verbose=TRACK_VERBOSE,
             )
         )
     elif SEARCH_MODE == "hierarchical_beam":
@@ -158,7 +154,6 @@ def main() -> None:
                 worker_topk=HBEAM_WORKER_TOPK,
                 cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
                 track_top_k=TRACK_TOP_K,
-                track_verbose=TRACK_VERBOSE,
             )
         )
     elif SEARCH_MODE in {"best_first", "best"}:
@@ -170,7 +165,6 @@ def main() -> None:
                 cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
                 use_value_heuristic=bool(BEST_USE_VALUE_HEURISTIC),
                 track_top_k=TRACK_TOP_K,
-                track_verbose=TRACK_VERBOSE,
             )
         )
     elif SEARCH_MODE == "beam":
@@ -181,7 +175,6 @@ def main() -> None:
                 expansion_topk=BEAM_EXPANSION_TOPK,
                 cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
                 track_top_k=TRACK_TOP_K,
-                track_verbose=TRACK_VERBOSE,
             )
         )
     else:
@@ -197,15 +190,19 @@ def main() -> None:
     else:
         raise ValueError(f"Unknown ORDERING_MODE={ORDERING_MODE!r} (expected 'none'|'difficulty')")
 
-    pipe = DecisionPipeline(agent=agent, adapter=adapter, search=search, ordering_agent=ordering_agent)
-    pipe.bind(engine=engine)
-    obs_env, _info = engine.reset(options=loaded.reset_kwargs)
-    terminated = truncated = False
-    total_reward = 0.0
+    # Use Explorer instead of DecisionPipeline
+    exp = Explorer(engine, adapter, agent, search=search, ordering_agent=ordering_agent)
+    exp.reset(options=loaded.reset_kwargs)
+
+    # Determine auto_play source
+    if search is not None:
+        source = f"search:{type(search).__name__}"
+    else:
+        source = "agent"
 
     start = time.perf_counter()
-    step = 0
     frames: list[StepFrame] = []
+    all_top_k: list[dict] = []
 
     logger.info("inference")
     logger.info(
@@ -217,107 +214,115 @@ def main() -> None:
         device,
     )
 
-    while not (terminated or truncated):
-        step += 1
-        next_gid = engine.get_state().remaining[0] if engine.get_state().remaining else None
+    total_reward = 0.0
+    step = 0
+    terminated = False
+    truncated = False
 
-        state = engine.get_state().copy()
-        result = None
-        dbg: dict[str, object] = {}
+    while not (terminated or truncated):
+        node = exp.current()
+        if node.terminal:
+            break
+
+        step += 1
+        next_gid = node.group_id
+
+        # Capture state BEFORE action for frame
+        state_before = engine.get_state().copy()
+
+        # Get agent signal (always, for visualization scores/value)
+        agent_sig = exp.predict_agent()
+
+        # Get search signal and decide source
+        result_placement = None
         try:
-            result, dbg = pipe.decide()
-            obs_env_next, reward, terminated, truncated, info = engine.step_placement(result)
-        except ValueError as e:
-            if str(e) != "no_valid_actions":
-                raise
+            if search is not None:
+                search_sig = exp.predict_search()
+                child = exp.step_with(search_sig.source)
+                # Collect top-K from this search step
+                step_top_k = search_sig.metadata.get("top_k")
+                if step_top_k:
+                    all_top_k.extend(step_top_k)
+            else:
+                child = exp.step_with("agent")
+        except (ValueError, KeyError):
+            # No valid actions or signal missing
             reward = float(engine.failure_penalty())
             terminated = False
             truncated = True
-            info = {"reason": "no_valid_actions"}
-            obs_env_next = None
+            logger.warning(
+                "step %s next_gid=%s search=%s reason=no_valid_actions",
+                step, next_gid, SEARCH_MODE,
+            )
+            frames.append(
+                StepFrame(
+                    state=state_before,
+                    cost=float(engine.cost()),
+                    step_idx=int(step),
+                    action_space=node._snapshot.action_space if node._snapshot else None,
+                    scores=agent_sig.scores if agent_sig.scores is not None else None,
+                    selected_action=None,
+                    value=agent_sig.metadata.get("value_estimate"),
+                )
+            )
+            total_reward += reward
+            break
 
-        action_space_obj = dbg.get("action_space")
-        scores_obj = dbg.get("scores")
-        action_obj = dbg.get("action_index")
-        value_obj = dbg.get("value")
-        selected_action = None
-        if action_obj is not None:
-            try:
-                selected_action = int(action_obj)
-            except Exception:
-                selected_action = None
-        value = None
-        if value_obj is not None:
-            try:
-                value = float(value_obj)
-            except Exception:
-                value = None
+        reward = child.cum_reward - node.cum_reward
+        total_reward += reward
+        terminated = child.terminal and len(engine.get_state().remaining) == 0
+        truncated = child.terminal and not terminated
 
+        # Build StepFrame for visualization
         frames.append(
             StepFrame(
-                state=state,
-                cost=float(engine.cost()),
+                state=state_before,
+                cost=child.cost_after or float(engine.cost()),
                 step_idx=int(step),
-                action_space=action_space_obj if isinstance(action_space_obj, ActionSpace) else None,
-                scores=scores_obj if hasattr(scores_obj, "shape") else None,
-                selected_action=selected_action,
-                value=value,
+                action_space=node._snapshot.action_space if node._snapshot else None,
+                scores=agent_sig.scores if agent_sig.scores is not None else None,
+                selected_action=node.chosen_action,
+                value=agent_sig.metadata.get("value_estimate"),
             )
         )
 
-        obs_env = obs_env_next
-        total_reward += float(reward)
-        if result is None:
-            logger.warning(
-                "step %s next_gid=%s search=%s reason=no_valid_actions",
-                step,
-                next_gid,
-                SEARCH_MODE,
-            )
-        else:
-            pos_x, pos_y = float(result.x_center), float(result.y_center)
-            logger.info(
-                "step %s next_gid=%s search=%s action=(%.1f,%.1f)",
-                step,
-                next_gid,
-                dbg.get("search", SEARCH_MODE),
-                pos_x, pos_y,
-            )
+        logger.info(
+            "step %s next_gid=%s search=%s action=%s cost=%.1f",
+            step, next_gid, SEARCH_MODE, node.chosen_action,
+            child.cost_after or 0.0,
+        )
 
         if terminated or truncated:
-            reason = info.get("reason", None)
+            reason = "terminated" if terminated else "truncated"
             logger.info(
-                "end: terminated=%s truncated=%s step=%s placed=%s cost=%.3f reason=%s",
-                terminated,
-                truncated,
-                step,
+                "end: terminated=%s truncated=%s step=%s placed=%s cost=%.3f",
+                terminated, truncated, step,
                 len(engine.get_state().placed),
                 engine.total_cost(),
-                reason,
             )
 
     end = time.perf_counter()
     logger.info("Total computation time: %.4f seconds", end - start)
     logger.info(
         "episode_reward=%.3f terminated=%s truncated=%s",
-        total_reward,
-        terminated,
-        truncated,
+        total_reward, terminated, truncated,
     )
 
-    # Print top-K results if tracking was enabled
-    if search is not None and hasattr(search, "top_tracker") and search.top_tracker is not None:
-        top_results = search.top_tracker.get_results()
-        if top_results:
-            logger.info("Top-%s Search Results", len(top_results))
-            for i, result in enumerate(top_results):
-                logger.info(
-                    "#%s: cost=%.2f, placed=%s, cum_reward=%.3f",
-                    i + 1,
-                    result.cost,
-                    len(result.positions),
-                    result.cum_reward,
-                )
+    # Sort and deduplicate top-K results across all search steps
+    if all_top_k:
+        seen_costs: set[float] = set()
+        unique_top_k = []
+        for entry in sorted(all_top_k, key=lambda r: r["cost"]):
+            if entry["cost"] not in seen_costs:
+                seen_costs.add(entry["cost"])
+                unique_top_k.append(entry)
+        all_top_k = unique_top_k[:TRACK_TOP_K]
+        logger.info("Top-%s Search Results (aggregated across steps)", len(all_top_k))
+        for i, result in enumerate(all_top_k):
+            logger.info(
+                "#%s: cost=%.2f, placed=%s, cum_reward=%.3f",
+                i + 1, result["cost"], len(result["positions"]), result["cum_reward"],
+            )
 
     out_dir = Path("results") / "inference"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -349,18 +354,17 @@ def main() -> None:
         save_path=str(out_path),
     )
     logger.info("saved_layout=%s", out_path)
-    
+
     # Save placement JSON
     placement_path = out_dir / f"{ts}_{AGENT_MODE}_{WRAPPER_MODE}_{SEARCH_MODE}.json"
     engine.save_placement(str(placement_path))
     logger.info("saved_placement=%s", placement_path)
 
-    # Save top-K results if tracking was enabled
-    if search is not None and hasattr(search, "top_tracker") and search.top_tracker is not None:
-        top_results = search.top_tracker.get_results()
-        for i, result in enumerate(top_results):
-            engine.set_state(result.engine_state)
-            top_path = out_dir / f"{ts}_top{i+1}_cost{result.cost:.1f}.png"
+    # Save top-K result layouts
+    if all_top_k:
+        for i, result in enumerate(all_top_k):
+            engine.set_state(result["engine_state"])
+            top_path = out_dir / f"{ts}_top{i+1}_cost{result['cost']:.1f}.png"
             save_layout(
                 adapter,
                 show_masks=SHOW_MASKS,

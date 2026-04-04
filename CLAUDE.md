@@ -43,7 +43,7 @@ agents/placement/greedy/adapter_v3.py        ← generates ActionSpace(poses[K,3
 agents/placement/greedy/agent.py             ← policy: argmin(Δcost) over candidates
 search/mcts.py                               ← optional tree search over adapter
        ↓
-pipeline.py                                  ← DecisionPipeline(adapter, agent, search) — ties it together
+trace/explorer.py                            ← Explorer(engine, adapter, agent, search) — unified decision explorer
        ↓
 inference.py                                 ← episode loop, visualization, output (uses agents.registry)
 ```
@@ -116,19 +116,43 @@ Search operates at the **adapter** level. Each MCTS node stores an `EnvState` co
 
 **Variant expansion**: when `expand_variants=True` on an adapter (BaseAdapter param), each center candidate is expanded into `(center, variant_index)` pairs. `max_variants` limits how many variants per center are kept. The adapter's `_apply_variant_expansion()` computes per-variant costs in a single `cost_batch(per_variant=True)` call and selects the top-K `(center, variant)` pairs by cost. `ActionSpace.variant_indices` carries the per-action variant index; `decode_action()` produces `EnvAction` with explicit `variant_index`. Search algorithms (MCTS/Beam) treat these as regular actions with no special variant branching.
 
-`TopKTracker` (min-heap) tracks best K complete episodes by cost across all search iterations.
+Top-K terminal tracking uses stateless utility functions (`track_terminal`, `collect_top_k` in `search/base.py`) with local heaps per `select()` call. `SearchOutput` carries the final action, visits, values, and top-K results.
 
-### Pipeline flow
+### trace/ — Unified Decision Explorer
+
+```
+trace/
+  schema.py        ← Signal, Snapshot, DecisionNode, DecisionTree, TraceEvent
+  explorer.py      ← Explorer: predict, step, undo/redo, branch, auto_play, events
+  query.py         ← TraceQuery: best_path, top_k_paths, signal_agreement, summarize
+```
+
+`Explorer` replaces the old `DecisionPipeline` and WebUI `HistoryEntry`:
 
 ```python
-DecisionPipeline.decide():
-  1. ordering_agent.reorder(env)             # optional: reorders remaining[]
-  2. adapter.build_observation()             # -> model-specific obs (greedy: {})
-  3. adapter.build_action_space()            # -> ActionSpace (runs create_mask internally)
-  4. search.select(obs, agent, action_space) # or agent.select_action(obs, action_space)
-  5. adapter.decode_action(index, action_space) # -> EnvAction
-  6. return (action, debug_dict)
+exp = Explorer(engine, adapter, agent, search, ordering_agent)
+exp.reset(options=loaded.reset_kwargs)
+
+# Predictions (no side-effects on engine state)
+agent_signal = exp.predict_agent()       # → Signal with scores, value
+search_signal = exp.predict_search()     # → Signal with visits, values, top_k
+
+# Execution
+child = exp.step(action_index, chosen_by="human")
+child = exp.step_with("agent")           # step using agent's recommendation
+results = exp.auto_play(source="agent")  # run to completion
+
+# Navigation (tree-based undo/redo)
+exp.undo()
+exp.redo()
+exp.goto(node_id)
+exp.branch("name")
+
+# Events (for WebUI streaming)
+exp.on(callback)   # callback receives TraceEvent
 ```
+
+Search algorithms return `SearchOutput` (action, visits, values, iterations, top_k). `select()` accepts `progress_fn` callback for real-time streaming.
 
 ### `envs/env_configs/*.json` schema
 
@@ -158,7 +182,7 @@ Zone constraint logic: op is facility requirement (e.g. `height<=30` → facilit
 
 ### WebUI session model
 
-`webui/session.py` manages per-session `(adapter, agent, search, pipeline, history)`. History is a stack of `(EnvState, adapter_state)` enabling undo/redo. FastAPI backend exposes REST for step/undo/search and WebSocket for streaming `SearchProgress`.
+`webui/session.py` manages per-session `Explorer` instances. Each `Session` wraps an `Explorer` that handles state management, undo/redo (via `DecisionTree`), and search execution. FastAPI backend exposes REST for step/undo/search and WebSocket for streaming search progress via `Explorer` events.
 
 ## Key Conventions
 

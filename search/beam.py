@@ -11,9 +11,11 @@ from envs.action_space import ActionSpace
 from search.base import (
     BaseSearch,
     BaseSearchConfig,
-    SearchProgress,
+    ProgressFn,
+    SearchOutput,
     SearchSnapshot,
-    TopKTracker,
+    collect_top_k,
+    track_terminal,
 )
 
 
@@ -25,8 +27,7 @@ class BeamConfig(BaseSearchConfig):
     # Cache obs/action_space per beam item. False by default: beam expands
     # width * topk children per depth, so caching all items is memory-heavy.
     cache_decision_state: bool = False
-    track_top_k: int = 0  # 0이면 tracking 비활성화
-    track_verbose: bool = False  # True면 리스트 변경 시 print
+    track_top_k: int = 0
 
 
 @dataclass
@@ -44,13 +45,6 @@ class BeamSearch(BaseSearch):
     def __init__(self, *, config: BeamConfig):
         super().__init__()
         self.config = config
-        # Initialize top-K tracker if enabled
-        if self.config.track_top_k > 0:
-            self.top_tracker = TopKTracker(
-                k=self.config.track_top_k, verbose=self.config.track_verbose
-            )
-        else:
-            self.top_tracker = None
 
     def select(
         self,
@@ -58,7 +52,9 @@ class BeamSearch(BaseSearch):
         obs: dict,
         agent: Agent,
         root_action_space: ActionSpace,
-    ) -> int:
+        progress_fn: Optional[ProgressFn] = None,
+        progress_interval: int = 10,
+    ) -> SearchOutput:
         adapter = self.adapter
         if adapter is None:
             raise ValueError("BeamSearch.adapter is not set. Call search.set_adapter(...).")
@@ -68,12 +64,15 @@ class BeamSearch(BaseSearch):
         root_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
         total_depth = int(self.config.depth)
 
-        # Only compute numpy arrays if callback is set (avoid overhead when not needed)
-        has_callback = self._progress_callback is not None
+        # Local top-k heap
+        topk_heap: list = []
+        topk_ctr = [0]
+        max_k = int(self.config.track_top_k)
+
+        has_callback = progress_fn is not None
         if has_callback:
             n_actions = int(root_action_space.valid_mask.shape[0])
             mask_np = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
-            # Track scores for each root action (for progress reporting)
             root_action_scores: Dict[int, float] = {}
         else:
             root_action_scores = None  # type: ignore
@@ -103,8 +102,7 @@ class BeamSearch(BaseSearch):
                 valid_mask = action_space.valid_mask
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
-                    # Track terminal state (no valid actions = terminal)
-                    self._track_terminal(engine=engine, cum_reward=beam.cum_reward)
+                    topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, beam.cum_reward, max_k)
                     new_beams.append(
                         _BeamItem(
                             cum_reward=beam.cum_reward,
@@ -137,7 +135,6 @@ class BeamSearch(BaseSearch):
                         priors = priors[:m]
                     priors = priors.masked_fill(~valid_mask, float("-inf"))
 
-                    # Expand only among VALID actions.
                     topk = min(int(self.config.expansion_topk), int(valid_n))
                     if topk <= 0:
                         continue
@@ -184,7 +181,7 @@ class BeamSearch(BaseSearch):
                         )
 
                         if terminated or truncated:
-                            self._track_terminal(engine=engine, cum_reward=new_cum)
+                            topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, new_cum, max_k)
 
             if not new_beams:
                 break
@@ -192,62 +189,45 @@ class BeamSearch(BaseSearch):
             new_beams.sort(key=lambda item: item.cum_reward, reverse=True)
             beams = new_beams[: int(self.config.beam_width)]
 
-            # Emit progress (only if callback is set)
             if has_callback:
-                # Update root action scores from current beams
                 for beam in beams:
                     if beam.first_action >= 0:
                         if beam.first_action not in root_action_scores or beam.cum_reward > root_action_scores[beam.first_action]:
                             root_action_scores[beam.first_action] = beam.cum_reward
 
-                self._emit_beam_progress(
-                    depth + 1, total_depth, n_actions, mask_np, root_action_scores, beams
-                )
+                visits = np.zeros(n_actions, dtype=np.int32)
+                values = np.zeros(n_actions, dtype=np.float32)
+                for beam in beams:
+                    if 0 <= beam.first_action < n_actions:
+                        visits[beam.first_action] += 1
+                        values[beam.first_action] = max(values[beam.first_action], beam.cum_reward)
+                for root_a, score in root_action_scores.items():
+                    if 0 <= root_a < n_actions:
+                        values[root_a] = max(values[root_a], score)
+                valid_values = np.where(mask_np, values, -np.inf)
+                best_a = int(np.argmax(valid_values))
+                best_v = float(values[best_a]) if best_a < len(values) else 0.0
+                progress_fn(depth + 1, total_depth, visits, values, best_a, best_v)
 
         best = beams[0].first_action if beams else 0
 
-        self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
-        return int(best) if int(best) >= 0 else 0
-
-    def _emit_beam_progress(
-        self,
-        depth: int,
-        total_depth: int,
-        n_actions: int,
-        mask: np.ndarray,
-        root_action_scores: Dict[int, float],
-        beams: List[_BeamItem],
-    ) -> None:
-        """Emit progress for beam search."""
-        # visits: count how many beams have each root action
-        visits = np.zeros(n_actions, dtype=np.int32)
-        values = np.zeros(n_actions, dtype=np.float32)
-        
+        # Build output arrays
+        n_out = int(root_action_space.valid_mask.shape[0])
+        visits_out = np.zeros(n_out, dtype=np.int32)
+        values_out = np.zeros(n_out, dtype=np.float32)
         for beam in beams:
-            if 0 <= beam.first_action < n_actions:
-                visits[beam.first_action] += 1
-                values[beam.first_action] = max(values[beam.first_action], beam.cum_reward)
-        
-        # Also include best scores from root_action_scores
-        for root_a, score in root_action_scores.items():
-            if 0 <= root_a < n_actions:
-                values[root_a] = max(values[root_a], score)
-        
-        # Find best action
-        valid_values = np.where(mask, values, -np.inf)
-        best_action = int(np.argmax(valid_values))
-        best_value = float(values[best_action]) if best_action < len(values) else 0.0
-        
-        progress = SearchProgress(
-            iteration=depth,
-            total=total_depth,
-            visits=visits,
-            values=values,
-            best_action=best_action,
-            best_value=best_value,
-            extra={"beam_size": len(beams), "active_root_actions": len(root_action_scores)},
+            if 0 <= beam.first_action < n_out:
+                visits_out[beam.first_action] += 1
+                values_out[beam.first_action] = max(values_out[beam.first_action], beam.cum_reward)
+
+        self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
+        return SearchOutput(
+            action=int(best) if int(best) >= 0 else 0,
+            visits=visits_out,
+            values=values_out,
+            iterations=total_depth,
+            top_k=collect_top_k(topk_heap),
         )
-        self._emit_progress(progress)
 
 
 
@@ -275,10 +255,11 @@ if __name__ == "__main__":
 
     t0 = time.perf_counter()
     next_gid = root_action_space.group_id
-    a = search.select(obs=obs, agent=agent, root_action_space=root_action_space)
+    output = search.select(obs=obs, agent=agent, root_action_space=root_action_space)
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     valid_n = int(root_action_space.valid_mask.sum().item())
+    a = output.action
     pose = root_action_space.centers[a].tolist() if int(root_action_space.centers.shape[0]) > 0 else [0, 0]
 
     print("search.beam demo")

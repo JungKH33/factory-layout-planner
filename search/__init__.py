@@ -1,4 +1,4 @@
-from .base import BaseSearch, BaseSearchConfig, BaseHierarchicalSearch, SearchProgress, SearchResult, TopKTracker
+from .base import BaseSearch, BaseSearchConfig, BaseHierarchicalSearch, SearchOutput, ProgressFn
 from .mcts import MCTSConfig, MCTSSearch
 from .beam import BeamConfig, BeamSearch
 from .best import BestFirstConfig, BestFirstSearch, BestConfig, BestSearch
@@ -15,9 +15,8 @@ __all__ = [
     "BaseSearch",
     "BaseSearchConfig",
     "BaseHierarchicalSearch",
-    "SearchProgress",
-    "SearchResult",
-    "TopKTracker",
+    "SearchOutput",
+    "ProgressFn",
     "MCTSConfig",
     "MCTSSearch",
     "BeamConfig",

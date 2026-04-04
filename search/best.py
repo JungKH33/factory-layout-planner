@@ -12,9 +12,11 @@ from envs.action_space import ActionSpace
 from search.base import (
     BaseSearch,
     BaseSearchConfig,
-    SearchProgress,
+    ProgressFn,
+    SearchOutput,
     SearchSnapshot,
-    TopKTracker,
+    collect_top_k,
+    track_terminal,
 )
 
 
@@ -27,7 +29,6 @@ class BestFirstConfig(BaseSearchConfig):
     cache_decision_state: bool = False
     use_value_heuristic: bool = True
     track_top_k: int = 0
-    track_verbose: bool = False
 
 
 @dataclass
@@ -47,13 +48,6 @@ class BestFirstSearch(BaseSearch):
     def __init__(self, *, config: BestFirstConfig):
         super().__init__()
         self.config = config
-        if self.config.track_top_k > 0:
-            self.top_tracker = TopKTracker(
-                k=self.config.track_top_k,
-                verbose=self.config.track_verbose,
-            )
-        else:
-            self.top_tracker = None
 
     def select(
         self,
@@ -61,7 +55,9 @@ class BestFirstSearch(BaseSearch):
         obs: dict,
         agent: Agent,
         root_action_space: ActionSpace,
-    ) -> int:
+        progress_fn: Optional[ProgressFn] = None,
+        progress_interval: int = 10,
+    ) -> SearchOutput:
         adapter = self.adapter
         if adapter is None:
             raise ValueError("BestFirstSearch.adapter is not set. Call search.set_adapter(...).")
@@ -74,17 +70,16 @@ class BestFirstSearch(BaseSearch):
         root_snapshot = self._capture_snapshot(engine=engine, adapter=adapter)
         root_score = self._safe_value(agent=agent, obs=obs, action_space=root_action_space) if bool(self.config.use_value_heuristic) else 0.0
 
-        has_callback = self._progress_callback is not None
-        if has_callback:
-            n_actions = int(root_action_space.valid_mask.shape[0])
-            root_mask = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
-            root_visits = np.zeros((n_actions,), dtype=np.int32)
-            root_values = np.full((n_actions,), float("-inf"), dtype=np.float32)
-        else:
-            n_actions = 0
-            root_mask = np.zeros((0,), dtype=bool)
-            root_visits = np.zeros((0,), dtype=np.int32)
-            root_values = np.zeros((0,), dtype=np.float32)
+        # Local top-k heap
+        topk_heap: list = []
+        topk_ctr = [0]
+        max_k = int(self.config.track_top_k)
+
+        has_callback = progress_fn is not None
+        n_actions = int(root_action_space.valid_mask.shape[0])
+        root_mask = root_action_space.valid_mask.detach().cpu().numpy().astype(bool)
+        root_visits = np.zeros((n_actions,), dtype=np.int32)
+        root_values = np.full((n_actions,), float("-inf"), dtype=np.float32)
 
         frontier: List[Tuple[float, int, _BestItem]] = []
         push_order = 0
@@ -137,32 +132,20 @@ class BestFirstSearch(BaseSearch):
                         best_action = int(node.first_action)
                         best_score = float(node.score)
                     expansions += 1
-                    self._maybe_emit_progress(
-                        iteration=expansions,
-                        total=total_expansions,
-                        visits=root_visits,
-                        values=root_values,
-                        mask=root_mask,
-                        frontier_size=len(frontier),
-                    )
+                    if has_callback and (expansions % progress_interval == 0 or expansions >= total_expansions):
+                        self._emit_progress_fn(progress_fn, expansions, total_expansions, root_visits, root_values, root_mask)
                     continue
 
                 valid_mask = action_space.valid_mask.to(dtype=torch.bool, device=adapter.device).view(-1)
                 valid_n = int(valid_mask.to(torch.int64).sum().item())
                 if valid_n <= 0:
-                    self._track_terminal(engine=engine, cum_reward=float(node.cum_reward))
+                    topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, float(node.cum_reward), max_k)
                     if node.first_action >= 0 and float(node.score) > best_score:
                         best_action = int(node.first_action)
                         best_score = float(node.score)
                     expansions += 1
-                    self._maybe_emit_progress(
-                        iteration=expansions,
-                        total=total_expansions,
-                        visits=root_visits,
-                        values=root_values,
-                        mask=root_mask,
-                        frontier_size=len(frontier),
-                    )
+                    if has_callback and (expansions % progress_interval == 0 or expansions >= total_expansions):
+                        self._emit_progress_fn(progress_fn, expansions, total_expansions, root_visits, root_values, root_mask)
                     continue
 
                 expandable.append((node, node_snapshot, obs_node, action_space, valid_mask, valid_n))
@@ -211,7 +194,7 @@ class BestFirstSearch(BaseSearch):
                         child_action_space: Optional[ActionSpace] = self._empty_action_space(device=adapter.device)
                         value_term = 0.0
                         score = float(child_cum)
-                        self._track_terminal(engine=engine, cum_reward=child_cum)
+                        topk_ctr[0] = track_terminal(topk_heap, topk_ctr[0], engine, child_cum, max_k)
                     else:
                         if bool(self.config.cache_decision_state):
                             child_obs = adapter.build_observation()
@@ -247,7 +230,7 @@ class BestFirstSearch(BaseSearch):
                         best_action = int(root_action)
                         best_score = float(score)
 
-                    if has_callback and 0 <= root_action < n_actions:
+                    if 0 <= root_action < n_actions:
                         root_visits[root_action] += 1
                         root_values[root_action] = max(float(root_values[root_action]), float(score))
 
@@ -271,14 +254,8 @@ class BestFirstSearch(BaseSearch):
                         push_order += 1
 
                 expansions += 1
-                self._maybe_emit_progress(
-                    iteration=expansions,
-                    total=total_expansions,
-                    visits=root_visits,
-                    values=root_values,
-                    mask=root_mask,
-                    frontier_size=len(frontier),
-                )
+                if has_callback and (expansions % progress_interval == 0 or expansions >= total_expansions):
+                    self._emit_progress_fn(progress_fn, expansions, total_expansions, root_visits, root_values, root_mask)
 
         if best_action < 0:
             best_action = self._fallback_action(
@@ -288,8 +265,42 @@ class BestFirstSearch(BaseSearch):
                 device=adapter.device,
             )
 
+        # Build output
+        values_out = np.where(np.isfinite(root_values), root_values, 0.0).astype(np.float32, copy=False)
+
         self._restore_snapshot(engine=engine, adapter=adapter, snapshot=root_snapshot)
-        return int(best_action)
+        return SearchOutput(
+            action=int(best_action),
+            visits=root_visits.copy(),
+            values=values_out.copy(),
+            iterations=expansions,
+            top_k=collect_top_k(topk_heap),
+        )
+
+    @staticmethod
+    def _emit_progress_fn(
+        progress_fn: ProgressFn,
+        iteration: int,
+        total: int,
+        visits: np.ndarray,
+        values: np.ndarray,
+        mask: np.ndarray,
+    ) -> None:
+        n_actions = int(visits.shape[0])
+        values_out = np.where(np.isfinite(values), values, 0.0).astype(np.float32, copy=False)
+        if n_actions > 0:
+            valid_values = np.where(mask, values, -np.inf)
+            if np.isfinite(valid_values).any():
+                best_a = int(np.argmax(valid_values))
+                best_v = float(values_out[best_a])
+            else:
+                valid_visits = np.where(mask, visits, -1)
+                best_a = int(np.argmax(valid_visits))
+                best_v = 0.0
+        else:
+            best_a = 0
+            best_v = 0.0
+        progress_fn(iteration, total, visits.copy(), values_out.copy(), best_a, best_v)
 
     def _safe_value(
         self,
@@ -329,67 +340,6 @@ class BestFirstSearch(BaseSearch):
         except Exception:
             pass
         return int(valid_idx[0].item())
-
-    def _maybe_emit_progress(
-        self,
-        *,
-        iteration: int,
-        total: int,
-        visits: np.ndarray,
-        values: np.ndarray,
-        mask: np.ndarray,
-        frontier_size: int,
-    ) -> None:
-        if self._progress_callback is None:
-            return
-        if (iteration % self._progress_interval) != 0 and iteration < total:
-            return
-        self._emit_best_progress(
-            iteration=iteration,
-            total=total,
-            visits=visits,
-            values=values,
-            mask=mask,
-            frontier_size=frontier_size,
-        )
-
-    def _emit_best_progress(
-        self,
-        *,
-        iteration: int,
-        total: int,
-        visits: np.ndarray,
-        values: np.ndarray,
-        mask: np.ndarray,
-        frontier_size: int,
-    ) -> None:
-        n_actions = int(visits.shape[0])
-        values_out = np.where(np.isfinite(values), values, 0.0).astype(np.float32, copy=False)
-
-        if n_actions > 0:
-            valid_values = np.where(mask, values, -np.inf)
-            if np.isfinite(valid_values).any():
-                best_action = int(np.argmax(valid_values))
-                best_value = float(values_out[best_action])
-            else:
-                valid_visits = np.where(mask, visits, -1)
-                best_action = int(np.argmax(valid_visits))
-                best_value = 0.0
-        else:
-            best_action = 0
-            best_value = 0.0
-
-        self._emit_progress(
-            SearchProgress(
-                iteration=iteration,
-                total=total,
-                visits=visits.copy(),
-                values=values_out.copy(),
-                best_action=best_action,
-                best_value=best_value,
-                extra={"frontier_size": int(frontier_size), "hierarchical": False},
-            )
-        )
 
 
 # Backward-compatible aliases
