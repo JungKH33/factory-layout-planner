@@ -550,71 +550,9 @@ class FactoryLayoutEnv(gym.Env):
         self._state.set_remaining(list(ordered_remaining))
     
     # ---- Export API ----
-    
-    def export_placement(self) -> Dict[str, Any]:
-        """현재 배치 상태를 JSON-serializable dict로 export.
-        
-        Returns:
-            환경 설정 + 배치 정보 + 그룹 정보 + flow 정보
-        """
-        # 배치 정보
-        placements = []
-        for gid in sorted(self._state.placed, key=lambda x: str(x)):
-            p = self._state.placements.get(gid, None)
-            if p is not None:
-                placements.append({
-                    "gid": gid,
-                    "x": int(float(getattr(p, "min_x", 0.0))),
-                    "y": int(float(getattr(p, "min_y", 0.0))),
-                })
-        
-        # 그룹 정보
-        groups_data = {}
-        for gid, s in self.group_specs.items():
-            ent0 = s.entries_rel[0] if len(s.entries_rel) > 0 else (0.0, 0.0)
-            ex0 = s.exits_rel[0] if len(s.exits_rel) > 0 else (0.0, 0.0)
-            groups_data[gid] = {
-                "id": s.id,
-                "width": float(s.width),
-                "height": float(s.height),
-                "rotatable": bool(s.rotatable),
-                "clearance_left": float(s.clearance_lrtb_rel[0]) if s.clearance_lrtb_rel else 0.0,
-                "clearance_right": float(s.clearance_lrtb_rel[1]) if s.clearance_lrtb_rel else 0.0,
-                "clearance_bottom": float(s.clearance_lrtb_rel[2]) if s.clearance_lrtb_rel else 0.0,
-                "clearance_top": float(s.clearance_lrtb_rel[3]) if s.clearance_lrtb_rel else 0.0,
-                "ent_rel_x": float(ent0[0]),
-                "ent_rel_y": float(ent0[1]),
-                "exi_rel_x": float(ex0[0]),
-                "exi_rel_y": float(ex0[1]),
-                "zone_values": dict(getattr(s, "zone_values", {}) or {}),
-            }
-        
-        # Flow 정보
-        flow_edges = []
-        for src, dsts in self.group_flow.items():
-            for dst, weight in dsts.items():
-                flow_edges.append([src, dst, float(weight)])
-        
-        return {
-            "grid_width": int(self.grid_width),
-            "grid_height": int(self.grid_height),
-            "placements": placements,
-            "groups": groups_data,
-            "flow_edges": flow_edges,
-            "forbidden": list(self.forbidden),
-            "zone_constraints": dict(self.zone_constraints),
-        }
-    
-    def save_placement(self, path: str) -> None:
-        """배치 상태를 JSON 파일로 저장.
-        
-        Args:
-            path: 저장할 파일 경로
-        """
-        import json
-        data = self.export_placement()
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+    # Placement/state export lives in ``envs.export`` (single unified surface).
+    # Use ``envs.export.export_group_placement(loaded)`` or
+    # ``envs.export.save_group_placement(loaded, path)``.
 
     def _fail(self, reason: str) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         """실패 처리 통합 헬퍼."""

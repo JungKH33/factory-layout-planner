@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -22,6 +22,14 @@ class LoadedEnv:
 
     env: FactoryLayoutEnv
     reset_kwargs: Dict[str, Any]
+    # Phase 2 (facility-level placement) interchange data.
+    # All three are JSON-serializable plain dicts/lists — envs.export.export_group_placement
+    # consumes them without any further type conversion.
+    grid_size_mm: float = 1.0
+    facilities_raw: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    layouts_raw: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # group_variant_layout_refs[gid][source_index] = "L_row16" | None
+    group_variant_layout_refs: Dict[str, List[Optional[str]]] = field(default_factory=dict)
 
 
 def _edges_to_adj(edges: List[List[Any]]) -> Dict[GroupId, Dict[GroupId, float]]:
@@ -50,6 +58,23 @@ def load_env(
 
     grid_w = int(grid["width"])
     grid_h = int(grid["height"])
+    grid_size_mm = float(grid.get("grid_size", 1.0))
+
+    # Phase 2 registries — pass-through as plain dicts (JSON-serializable).
+    facilities_raw_in = data.get("facilities", {}) or {}
+    layouts_raw_in = data.get("layouts", {}) or {}
+    if not isinstance(facilities_raw_in, dict):
+        raise ValueError("top-level 'facilities' must be an object if present")
+    if not isinstance(layouts_raw_in, dict):
+        raise ValueError("top-level 'layouts' must be an object if present")
+    facilities_raw: Dict[str, Dict[str, Any]] = {
+        str(k): dict(v) for k, v in facilities_raw_in.items()
+    }
+    layouts_raw: Dict[str, Dict[str, Any]] = {
+        str(k): dict(v) for k, v in layouts_raw_in.items()
+    }
+    # group_variant_layout_refs[gid][source_index] = layout key string or None
+    group_variant_layout_refs: Dict[str, List[Optional[str]]] = {}
 
     dev = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
 
@@ -186,6 +211,20 @@ def load_env(
         top_cl = _parse_clearance_lrtb(g)
         if top_cl is not None:
             clearance_kwargs["clearance_lrtb_rel"] = top_cl
+
+        # --- collect per-variant layout_ref (Phase 2 facility registry lookup) ---
+        # Indexed by source_index; one entry per source variant, None if absent.
+        if variants_raw is not None:
+            group_variant_layout_refs[str(gid)] = [
+                (str(v.get("layout_ref")) if isinstance(v, dict) and v.get("layout_ref") is not None else None)
+                for v in variants_raw
+            ]
+        else:
+            # Single-shape group with optional top-level layout_ref.
+            top_ref = g.get("layout_ref")
+            group_variant_layout_refs[str(gid)] = [
+                str(top_ref) if top_ref is not None else None
+            ]
 
         # --- parse _variant_defs if "variants" key is present ---
         variant_defs: Optional[List[Dict[str, Any]]] = None
@@ -408,4 +447,11 @@ def load_env(
     if "remaining_order" in reset_cfg and reset_cfg["remaining_order"] is not None:
         reset_kwargs["remaining_order"] = list(reset_cfg["remaining_order"])
 
-    return LoadedEnv(env=env, reset_kwargs=reset_kwargs)
+    return LoadedEnv(
+        env=env,
+        reset_kwargs=reset_kwargs,
+        grid_size_mm=grid_size_mm,
+        facilities_raw=facilities_raw,
+        layouts_raw=layouts_raw,
+        group_variant_layout_refs=group_variant_layout_refs,
+    )

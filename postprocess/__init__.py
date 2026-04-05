@@ -1,6 +1,5 @@
-"""Postprocess module for route planning and dynamic group generation."""
+"""Postprocess module for route planning and facility-level placement."""
 
 from .pathfinder import RoutePlanner, RouteResult
-from .dynamic_group import DynamicGroupGenerator, DynamicGroup
 
-__all__ = ["RoutePlanner", "RouteResult", "DynamicGroupGenerator", "DynamicGroup"]
+__all__ = ["RoutePlanner", "RouteResult"]

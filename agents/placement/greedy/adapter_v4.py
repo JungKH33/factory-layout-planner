@@ -27,7 +27,7 @@ class GreedyV4Adapter(BaseAdapter):
         self,
         *,
         k: int = 50,
-        cell_size: int = 10,
+        cell_size: int = 50,
         top_per_cell: int = 3,
         quant_step: Optional[float] = None,
         random_seed: Optional[int] = None,

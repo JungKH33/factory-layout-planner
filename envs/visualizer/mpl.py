@@ -91,7 +91,7 @@ def _legend_proxies(constraint_names: list = ()) -> list:
         patches.Patch(facecolor="#d62728", edgecolor="#d62728", alpha=0.15, label="forbidden"),
         patches.Patch(facecolor="#8b0000", edgecolor="#8b0000", alpha=0.10, label="invalid_mask"),
         patches.Patch(facecolor="lightgray", edgecolor="gray", alpha=0.30, label="clearance_mask"),
-        Line2D([0], [0], color="blue", lw=1.8, alpha=0.45, label="flow"),
+        Line2D([0], [0], color="royalblue", lw=1.8, alpha=0.7, label="flow"),
         Line2D([0], [0], color="black", lw=0.0, marker="s", markersize=8, label="score"),
         Line2D([0], [0], color="green", lw=0.0, marker="o", markersize=6, alpha=0.65, label="action_space"),
         Line2D([0], [0], color="orange", lw=2.0, alpha=0.8, label="routes"),
@@ -325,7 +325,12 @@ def _draw_layout_from_data(
             "",
             xy=arrow.dst_xy,
             xytext=arrow.src_xy,
-            arrowprops=dict(arrowstyle="-|>", color="blue", lw=1.0, alpha=0.45),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color="royalblue",
+                lw=1.0,
+                alpha=0.7,
+            ),
         )
         misc_artists["flow"].append(ann)
 

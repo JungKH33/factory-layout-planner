@@ -507,6 +507,8 @@ class Explorer:
         self,
         goal: str,
         on_step: Optional[Callable] = None,
+        messages: Optional[list[dict[str, Any]]] = None,
+        mode: str = "agent",
     ) -> Any:
         """Run the agentic LLM loop with the given goal.
 
@@ -518,6 +520,10 @@ class Explorer:
             Free-text instruction for the LLM.
         on_step : callable, optional
             ``(event_type, text)`` callback for streaming output.
+        messages : list[dict], optional
+            Existing conversation history for multi-turn interactions.
+        mode : str
+            LLM operating mode (``"chat"``, ``"plan"``, ``"agent"``).
 
         Returns
         -------
@@ -525,7 +531,7 @@ class Explorer:
         """
         if self.llm is None:
             raise RuntimeError("No LLM agent configured")
-        return self.llm.run(goal, self, on_step=on_step)
+        return self.llm.run(goal, self, on_step=on_step, messages=messages, mode=mode)
 
     # ------------------------------------------------------------------
     # Serialization
