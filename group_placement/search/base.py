@@ -9,10 +9,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseAdapter
-from envs.env import FactoryLayoutEnv
-from envs.state import EnvState
-from envs.action_space import ActionSpace
+from group_placement.agents.base import Agent, BaseAdapter
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.state import EnvState
+from group_placement.envs.action_space import ActionSpace
 
 logger = logging.getLogger(__name__)
 

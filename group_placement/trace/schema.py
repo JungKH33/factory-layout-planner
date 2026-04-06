@@ -6,11 +6,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from envs.action_space import ActionSpace
-from envs.state import EnvState
+from group_placement.envs.action_space import ActionSpace
+from group_placement.envs.state import EnvState
 
 # SearchOutput lives in search.base to avoid circular imports; re-export here.
-from search.base import SearchOutput  # noqa: F401
+from group_placement.search.base import SearchOutput  # noqa: F401
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 
-from envs.action import GroupId
+from group_placement.envs.action import GroupId
 
 
 # ---------------------------------------------------------------------------

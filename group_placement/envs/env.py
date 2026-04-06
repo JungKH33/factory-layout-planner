@@ -21,7 +21,7 @@ from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
 
 # GroupPlacement is defined in envs/placement/base.py and imported above.
-# Re-exported here so external code can do: from envs.env import GroupPlacement, GridMaps
+# Re-exported here so external code can do: from group_placement.envs.env import GroupPlacement, GridMaps
 __all__ = ["GroupPlacement", "GridMaps", "FactoryLayoutEnv"]
 
 logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ class FactoryLayoutEnv(gym.Env):
         return geom
 
     def get_maps(self) -> GridMaps:
-        """Public map bundle for wrappers/agents/postprocess modules."""
+        """Public map bundle for wrappers/agents/lane/facility modules."""
         return self._state.maps
 
     def get_state(self) -> EnvState:
@@ -705,7 +705,7 @@ class FactoryLayoutEnv(gym.Env):
 
 if __name__ == "__main__":
     import time
-    from envs.visualizer import plot_flow_graph, plot_layout
+    from group_placement.envs.visualizer import plot_flow_graph, plot_layout
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     dev = torch.device("cpu")

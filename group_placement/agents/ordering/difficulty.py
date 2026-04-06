@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv, GroupId
 
 
 @dataclass(frozen=True)

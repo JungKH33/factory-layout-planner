@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from envs.action_space import ActionSpace
+from group_placement.envs.action_space import ActionSpace
 from .model import MaskPlaceModel
 
 

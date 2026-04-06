@@ -7,10 +7,10 @@ import gymnasium as gym
 import torch
 import torch.nn.functional as F
 
-from envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv, GroupId
 
 from ...base import BaseAdapter
-from envs.action_space import ActionSpace
+from group_placement.envs.action_space import ActionSpace
 
 
 class MaskPlaceAdapter(BaseAdapter):
@@ -242,12 +242,12 @@ if __name__ == "__main__":
     import torch
     import matplotlib.pyplot as plt
 
-    from envs.action_space import ActionSpace
-    from envs.action import EnvAction
-    from envs.env_loader import load_env
-    from envs.visualizer import plot_layout
+    from group_placement.envs.action_space import ActionSpace
+    from group_placement.envs.action import EnvAction
+    from group_placement.envs.env_loader import load_env
+    from group_placement.envs.visualizer import plot_layout
 
-    ENV_JSON = "envs/env_configs/placed_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/placed_01.json"
     device = torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device)
     engine = loaded.env

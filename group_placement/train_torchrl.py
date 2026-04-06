@@ -13,7 +13,7 @@
 #   even on terminal/truncated (stable obs schema).
 #
 # Usage (example):
-#   conda run -n factory python train_new.py --env-json envs/env_configs/placed_01.json --device cuda
+#   conda run -n factory python train_new.py --env-json group_placement/envs/env_configs/placed_01.json --device cuda
 #
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ import torch
 from torch import nn
 import time
 
-from agents.placement.maskplace import MaskPlaceModel, MaskPlaceAdapter
-from envs.env_loader import load_env
+from group_placement.agents.placement.maskplace import MaskPlaceModel, MaskPlaceAdapter
+from group_placement.envs.env_loader import load_env
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class Cfg:
 
 def parse_args() -> Cfg:
     p = argparse.ArgumentParser()
-    p.add_argument("--env-json", type=str, default="envs/env_configs/basic_01.json")
+    p.add_argument("--env-json", type=str, default="group_placement/envs/env_configs/basic_01.json")
     p.add_argument("--grid", type=int, default=224)
     p.add_argument("--rot", type=int, default=0)
     p.add_argument("--soft-coefficient", type=float, default=1.0)

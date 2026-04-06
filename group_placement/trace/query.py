@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from trace.schema import DecisionNode, DecisionTree
+from group_placement.trace.schema import DecisionNode, DecisionTree
 
 
 class TraceQuery:

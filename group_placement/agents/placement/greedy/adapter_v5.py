@@ -16,9 +16,9 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
-from envs.action_space import ActionSpace
-from envs.env import GroupId
-from envs.placement.base import GroupPlacement
+from group_placement.envs.action_space import ActionSpace
+from group_placement.envs.env import GroupId
+from group_placement.envs.placement.base import GroupPlacement
 from ...base import BaseAdapter
 
 
@@ -322,10 +322,10 @@ if __name__ == "__main__":
     import time
     import torch
 
-    from envs.env_loader import load_env
-    from envs.visualizer import plot_layout
+    from group_placement.envs.env_loader import load_env
+    from group_placement.envs.visualizer import plot_layout
 
-    ENV_JSON = "envs/env_configs/mixed_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/mixed_01.json"
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device)
     engine = loaded.env

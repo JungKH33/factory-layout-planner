@@ -2,11 +2,11 @@
 
 Usage::
 
-    from envs.env_loader import load_env
-    from agents.placement.maskplace import MaskPlaceAdapter
+    from group_placement.envs.env_loader import load_env
+    from group_placement.agents.placement.maskplace import MaskPlaceAdapter
     from gym_env import AdapterGymEnv
 
-    loaded = load_env("envs/env_configs/basic_01.json", device=device)
+    loaded = load_env("group_placement/envs/env_configs/basic_01.json", device=device)
     adapter = MaskPlaceAdapter(grid=224)
     env = AdapterGymEnv(engine=loaded.env, adapter=adapter,
                         reset_kwargs=loaded.reset_kwargs)
@@ -21,8 +21,8 @@ from typing import Any, Dict, Optional, Tuple
 import gymnasium as gym
 import torch
 
-from envs.env import FactoryLayoutEnv
-from agents.base import BaseAdapter
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.agents.base import BaseAdapter
 
 
 class AdapterGymEnv(gym.Env):

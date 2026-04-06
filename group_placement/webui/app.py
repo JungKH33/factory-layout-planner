@@ -21,12 +21,12 @@ from fastapi.staticfiles import StaticFiles
 _search_executor = ThreadPoolExecutor(max_workers=2)
 logger = logging.getLogger(__name__)
 
-from envs.action_space import ActionSpace
-from agents.placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
-from agents.placement.alphachip import AlphaChipAdapter
-from agents.placement.maskplace import MaskPlaceAdapter
-from search.mcts import MCTSConfig, MCTSSearch
-from search.beam import BeamConfig, BeamSearch
+from group_placement.envs.action_space import ActionSpace
+from group_placement.agents.placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
+from group_placement.agents.placement.alphachip import AlphaChipAdapter
+from group_placement.agents.placement.maskplace import MaskPlaceAdapter
+from group_placement.search.mcts import MCTSConfig, MCTSSearch
+from group_placement.search.beam import BeamConfig, BeamSearch
 
 
 def _extract_params(cls, exclude: set = None) -> Dict[str, Dict[str, Any]]:
@@ -116,7 +116,7 @@ AGENT_CLASSES = {
     "greedy": GreedyAgent,
 }
 
-from webui.schemas import (
+from group_placement.webui.schemas import (
     SessionCreateRequest,
     StepRequest,
     SearchRequest,
@@ -126,7 +126,7 @@ from webui.schemas import (
     CandidateInfo,
     SearchProgress,
 )
-from webui.session import manager, Session
+from group_placement.webui.session import manager, Session
 
 
 app = FastAPI(title="Factory Layout WebUI")
@@ -466,7 +466,7 @@ async def _run_search_with_updates(
     timeline_local: List[Dict[str, Any]] = []
 
     # Register event listener that bridges sync search → async WebSocket
-    from trace.schema import TraceEvent
+    from group_placement.trace.schema import TraceEvent
 
     def on_event(event: TraceEvent) -> None:
         if event.type != "search_progress":

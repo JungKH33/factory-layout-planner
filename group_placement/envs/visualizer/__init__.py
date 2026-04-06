@@ -1,7 +1,7 @@
 """Visualization package with pluggable backends (matplotlib, plotly).
 
 Usage:
-    from envs.visualizer import plot_layout, save_layout
+    from group_placement.envs.visualizer import plot_layout, save_layout
     plot_layout(env)                          # matplotlib (default)
     plot_layout(env, backend="plotly")        # plotly (interactive HTML)
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, List
 
-from envs.visualizer.data import StepFrame, extract_layout_data
+from group_placement.envs.visualizer.data import StepFrame, extract_layout_data
 
 _DEFAULT_BACKEND = "matplotlib"
 
@@ -17,10 +17,10 @@ _DEFAULT_BACKEND = "matplotlib"
 def _get_backend(backend: Optional[str] = None):
     name = (backend or _DEFAULT_BACKEND).lower()
     if name in ("matplotlib", "mpl"):
-        from envs.visualizer.mpl import MatplotlibBackend
+        from group_placement.envs.visualizer.mpl import MatplotlibBackend
         return MatplotlibBackend()
     elif name in ("plotly",):
-        from envs.visualizer.plotly import PlotlyBackend
+        from group_placement.envs.visualizer.plotly import PlotlyBackend
         return PlotlyBackend()
     else:
         raise ValueError(f"Unknown backend: {name!r}. Choose 'matplotlib' or 'plotly'.")
@@ -111,7 +111,7 @@ def draw_layout_layers(
 
     This is always matplotlib — no backend parameter (callers manage their own fig/ax).
     """
-    from envs.visualizer.mpl import MatplotlibBackend
+    from group_placement.envs.visualizer.mpl import MatplotlibBackend
     return MatplotlibBackend().draw_layout_on_axes(
         engine, ax=ax, action_space=action_space, routes=routes,
     )

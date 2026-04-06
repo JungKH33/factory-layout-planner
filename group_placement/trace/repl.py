@@ -3,7 +3,7 @@
 Usage::
 
     python -m trace.repl                           # default: basic_01.json, greedyv3
-    python -m trace.repl --env envs/env_configs/mixed_01.json
+    python -m trace.repl --env group_placement/envs/env_configs/mixed_01.json
     python -m trace.repl --method greedyv3 --search mcts --sims 200
     python -m trace.repl --llm anthropic           # enable LLM critic/guided placement
 """
@@ -29,19 +29,19 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from agents.ordering import DifficultyOrderingAgent
-from agents.registry import create as create_agent
-from envs.env_loader import load_env
-from search.beam import BeamConfig, BeamSearch
-from search.best import BestFirstConfig, BestFirstSearch
-from search.mcts import MCTSConfig, MCTSSearch
-from search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
-from search.hierarchical_best import HierarchicalBestFirstConfig, HierarchicalBestFirstSearch
-from search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
+from group_placement.agents.ordering import DifficultyOrderingAgent
+from group_placement.agents.registry import create as create_agent
+from group_placement.envs.env_loader import load_env
+from group_placement.search.beam import BeamConfig, BeamSearch
+from group_placement.search.best import BestFirstConfig, BestFirstSearch
+from group_placement.search.mcts import MCTSConfig, MCTSSearch
+from group_placement.search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
+from group_placement.search.hierarchical_best import HierarchicalBestFirstConfig, HierarchicalBestFirstSearch
+from group_placement.search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
 
-from trace.explorer import Explorer
-from trace.query import TraceQuery
-from trace.schema import Signal, TraceEvent
+from group_placement.trace.explorer import Explorer
+from group_placement.trace.query import TraceQuery
+from group_placement.trace.schema import Signal, TraceEvent
 
 
 logger = logging.getLogger(__name__)
@@ -628,8 +628,8 @@ class ExplorerREPL(cmd.Cmd):
     def _render(self) -> None:
         """Render layout + candidate overlay in a single figure."""
         import matplotlib.pyplot as plt
-        from envs.visualizer.data import extract_layout_data
-        from envs.visualizer.mpl import _draw_layout_from_data
+        from group_placement.envs.visualizer.data import extract_layout_data
+        from group_placement.envs.visualizer.mpl import _draw_layout_from_data
 
         node = self.exp.current()
         data = extract_layout_data(self.exp.engine)
@@ -747,8 +747,8 @@ class ExplorerREPL(cmd.Cmd):
         if subcmd.startswith("save"):
             parts = arg.strip().split(maxsplit=1)
             path = parts[1] if len(parts) > 1 else "layout.png"
-            from envs.visualizer.data import extract_layout_data
-            from envs.visualizer.mpl import MatplotlibBackend
+            from group_placement.envs.visualizer.data import extract_layout_data
+            from group_placement.envs.visualizer.mpl import MatplotlibBackend
             data = extract_layout_data(self.exp.engine)
             MatplotlibBackend().save_layout(data, path, show_flow=True, show_score=True)
             console.print(f"  [success]Saved to {path}[/success]")
@@ -785,7 +785,7 @@ class ExplorerREPL(cmd.Cmd):
         if arg.strip():
             console.print("  Usage: context")
             return
-        from trace.llm_agent import _tool_status, _tool_candidates
+        from group_placement.trace.llm_agent import _tool_status, _tool_candidates
         console.print(_tool_status(self.exp), markup=False)
         console.print()
         if not self.exp.current().terminal:
@@ -1061,16 +1061,16 @@ def build_search(args):
 
 def _build_llm_agent(provider_name: str, model_override: Optional[str] = None):
     """Create ExplorerAgent from CLI args."""
-    from trace.llm_agent import ExplorerAgent
+    from group_placement.trace.llm_agent import ExplorerAgent
 
     if provider_name == "anthropic":
-        from trace.llm_agent import AnthropicBackend
+        from group_placement.trace.llm_agent import AnthropicBackend
         kwargs = {}
         if model_override:
             kwargs["model"] = model_override
         return ExplorerAgent(backend=AnthropicBackend(**kwargs))
     elif provider_name == "openai":
-        from trace.llm_agent import OpenAIBackend
+        from group_placement.trace.llm_agent import OpenAIBackend
         kwargs = {}
         if model_override:
             kwargs["model"] = model_override
@@ -1081,7 +1081,7 @@ def _build_llm_agent(provider_name: str, model_override: Optional[str] = None):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive factory layout explorer")
-    parser.add_argument("--env", default="envs/env_configs/mixed_01.json", help="Env config JSON path")
+    parser.add_argument("--env", default="group_placement/envs/env_configs/mixed_01.json", help="Env config JSON path")
     parser.add_argument("--method", default="greedyv4", help="Adapter method")
     parser.add_argument("--agent", default="greedy", help="Agent type")
     parser.add_argument("--search", default="none",

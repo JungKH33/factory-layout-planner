@@ -9,8 +9,8 @@ from typing import Any, List, Optional
 
 import numpy as np
 
-from envs.visualizer.base import VisualizerBackend
-from envs.visualizer.data import LayoutData, StepFrame
+from group_placement.envs.visualizer.base import VisualizerBackend
+from group_placement.envs.visualizer.data import LayoutData, StepFrame
 
 
 def _require_plotly():

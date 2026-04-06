@@ -8,19 +8,19 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from envs.env_loader import load_env
-from envs.action_space import ActionSpace
-from agents.placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
-from agents.placement.alphachip import AlphaChipAgent, AlphaChipAdapter
-from agents.placement.maskplace import MaskPlaceAgent, MaskPlaceAdapter
-from agents.ordering import DifficultyOrderingAgent
+from group_placement.envs.env_loader import load_env
+from group_placement.envs.action_space import ActionSpace
+from group_placement.agents.placement.greedy import GreedyAgent, GreedyAdapter, GreedyV2Adapter, GreedyV3Adapter
+from group_placement.agents.placement.alphachip import AlphaChipAgent, AlphaChipAdapter
+from group_placement.agents.placement.maskplace import MaskPlaceAgent, MaskPlaceAdapter
+from group_placement.agents.ordering import DifficultyOrderingAgent
 
-from search.mcts import MCTSConfig, MCTSSearch
-from search.beam import BeamConfig, BeamSearch
+from group_placement.search.mcts import MCTSConfig, MCTSSearch
+from group_placement.search.beam import BeamConfig, BeamSearch
 
-from trace.explorer import Explorer
+from group_placement.trace.explorer import Explorer
 
-from webui.schemas import (
+from group_placement.webui.schemas import (
     SessionCreateRequest,
     SessionState,
     PlacedFacility,

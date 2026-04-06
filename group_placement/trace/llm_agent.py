@@ -9,7 +9,7 @@ Provider-agnostic: :class:`BaseLLMBackend` defines the contract;
 
 Usage::
 
-    from trace.llm_agent import ExplorerAgent, AnthropicBackend
+    from group_placement.trace.llm_agent import ExplorerAgent, AnthropicBackend
 
     backend = AnthropicBackend()                  # needs ANTHROPIC_API_KEY
     agent = ExplorerAgent(backend=backend)
@@ -26,10 +26,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from envs.env import FactoryLayoutEnv
-from envs.action_space import ActionSpace
-from agents.base import BaseAdapter
-from trace.schema import DecisionNode, PhysicalContext, Signal
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.action_space import ActionSpace
+from group_placement.agents.base import BaseAdapter
+from group_placement.trace.schema import DecisionNode, PhysicalContext, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -712,8 +712,8 @@ def _tool_render(explorer) -> ToolResult:
     import base64
     import matplotlib
     import matplotlib.pyplot as plt
-    from envs.visualizer.data import extract_layout_data
-    from envs.visualizer.mpl import _draw_layout_from_data
+    from group_placement.envs.visualizer.data import extract_layout_data
+    from group_placement.envs.visualizer.mpl import _draw_layout_from_data
 
     # Use non-interactive backend for rendering to buffer
     prev_backend = matplotlib.get_backend()

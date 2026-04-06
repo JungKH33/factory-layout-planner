@@ -697,7 +697,7 @@ def validate_and_adjust_groups(
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     
-    from envs.env_loader import load_env
+    from group_placement.envs.env_loader import load_env
     
     for iteration in range(max_iterations):
         # 임시 JSON 파일로 저장 후 env 로드

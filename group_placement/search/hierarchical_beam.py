@@ -6,9 +6,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseAdapter
-from envs.action_space import ActionSpace
-from search.base import (
+from group_placement.agents.base import Agent, BaseAdapter
+from group_placement.envs.action_space import ActionSpace
+from group_placement.search.base import (
     BaseHierarchicalSearch,
     BaseSearchConfig,
     ProgressFn,

@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
-from envs.action_space import ActionSpace
-from envs.env_loader import load_env
+from group_placement.envs.action_space import ActionSpace
+from group_placement.envs.env_loader import load_env
 
 
 def _score_poses(env, gid, x, y, rotation=None):
@@ -233,7 +233,7 @@ def test_placeable_loop_device(env, gid):
 
 
 def main():
-    ENV_JSON = "envs/env_configs/basic_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/basic_01.json"
     N = 100
     
     print("=" * 60)

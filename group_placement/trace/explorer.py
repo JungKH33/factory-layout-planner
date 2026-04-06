@@ -11,13 +11,13 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseAdapter, OrderingAgent
-from envs.action_space import ActionSpace
-from envs.env import FactoryLayoutEnv
-from envs.placement.base import GroupPlacement
-from search.base import BaseSearch, BaseHierarchicalSearch
+from group_placement.agents.base import Agent, BaseAdapter, OrderingAgent
+from group_placement.envs.action_space import ActionSpace
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.placement.base import GroupPlacement
+from group_placement.search.base import BaseSearch, BaseHierarchicalSearch
 
-from trace.schema import (
+from group_placement.trace.schema import (
     DecisionNode,
     DecisionTree,
     FlowDelta,
@@ -750,10 +750,10 @@ class Explorer:
 if __name__ == "__main__":
     import time
 
-    from envs.env_loader import load_env
-    from agents.registry import create as create_agent
+    from group_placement.envs.env_loader import load_env
+    from group_placement.agents.registry import create as create_agent
 
-    ENV_JSON = "envs/env_configs/basic_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/basic_01.json"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loaded = load_env(ENV_JSON, device=device)
     engine = loaded.env

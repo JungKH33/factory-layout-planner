@@ -1,7 +1,7 @@
 """Group-level placement export (Phase 1 → Phase 2 interchange).
 
 Single unified export surface for ``envs``.  Produces the JSON-serializable
-dict that ``postprocess.facility_placement.resolve_facilities`` consumes for
+dict that ``facility_placement.resolve_facilities`` consumes for
 facility-level unfolding:
 
 - ``export_group_placement(loaded)`` resolves
@@ -11,7 +11,7 @@ facility-level unfolding:
 - ``save_group_placement(loaded, path)`` writes that dict to disk so Phase 2
   can be rerun offline without a live env.
 
-``postprocess`` consumes only this dict and never touches any ``envs.*``
+``facility_placement`` consumes only this dict and never touches any ``envs.*``
 type.  ``FactoryLayoutEnv`` owns no export logic — callers go through this
 module explicitly.
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from envs.env_loader import LoadedEnv
+from group_placement.envs.env_loader import LoadedEnv
 
 
 def export_group_placement(loaded: LoadedEnv) -> Dict[str, Any]:
@@ -87,6 +87,7 @@ def export_group_placement(loaded: LoadedEnv) -> Dict[str, Any]:
             "height_cells": int(env.grid_height),
             "grid_size_mm": grid_size_mm,
         },
+        "placed_order": [str(gid) for gid in state.placed_nodes()],
         "placements": placements_out,
         "facilities": dict(loaded.facilities_raw),
         "layouts":    dict(loaded.layouts_raw),

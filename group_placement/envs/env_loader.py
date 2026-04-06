@@ -7,10 +7,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
-from envs.action import EnvAction
-from envs.env import FactoryLayoutEnv
-from envs.placement.base import GroupSpec
-from envs.placement.static import StaticRectSpec, StaticIrregularSpec
+from group_placement.envs.action import EnvAction
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.placement.base import GroupSpec
+from group_placement.envs.placement.static import StaticRectSpec, StaticIrregularSpec
 
 GroupId = Union[int, str]
 RectI = Tuple[int, int, int, int]  # (x0, y0, x1, y1) half-open

@@ -1,5 +1,5 @@
 """Unified decision tracing and interactive exploration."""
-from trace.schema import (
+from group_placement.trace.schema import (
     DecisionNode,
     DecisionTree,
     FlowDelta,
@@ -9,8 +9,8 @@ from trace.schema import (
     Snapshot,
     TraceEvent,
 )
-from trace.explorer import Explorer
-from trace.query import TraceQuery
+from group_placement.trace.explorer import Explorer
+from group_placement.trace.query import TraceQuery
 
 __all__ = [
     "DecisionNode",

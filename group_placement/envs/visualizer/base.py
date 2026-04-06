@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional, List
 
-from envs.visualizer.data import LayoutData, StepFrame
+from group_placement.envs.visualizer.data import LayoutData, StepFrame
 
 
 class VisualizerBackend(ABC):

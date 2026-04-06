@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import torch
 
-from envs.action import GroupId
-from envs.action_space import ActionSpace
-from envs.env import FactoryLayoutEnv
-from envs.placement.base import GroupPlacement
+from group_placement.envs.action import GroupId
+from group_placement.envs.action_space import ActionSpace
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.placement.base import GroupPlacement
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import gymnasium as gym
 import torch
 
-from envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv, GroupId
 
 from ...base import BaseAdapter
 
@@ -191,10 +191,10 @@ if __name__ == "__main__":
     import networkx as nx
     import matplotlib.pyplot as plt
 
-    from envs.action_space import ActionSpace
-    from envs.action import EnvAction
-    from envs.env_loader import load_env
-    from envs.visualizer import plot_layout
+    from group_placement.envs.action_space import ActionSpace
+    from group_placement.envs.action import EnvAction
+    from group_placement.envs.env_loader import load_env
+    from group_placement.envs.visualizer import plot_layout
 
     def _as_numpy(x: object) -> np.ndarray:
         if torch.is_tensor(x):
@@ -283,7 +283,7 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
 
-    ENV_JSON = "envs/env_configs/constraints_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/constraints_01.json"
     device = torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device)
     engine = loaded.env

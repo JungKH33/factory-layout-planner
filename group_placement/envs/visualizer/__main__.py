@@ -10,13 +10,13 @@ import sys
 
 import torch
 
-from agents.placement.alphachip import AlphaChipAdapter
-from agents.placement.greedy import GreedyAdapter
-from envs.action import EnvAction
-from envs.env import FactoryLayoutEnv
-from envs.placement.static import StaticRectSpec
-from envs.action_space import ActionSpace
-from envs.visualizer import plot_layout, plot_flow_graph
+from group_placement.agents.placement.alphachip import AlphaChipAdapter
+from group_placement.agents.placement.greedy import GreedyAdapter
+from group_placement.envs.action import EnvAction
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.placement.static import StaticRectSpec
+from group_placement.envs.action_space import ActionSpace
+from group_placement.envs.visualizer import plot_layout, plot_flow_graph
 
 
 def main():

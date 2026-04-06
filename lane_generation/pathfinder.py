@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
-from envs.action import EnvAction
+from group_placement.envs.action import EnvAction
 
 
 @dataclass
@@ -271,14 +271,14 @@ class RoutePlanner:
 if __name__ == "__main__":
     """사용 예시."""
     import sys
-    sys.path.insert(0, str(__file__).rsplit("postprocess", 1)[0])
+    sys.path.insert(0, str(__file__).rsplit("lane_generation", 1)[0])
     
-    from envs.env_loader import load_env
-    from envs.visualizer import plot_layout
-    from postprocess.output import print_summary
+    from group_placement.envs.env_loader import load_env
+    from group_placement.envs.visualizer import plot_layout
+    from lane_generation.output import print_summary
     
     # 1. env 로드
-    config_path = "envs/env_configs/clearance_03.json"
+    config_path = "group_placement/envs/env_configs/clearance_03.json"
     print(f"Loading: {config_path}")
     env = load_env(config_path).env
     

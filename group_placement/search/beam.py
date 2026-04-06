@@ -6,9 +6,9 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from agents.base import Agent, BaseAdapter
-from envs.action_space import ActionSpace
-from search.base import (
+from group_placement.agents.base import Agent, BaseAdapter
+from group_placement.envs.action_space import ActionSpace
+from group_placement.search.base import (
     BaseSearch,
     BaseSearchConfig,
     ProgressFn,
@@ -262,10 +262,10 @@ class BeamSearch(BaseSearch):
 if __name__ == "__main__":
     import time
 
-    from envs.env_loader import load_env
-    from agents.placement.greedy import GreedyAgent, GreedyAdapter
+    from group_placement.envs.env_loader import load_env
+    from group_placement.agents.placement.greedy import GreedyAgent, GreedyAdapter
 
-    ENV_JSON = "envs/env_configs/basic_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/basic_01.json"
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     device = torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device)

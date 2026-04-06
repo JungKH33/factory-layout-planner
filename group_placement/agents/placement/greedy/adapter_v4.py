@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv, GroupId
 from ...base import BaseAdapter
 
 
@@ -355,9 +355,9 @@ class GreedyV4Adapter(BaseAdapter):
 if __name__ == "__main__":
     import time
 
-    from envs.env_loader import load_env
+    from group_placement.envs.env_loader import load_env
 
-    ENV_JSON = "envs/env_configs/basic_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/basic_01.json"
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     loaded = load_env(ENV_JSON, device=device)
     engine = loaded.env

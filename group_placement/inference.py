@@ -7,27 +7,27 @@ from pathlib import Path
 import time
 import torch
 
-from envs.env_loader import load_env
-from envs.export import export_group_placement, save_group_placement
-from envs.visualizer import plot_layout, save_layout, browse_steps, StepFrame
-from postprocess import RoutePlanner
-from postprocess.facility_placement import save_facility_layout
+from group_placement.envs.env_loader import load_env
+from group_placement.envs.export import export_group_placement, save_group_placement
+from group_placement.envs.visualizer import plot_layout, save_layout, browse_steps, StepFrame
+from lane_generation.pathfinder import RoutePlanner
+from facility_placement import save_facility_layout
 
-from trace.explorer import Explorer
-from search.beam import BeamConfig, BeamSearch
-from search.best import BestFirstConfig, BestFirstSearch
-from search.mcts import MCTSConfig, MCTSSearch
-from search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
-from search.hierarchical_best import HierarchicalBestFirstConfig, HierarchicalBestFirstSearch
-from search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
+from group_placement.trace.explorer import Explorer
+from group_placement.search.beam import BeamConfig, BeamSearch
+from group_placement.search.best import BestFirstConfig, BestFirstSearch
+from group_placement.search.mcts import MCTSConfig, MCTSSearch
+from group_placement.search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
+from group_placement.search.hierarchical_best import HierarchicalBestFirstConfig, HierarchicalBestFirstSearch
+from group_placement.search.hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
 
-from agents.registry import create as create_agent
-from agents.ordering import DifficultyOrderingAgent
-from envs.action_space import ActionSpace
+from group_placement.agents.registry import create as create_agent
+from group_placement.agents.ordering import DifficultyOrderingAgent
+from group_placement.envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "envs/env_configs/facility_placement_demo.json"
+ENV_JSON: str = "group_placement/envs/env_configs/facility_placement_demo.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "greedyv5" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"

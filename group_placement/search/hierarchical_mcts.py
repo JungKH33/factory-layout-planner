@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from envs.env import FactoryLayoutEnv
-from envs.action_space import ActionSpace
-from agents.base import Agent, BaseAdapter
-from search.base import (
+from group_placement.envs.env import FactoryLayoutEnv
+from group_placement.envs.action_space import ActionSpace
+from group_placement.agents.base import Agent, BaseAdapter
+from group_placement.search.base import (
     BaseHierarchicalSearch,
     BaseSearchConfig,
     DecisionCache,

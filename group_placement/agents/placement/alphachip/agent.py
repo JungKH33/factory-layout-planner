@@ -9,7 +9,7 @@ from typing import Optional
 import torch
 from torch_geometric.data import Batch, Data
 
-from envs.action_space import ActionSpace
+from group_placement.envs.action_space import ActionSpace
 from ...base import Agent
 
 from .model import AlphaChip
@@ -196,10 +196,10 @@ class AlphaChipAgent:
 
 
 if __name__ == "__main__":
-    from envs.env_loader import load_env
+    from group_placement.envs.env_loader import load_env
     from actionspace.coarse import CoarseSelector
 
-    ENV_JSON = "envs/env_configs/basic_01.json"
+    ENV_JSON = "group_placement/envs/env_configs/basic_01.json"
     COARSE_GRID = 32
     CHECKPOINT_PATH = None  # set to a .ckpt if available
 

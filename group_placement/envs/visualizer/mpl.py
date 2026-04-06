@@ -13,8 +13,8 @@ from matplotlib.lines import Line2D
 import numpy as np
 import networkx as nx
 
-from envs.visualizer.base import VisualizerBackend
-from envs.visualizer.data import (
+from group_placement.envs.visualizer.base import VisualizerBackend
+from group_placement.envs.visualizer.data import (
     LayoutData, StepFrame, ConstraintZoneData,
     constraint_color, CONSTRAINT_BASE_COLORS,
 )
@@ -412,7 +412,7 @@ def _draw_layout_layers(
     Used by browse_steps (which mutates engine state between frames) and
     draw_layout_on_axes (external callers needing to pass their own ax).
     """
-    from envs.visualizer.data import extract_layout_data
+    from group_placement.envs.visualizer.data import extract_layout_data
     data = extract_layout_data(engine, action_space=action_space, routes=routes)
     return _draw_layout_from_data(ax, data)
 
@@ -516,7 +516,7 @@ class MatplotlibBackend(VisualizerBackend):
         This needs direct engine access because it restores state per-frame.
         """
         import torch
-        from envs.state import EnvState
+        from group_placement.envs.state import EnvState
 
         if not frames:
             raise ValueError("browse_steps: frames is empty")
@@ -526,7 +526,7 @@ class MatplotlibBackend(VisualizerBackend):
         if not hasattr(wrapper, "set_state"):
             raise ValueError("browse_steps requires a wrapper env with set_state() support.")
 
-        from envs.visualizer.data import _constraint_names, extract_layout_data
+        from group_placement.envs.visualizer.data import _constraint_names, extract_layout_data
         c_names = _constraint_names(engine)
 
         fig = plt.figure(figsize=(15, 7))

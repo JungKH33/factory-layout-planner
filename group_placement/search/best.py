@@ -7,9 +7,9 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.base import Agent
-from envs.action_space import ActionSpace
-from search.base import (
+from group_placement.agents.base import Agent
+from group_placement.envs.action_space import ActionSpace
+from group_placement.search.base import (
     BaseSearch,
     BaseSearchConfig,
     ProgressFn,

@@ -164,7 +164,7 @@ def extract_layout_data(
     Args:
         engine: FactoryLayoutEnv instance
         action_space: Optional ActionSpace (with .centers, .valid_mask, .group_id)
-        routes: Optional list of RouteResult from postprocess.pathfinder
+        routes: Optional list of RouteResult from lane_generation.pathfinder
     """
     state = engine.get_state()
     c_names = _constraint_names(engine)
