@@ -1,5 +1,5 @@
 from .core import RewardComposer, TerminalReward
-from .flow import FlowCollisionReward, FlowReward
+from .flow import FlowCollisionReward, FlowLaneDistanceReward, FlowReward
 from .area import AreaReward, GridOccupancyReward
 
 __all__ = [
@@ -7,6 +7,7 @@ __all__ = [
     "TerminalReward",
     "FlowReward",
     "FlowCollisionReward",
+    "FlowLaneDistanceReward",
     "AreaReward",
     "GridOccupancyReward",
 ]
