@@ -14,7 +14,8 @@ class GreedyV4Adapter(BaseAdapter):
 
     Scores every valid center from ``placeable_center_map`` in one
     ``score_batch`` call, keeps the best ``top_per_cell`` centers per coarse
-    cell, then interleaves those per-cell rankings until K actions are filled.
+    cell, then interleaves those per-cell rankings (round-robin).  Optionally
+    re-ranks a round-robin prefix by score.
 
     Observation includes:
     - ``action_costs``: ``[K]`` float — incremental cost per candidate
@@ -29,6 +30,7 @@ class GreedyV4Adapter(BaseAdapter):
         k: int = 50,
         cell_size: int = 50,
         top_per_cell: int = 3,
+        expand_factor: int = 2,
         quant_step: Optional[float] = None,
         random_seed: Optional[int] = None,
         expand_variants: bool = False,
@@ -39,6 +41,7 @@ class GreedyV4Adapter(BaseAdapter):
         self.k = int(k)
         self.cell_size = int(cell_size)
         self.top_per_cell = int(top_per_cell)
+        self.expand_factor = int(expand_factor)
         self.quant_step = float(quant_step) if quant_step is not None else None
         self.expand_variants = bool(expand_variants)
         self.max_variants = int(max_variants)
@@ -48,6 +51,8 @@ class GreedyV4Adapter(BaseAdapter):
             raise ValueError("cell_size must be > 0")
         if self.top_per_cell <= 0:
             raise ValueError("top_per_cell must be > 0")
+        if self.expand_factor <= 0:
+            raise ValueError("expand_factor must be > 0")
         if self.max_variants <= 0:
             raise ValueError("max_variants must be > 0")
         self._rng = random.Random(random_seed)
@@ -179,7 +184,7 @@ class GreedyV4Adapter(BaseAdapter):
         costs: torch.Tensor,
         cells: torch.Tensor,
     ) -> torch.Tensor:
-        """Select up to ``top_per_cell`` entry_points per cell, then round-robin trim."""
+        """Select up to ``top_per_cell`` entries per cell via RR, then optional rerank."""
         if costs.numel() == 0:
             return torch.zeros((0,), dtype=torch.long, device=cells.device)
 
@@ -219,9 +224,22 @@ class GreedyV4Adapter(BaseAdapter):
 
         if int(selected.numel()) == 0:
             return torch.zeros((0,), dtype=torch.long, device=cells.device)
-        if int(selected.shape[0]) > self.k:
-            selected = selected[:self.k]
-        return selected
+
+        # Fast path: preserve legacy behavior exactly (no additional score sorting).
+        if self.expand_factor == 1:
+            if int(selected.shape[0]) > self.k:
+                selected = selected[:self.k]
+            return selected
+
+        # Build a larger RR prefix, then sort by score within that pool.
+        pool_k = min(int(selected.shape[0]), int(self.k * self.expand_factor))
+        pool = selected[:pool_k]
+        if int(pool.shape[0]) > 1:
+            pool_costs = costs[pool]
+            pool = pool[torch.argsort(pool_costs)]
+        if int(pool.shape[0]) > self.k:
+            pool = pool[:self.k]
+        return pool
 
     def _quant_dedup(
         self,
@@ -346,7 +364,7 @@ if __name__ == "__main__":
     engine.log = False
 
     adapter = GreedyV4Adapter(
-        k=50, cell_size=10, top_per_cell=3, quant_step=10.0, random_seed=0,
+        k=50, cell_size=10, top_per_cell=3, expand_factor=2, quant_step=10.0, random_seed=0,
     )
 
     t0 = time.perf_counter()
@@ -360,7 +378,7 @@ if __name__ == "__main__":
     a = int(torch.where(candidates.valid_mask)[0][0].item()) if valid > 0 else 0
 
     print("GreedyV4Adapter demo")
-    print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3  quant_step=10.0")
+    print(f"  env={ENV_JSON}  device={device}  k=50  cell_size=10  top_per_cell=3  expand_factor=2  quant_step=10.0")
     print(f"  valid_actions={valid}  first_valid_action={a}")
     if obs.get("cell_indices") is not None:
         ci = obs["cell_indices"]
