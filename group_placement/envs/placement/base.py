@@ -1,11 +1,46 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import torch
 
 from group_placement.envs.action import GroupId
+
+
+PORT_SPAN_ALL = -1
+
+
+def normalize_port_span(v: Any, *, name: str) -> int:
+    """Normalize a user-facing port span value to int.
+
+    Accepted forms:
+    - positive integer (or integer-valued numeric string)
+    - ``"all"`` (case-insensitive), mapped to ``PORT_SPAN_ALL``
+    """
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s == "all":
+            return int(PORT_SPAN_ALL)
+        if s == "":
+            raise ValueError(f"{name} must be a positive integer or 'all', got empty string")
+        try:
+            f = float(s)
+        except Exception as e:
+            raise ValueError(f"{name} must be a positive integer or 'all', got {v!r}") from e
+    else:
+        try:
+            f = float(v)
+        except Exception as e:
+            raise ValueError(f"{name} must be a positive integer or 'all', got {v!r}") from e
+
+    if not math.isfinite(float(f)) or not float(f).is_integer():
+        raise ValueError(f"{name} must be an integer or 'all', got {v!r}")
+    iv = int(f)
+    if iv <= 0:
+        raise ValueError(f"{name} must be >= 1 or 'all', got {v!r}")
+    return iv
 
 
 # ---------------------------------------------------------------------------
@@ -38,14 +73,14 @@ class GroupSpec:
     zone_values: Dict[str, Any]
 
     @property
-    def entry_port_mode(self) -> str:
-        """How this facility's entry ports are aggregated: ``"min"`` or ``"mean"``."""
-        return str(getattr(self, "_entry_port_mode", "min"))
+    def entry_port_span(self) -> int:
+        """How many entry ports to aggregate: ``1..N`` or ``PORT_SPAN_ALL``."""
+        return int(getattr(self, "_entry_port_span", 1))
 
     @property
-    def exit_port_mode(self) -> str:
-        """How this facility's exit ports are aggregated: ``"min"`` or ``"mean"``."""
-        return str(getattr(self, "_exit_port_mode", "min"))
+    def exit_port_span(self) -> int:
+        """How many exit ports to aggregate: ``1..N`` or ``PORT_SPAN_ALL``."""
+        return int(getattr(self, "_exit_port_span", 1))
 
     @property
     def variants(self) -> List[GroupVariant]:

@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
-from .base import GroupSpec, GroupPlacement, GroupVariant
+from .base import (
+    PORT_SPAN_ALL,
+    GroupSpec,
+    GroupPlacement,
+    GroupVariant,
+    normalize_port_span,
+)
 
 if TYPE_CHECKING:
     from ..state.base import EnvState
@@ -103,8 +109,8 @@ class StaticSpec(GroupSpec):
     rotatable: bool = True
     mirrorable: bool = False
     zone_values: Dict[str, Any] = field(default_factory=dict)
-    _entry_port_mode: str = "min"
-    _exit_port_mode: str = "min"
+    _entry_port_span: int = 1
+    _exit_port_span: int = 1
     clearance_lrtb_rel: Optional[Tuple[int, int, int, int]] = None
     _variant_defs: Optional[List[Dict[str, Any]]] = field(default=None, repr=False)
 
@@ -672,11 +678,8 @@ class StaticRectSpec(StaticSpec):
     """Static rectangular facility spec."""
 
     def __post_init__(self) -> None:
-        _valid_modes = ("min", "mean")
-        if self._entry_port_mode not in _valid_modes:
-            raise ValueError(f"entry_port_mode must be one of {_valid_modes}, got {self._entry_port_mode!r}")
-        if self._exit_port_mode not in _valid_modes:
-            raise ValueError(f"exit_port_mode must be one of {_valid_modes}, got {self._exit_port_mode!r}")
+        self._entry_port_span = normalize_port_span(self._entry_port_span, name="entry_port_span")
+        self._exit_port_span = normalize_port_span(self._exit_port_span, name="exit_port_span")
         self.width = int(self.width)
         self.height = int(self.height)
         if self.width <= 0 or self.height <= 0:
@@ -714,6 +717,25 @@ class StaticRectSpec(StaticSpec):
             src_rotatable = bool(src.get("rotatable", self.rotatable))
             src_mirrorable = bool(src.get("mirrorable", self.mirrorable))
             src_cl = src.get("clearance_lrtb_rel", self.clearance_lrtb_rel)
+
+            if self._entry_port_span != PORT_SPAN_ALL and self._entry_port_span > len(src_entries):
+                logger.warning(
+                    "StaticRectSpec %r source[%d] entry_port_span=%d exceeds available=%d; using %d",
+                    self.id,
+                    src_idx,
+                    int(self._entry_port_span),
+                    len(src_entries),
+                    len(src_entries),
+                )
+            if self._exit_port_span != PORT_SPAN_ALL and self._exit_port_span > len(src_exits):
+                logger.warning(
+                    "StaticRectSpec %r source[%d] exit_port_span=%d exceeds available=%d; using %d",
+                    self.id,
+                    src_idx,
+                    int(self._exit_port_span),
+                    len(src_exits),
+                    len(src_exits),
+                )
 
             if src_w <= 0 or src_h <= 0:
                 raise ValueError(
@@ -847,11 +869,8 @@ class StaticIrregularSpec(StaticSpec):
     clearance_origin_canonical: Tuple[int, int] = field(init=False, default=(0, 0), repr=False)
 
     def __post_init__(self) -> None:
-        _valid_modes = ("min", "mean")
-        if self._entry_port_mode not in _valid_modes:
-            raise ValueError(f"entry_port_mode must be one of {_valid_modes}, got {self._entry_port_mode!r}")
-        if self._exit_port_mode not in _valid_modes:
-            raise ValueError(f"exit_port_mode must be one of {_valid_modes}, got {self._exit_port_mode!r}")
+        self._entry_port_span = normalize_port_span(self._entry_port_span, name="entry_port_span")
+        self._exit_port_span = normalize_port_span(self._exit_port_span, name="exit_port_span")
 
         if not self.body_polygon:
             raise ValueError(f"StaticIrregularSpec {self.id!r} requires a non-empty body_polygon")
@@ -888,6 +907,23 @@ class StaticIrregularSpec(StaticSpec):
             raise ValueError(
                 f"StaticIrregularSpec {self.id!r} body does not fit inside clearance_mask "
                 f"at origin ({ox},{oy})"
+            )
+
+        if self._entry_port_span != PORT_SPAN_ALL and self._entry_port_span > len(self.entries_rel):
+            logger.warning(
+                "StaticIrregularSpec %r entry_port_span=%d exceeds available=%d; using %d",
+                self.id,
+                int(self._entry_port_span),
+                len(self.entries_rel),
+                len(self.entries_rel),
+            )
+        if self._exit_port_span != PORT_SPAN_ALL and self._exit_port_span > len(self.exits_rel):
+            logger.warning(
+                "StaticIrregularSpec %r exit_port_span=%d exceeds available=%d; using %d",
+                self.id,
+                int(self._exit_port_span),
+                len(self.exits_rel),
+                len(self.exits_rel),
             )
 
         self._validate_body_bbox()
@@ -1173,6 +1209,25 @@ class StaticIrregularSpec(StaticSpec):
             src_exits = list(src["exits_rel"])
             src_rotatable = bool(src.get("rotatable", self.rotatable))
             src_mirrorable = bool(src.get("mirrorable", self.mirrorable))
+
+            if self._entry_port_span != PORT_SPAN_ALL and self._entry_port_span > len(src_entries):
+                logger.warning(
+                    "StaticIrregularSpec %r source[%d] entry_port_span=%d exceeds available=%d; using %d",
+                    self.id,
+                    src_idx,
+                    int(self._entry_port_span),
+                    len(src_entries),
+                    len(src_entries),
+                )
+            if self._exit_port_span != PORT_SPAN_ALL and self._exit_port_span > len(src_exits):
+                logger.warning(
+                    "StaticIrregularSpec %r source[%d] exit_port_span=%d exceeds available=%d; using %d",
+                    self.id,
+                    src_idx,
+                    int(self._exit_port_span),
+                    len(src_exits),
+                    len(src_exits),
+                )
 
             # Get or rasterize canonical maps for this source
             if "body_map_canonical" in src:

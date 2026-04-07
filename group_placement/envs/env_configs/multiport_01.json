@@ -8,36 +8,36 @@
       "width": 80, "height": 60, "rotatable": true,
       "entries_rel": [[0, 15], [0, 45]],
       "exits_rel": [[80, 30]],
-      "entry_port_mode": "min",
-      "exit_port_mode": "min"
+      "entry_port_span": 1,
+      "exit_port_span": 1
     },
     "B": {
       "width": 100, "height": 80, "rotatable": true,
       "entries_rel": [[0, 20], [0, 40], [0, 60]],
       "exits_rel": [[100, 20], [100, 60]],
-      "entry_port_mode": "mean",
-      "exit_port_mode": "min"
+      "entry_port_span": "all",
+      "exit_port_span": 1
     },
     "C": {
       "width": 60, "height": 60, "rotatable": true,
       "entries_rel": [[0, 15], [0, 45]],
       "exits_rel": [[60, 15], [60, 45]],
-      "entry_port_mode": "min",
-      "exit_port_mode": "mean"
+      "entry_port_span": 1,
+      "exit_port_span": "all"
     },
     "D": {
       "width": 70, "height": 50, "rotatable": true,
       "entries_rel": [[0, 10], [0, 40]],
       "exits_rel": [[70, 10], [70, 40]],
-      "entry_port_mode": "mean",
-      "exit_port_mode": "mean"
+      "entry_port_span": "all",
+      "exit_port_span": "all"
     },
     "E": {
       "width": 90, "height": 70, "rotatable": false,
       "entries_rel": [[0, 35]],
       "exits_rel": [[90, 35]],
-      "entry_port_mode": "min",
-      "exit_port_mode": "min"
+      "entry_port_span": 1,
+      "exit_port_span": 1
     }
   },
   "flow": [

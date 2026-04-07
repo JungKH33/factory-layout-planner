@@ -86,36 +86,36 @@ class RewardComposer:
                 needed |= set(comp.required())
         return needed
 
-    def _port_mode_tensors(
+    def _port_span_tensors(
         self,
         gids: list,
         device: torch.device,
     ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Build (exit_modes, entry_modes) bool tensors from group_specs.
+        """Build (exit_k, entry_k) int tensors from group_specs.
 
-        Returns (None, None) when all facilities use "min" (fast-path).
+        Returns (None, None) when all facilities use span=1 (fast-path).
         """
         if self.group_specs is None:
             return None, None
         n = len(gids)
         if n == 0:
             return None, None
-        exit_modes = torch.zeros((n,), dtype=torch.bool, device=device)
-        entry_modes = torch.zeros((n,), dtype=torch.bool, device=device)
-        any_mean = False
+        exit_k = torch.ones((n,), dtype=torch.int32, device=device)
+        entry_k = torch.ones((n,), dtype=torch.int32, device=device)
+        any_non_one = False
         for i, gid in enumerate(gids):
             spec = self.group_specs.get(gid)
             if spec is None:
                 continue
-            if getattr(spec, "exit_port_mode", "min") == "mean":
-                exit_modes[i] = True
-                any_mean = True
-            if getattr(spec, "entry_port_mode", "min") == "mean":
-                entry_modes[i] = True
-                any_mean = True
-        if not any_mean:
+            ek = int(getattr(spec, "exit_port_span", 1))
+            ik = int(getattr(spec, "entry_port_span", 1))
+            exit_k[i] = ek
+            entry_k[i] = ik
+            if ek != 1 or ik != 1:
+                any_non_one = True
+        if not any_non_one:
             return None, None
-        return exit_modes, entry_modes
+        return exit_k, entry_k
 
     def score(
         self,
@@ -137,7 +137,7 @@ class RewardComposer:
         device = placed_entries.device
         total = torch.tensor(0.0, dtype=torch.float32, device=device)
 
-        exit_modes, entry_modes = self._port_mode_tensors(placed_nodes, device)
+        exit_k, entry_k = self._port_span_tensors(placed_nodes, device)
 
         flow = self.components.get("flow", None)
         if flow is not None:
@@ -148,8 +148,8 @@ class RewardComposer:
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
 
         flow_collision = self.components.get("flow_collision", None)
@@ -162,8 +162,8 @@ class RewardComposer:
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
                 route_blocked=route_blocked,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
 
         area = self.components.get("area", None)
@@ -241,15 +241,15 @@ class RewardComposer:
             entry_points = _require(entry_points, "entry_points")
             exit_points = _require(exit_points, "exit_points")
 
-        # Build port mode tensors for candidate and placed facilities
-        t_exit_modes, t_entry_modes = self._port_mode_tensors(placed_nodes, device)
-        c_exit_mode = "min"
-        c_entry_mode = "min"
+        # Build port span tensors for candidate and placed facilities
+        t_exit_k, t_entry_k = self._port_span_tensors(placed_nodes, device)
+        c_exit_k = 1
+        c_entry_k = 1
         if self.group_specs is not None and gid is not None:
             c_spec = self.group_specs.get(gid)
             if c_spec is not None:
-                c_exit_mode = getattr(c_spec, "exit_port_mode", "min")
-                c_entry_mode = getattr(c_spec, "entry_port_mode", "min")
+                c_exit_k = int(getattr(c_spec, "exit_port_span", 1))
+                c_entry_k = int(getattr(c_spec, "entry_port_span", 1))
 
         if flow is not None:
             w = float(self.weights.get("flow", 1.0))
@@ -264,10 +264,10 @@ class RewardComposer:
                 candidate_exits=exit_points,
                 candidate_entries_mask=entry_mask,
                 candidate_exits_mask=exit_mask,
-                c_exit_mode=c_exit_mode,
-                c_entry_mode=c_entry_mode,
-                t_entry_modes=t_entry_modes,
-                t_exit_modes=t_exit_modes,
+                c_exit_k=c_exit_k,
+                c_entry_k=c_entry_k,
+                t_entry_k=t_entry_k,
+                t_exit_k=t_exit_k,
             )
         if flow_collision is not None:
             w = float(self.weights.get("flow_collision", 1.0))
@@ -283,10 +283,10 @@ class RewardComposer:
                 candidate_entries_mask=entry_mask,
                 candidate_exits_mask=exit_mask,
                 route_blocked=route_blocked,
-                c_exit_mode=c_exit_mode,
-                c_entry_mode=c_entry_mode,
-                t_entry_modes=t_entry_modes,
-                t_exit_modes=t_exit_modes,
+                c_exit_k=c_exit_k,
+                c_entry_k=c_entry_k,
+                t_entry_k=t_entry_k,
+                t_exit_k=t_exit_k,
             )
 
         if area is not None or grid_occ is not None:

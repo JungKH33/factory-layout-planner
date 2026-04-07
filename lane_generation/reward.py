@@ -211,8 +211,8 @@ class FlowLaneDistanceReward:
         state: Optional["EnvState"],
         current_gid: Optional[object],
         target_gids: Optional[List[object]],
-        c_modes: Optional[torch.Tensor] = None, # [M] bool (True=mean)
-        t_modes: Optional[torch.Tensor] = None, # [T] bool (True=mean)
+        c_k: Optional[torch.Tensor] = None, # [M] int
+        t_k: Optional[torch.Tensor] = None, # [T] int
     ) -> torch.Tensor:
         m = int(candidate_ports.shape[0])
         if m == 0:
@@ -253,43 +253,25 @@ class FlowLaneDistanceReward:
         else:
             t_gid_list = [target_gids[i] for i in range(t)]
 
-        t_is_mean = torch.zeros((t,), dtype=torch.bool, device=device) if t_modes is None else t_modes.to(
-            device=device,
-            dtype=torch.bool,
-        )
-
-        # Seed groups:
-        # - target mean: one field per target port
-        # - target min : one field per target (multi-source over valid ports)
+        # Build one BFS seed per valid target port. Reduction by k is handled
+        # afterwards by FlowReward._masked_pair_reduce.
         g_tidx: List[int] = []
+        g_pidx: List[int] = []
         g_tgid: List[Optional[object]] = []
-        g_seeds: List[torch.Tensor] = []
-        g_is_mean: List[bool] = []
-        mean_cnt = torch.zeros((t,), dtype=torch.int32, device=device)
+        g_seed: List[torch.Tensor] = []
         for ti in range(t):
-            p_idx = torch.where(tgt_valid[ti])[0]
-            if int(p_idx.numel()) == 0:
-                continue
-            if bool(t_is_mean[ti].item()):
-                mean_cnt[ti] = int(p_idx.numel())
-                for pj_t in p_idx:
-                    pj = int(pj_t.item())
-                    g_tidx.append(ti)
-                    g_tgid.append(t_gid_list[ti])
-                    g_seeds.append(target_ports[ti, pj:pj + 1, :])
-                    g_is_mean.append(True)
-            else:
+            p_idx = torch.where(tgt_valid[ti])[0].tolist()
+            for pj in p_idx:
                 g_tidx.append(ti)
+                g_pidx.append(int(pj))
                 g_tgid.append(t_gid_list[ti])
-                g_seeds.append(target_ports[ti, p_idx, :])
-                g_is_mean.append(False)
+                g_seed.append(target_ports[ti, int(pj):int(pj) + 1, :])
 
         g_total = len(g_tidx)
         if g_total == 0:
             return torch.zeros((m,), dtype=torch.float32, device=device)
 
-        reduced_cp = torch.full((m, t, c), float("inf"), dtype=torch.float32, device=device)
-        mean_acc = torch.zeros((m, t, c), dtype=torch.float32, device=device)
+        lane_cost = torch.full((m, t, c, p), float(unreachable), dtype=torch.float32, device=device)
 
         # Candidate port indices on (possibly) coarse grid.
         Hc = (H0 + stride - 1) // stride
@@ -322,11 +304,11 @@ class FlowLaneDistanceReward:
             Hb = int(free_b.shape[1])
             Wb = int(free_b.shape[2])
 
-            smax = max(int(g_seeds[g].shape[0]) for g in gids)
+            smax = max(int(g_seed[g].shape[0]) for g in gids)
             seed_xy = torch.zeros((b, smax, 2), dtype=torch.float32, device=device)
             seed_mask = torch.zeros((b, smax), dtype=torch.bool, device=device)
             for bi, g in enumerate(gids):
-                seeds = g_seeds[g].to(device=device, dtype=torch.float32).view(-1, 2)
+                seeds = g_seed[g].to(device=device, dtype=torch.float32).view(-1, 2)
                 n = int(seeds.shape[0])
                 sx, sy, s_oob = self._ports_to_grid(
                     seeds,
@@ -360,34 +342,16 @@ class FlowLaneDistanceReward:
 
             for bi, g in enumerate(gids):
                 ti = g_tidx[g]
-                if g_is_mean[g]:
-                    mean_acc[:, ti, :] += d[:, bi, :]
-                else:
-                    reduced_cp[:, ti, :] = d[:, bi, :]
+                pj = g_pidx[g]
+                lane_cost[:, ti, :, pj] = d[:, bi, :]
 
-        mean_idx = torch.where(mean_cnt > 0)[0]
-        for ti_t in mean_idx:
-            ti = int(ti_t.item())
-            reduced_cp[:, ti, :] = mean_acc[:, ti, :] / float(mean_cnt[ti].item())
-
-        valid_c = cand_valid[:, None, :].expand(m, t, c)
-        has_valid = valid_c.any(dim=2)
-        masked_inf = reduced_cp.masked_fill(~valid_c, float("inf"))
-        min_c = masked_inf.min(dim=2).values
-
-        c_all_min = c_modes is None or not c_modes.any().item()
-        if c_all_min:
-            reduced_mt = torch.where(has_valid, min_c, torch.zeros_like(min_c))
-        else:
-            c_mode = c_modes.to(device=device, dtype=torch.bool).view(-1, 1)
-            reduced_zero = reduced_cp.masked_fill(~valid_c, 0.0)
-            c_count = valid_c.sum(dim=2).clamp(min=1).to(dtype=torch.float32)
-            mean_c = reduced_zero.sum(dim=2) / c_count
-            if c_mode.all().item():
-                raw = mean_c
-            else:
-                raw = torch.where(c_mode, mean_c, min_c)
-            reduced_mt = torch.where(has_valid, raw, torch.zeros_like(raw))
+        valid = cand_valid[:, None, :, None] & tgt_valid[None, :, None, :]
+        reduced_mt, _, _ = FlowReward._masked_pair_reduce(
+            lane_cost,
+            valid,
+            c_k=c_k,
+            t_k=t_k,
+        )
 
         reduced_mt = torch.where(
             t_has.view(1, -1),
@@ -405,8 +369,8 @@ class FlowLaneDistanceReward:
         placed_exits_mask: Optional[torch.Tensor],
         flow_w: torch.Tensor,
         route_blocked: Optional[torch.Tensor],
-        exit_modes: Optional[torch.Tensor] = None,
-        entry_modes: Optional[torch.Tensor] = None,
+        exit_k: Optional[torch.Tensor] = None,
+        entry_k: Optional[torch.Tensor] = None,
         state: Optional["EnvState"] = None,
         placed_nodes: Optional[List["GroupId"]] = None,
     ) -> torch.Tensor:
@@ -427,8 +391,8 @@ class FlowLaneDistanceReward:
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
 
         if state is not None:
@@ -442,8 +406,8 @@ class FlowLaneDistanceReward:
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
 
         total = torch.tensor(0.0, dtype=torch.float32, device=placed_en.device)
@@ -461,8 +425,8 @@ class FlowLaneDistanceReward:
                 state=state,
                 current_gid=placed_nodes[src],
                 target_gids=placed_nodes,
-                c_modes=exit_modes[src:src + 1] if exit_modes is not None else None,
-                t_modes=entry_modes,
+                c_k=exit_k[src:src + 1] if exit_k is not None else None,
+                t_k=entry_k,
             )
             total = total + per[0]
         return total
@@ -481,10 +445,10 @@ class FlowLaneDistanceReward:
         candidate_entries_mask: Optional[torch.Tensor],
         candidate_exits_mask: Optional[torch.Tensor],
         route_blocked: Optional[torch.Tensor],
-        c_exit_mode: str = "min",
-        c_entry_mode: str = "min",
-        t_entry_modes: Optional[torch.Tensor] = None,
-        t_exit_modes: Optional[torch.Tensor] = None,
+        c_exit_k: int = 1,
+        c_entry_k: int = 1,
+        t_entry_k: Optional[torch.Tensor] = None,
+        t_exit_k: Optional[torch.Tensor] = None,
         state: Optional["EnvState"] = None,
         current_gid: Optional["GroupId"] = None,
         placed_nodes: Optional[List["GroupId"]] = None,
@@ -519,10 +483,10 @@ class FlowLaneDistanceReward:
                 candidate_exits=candidate_exits,
                 candidate_entries_mask=candidate_entries_mask,
                 candidate_exits_mask=candidate_exits_mask,
-                c_exit_mode=c_exit_mode,
-                c_entry_mode=c_entry_mode,
-                t_entry_modes=t_entry_modes,
-                t_exit_modes=t_exit_modes,
+                c_exit_k=c_exit_k,
+                c_entry_k=c_entry_k,
+                t_entry_k=t_entry_k,
+                t_exit_k=t_exit_k,
             )
 
         w_out_t = w_out.view(-1)
@@ -557,8 +521,8 @@ class FlowLaneDistanceReward:
                 state=state,
                 current_gid=current_gid,
                 target_gids=out_gids,
-                c_modes=FlowReward._mode_tensor(c_exit_mode, m, device),
-                t_modes=t_entry_modes[out_idx] if t_entry_modes is not None else None,
+                c_k=FlowReward._select_k_tensor(c_exit_k, m, device),
+                t_k=t_entry_k[out_idx] if t_entry_k is not None else None,
             )
 
         if has_in:
@@ -577,8 +541,8 @@ class FlowLaneDistanceReward:
                 state=state,
                 current_gid=current_gid,
                 target_gids=in_gids,
-                c_modes=FlowReward._mode_tensor(c_entry_mode, m, device),
-                t_modes=t_exit_modes[in_idx] if t_exit_modes is not None else None,
+                c_k=FlowReward._select_k_tensor(c_entry_k, m, device),
+                t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
             )
 
         return out_term + in_term

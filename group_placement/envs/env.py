@@ -15,7 +15,7 @@ from .reward import (
     RewardComposer,
     TerminalReward,
 )
-from .placement.base import GroupSpec
+from .placement.base import PORT_SPAN_ALL, GroupSpec
 from .placement.static import StaticRectSpec
 from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
@@ -194,21 +194,40 @@ class FactoryLayoutEnv(gym.Env):
         placed_exits: torch.Tensor,
         placed_entries_mask: torch.Tensor,
         placed_exits_mask: torch.Tensor,
-        exit_modes: Optional[torch.Tensor],
-        entry_modes: Optional[torch.Tensor],
+        exit_k: Optional[torch.Tensor],
+        entry_k: Optional[torch.Tensor],
     ) -> list:
-        src_exit_mean = exit_modes is not None and bool(exit_modes[src_row].item())
-        dst_entry_mean = entry_modes is not None and bool(entry_modes[dst_row].item())
+        src_req_k = 1 if exit_k is None else int(exit_k[src_row].item())
+        dst_req_k = 1 if entry_k is None else int(entry_k[dst_row].item())
+        valid_exit_idx = torch.where(placed_exits_mask[src_row])[0]
+        valid_entry_idx = torch.where(placed_entries_mask[dst_row])[0]
 
-        if src_exit_mean:
-            e_idxs = [int(j.item()) for j in torch.where(placed_exits_mask[src_row])[0]]
-        else:
-            e_idxs = [int(exit_argmin)]
+        if int(valid_exit_idx.numel()) == 0 or int(valid_entry_idx.numel()) == 0:
+            return []
 
-        if dst_entry_mean:
-            n_idxs = [int(j.item()) for j in torch.where(placed_entries_mask[dst_row])[0]]
+        if src_req_k == 1:
+            e_idxs = [int(exit_argmin)] if bool((valid_exit_idx == int(exit_argmin)).any().item()) else [int(valid_exit_idx[0].item())]
+        elif src_req_k == int(PORT_SPAN_ALL):
+            e_idxs = [int(j.item()) for j in valid_exit_idx]
         else:
-            n_idxs = [int(entry_argmin)]
+            src_eff_k = min(int(src_req_k), int(valid_exit_idx.numel()))
+            anchor_entry = placed_entries[dst_row, int(entry_argmin), :]
+            exits = placed_exits[src_row, valid_exit_idx, :]
+            dist = (exits - anchor_entry.view(1, 2)).abs().sum(dim=1)
+            take = torch.topk(dist, k=src_eff_k, largest=False).indices
+            e_idxs = [int(valid_exit_idx[int(i.item())].item()) for i in take]
+
+        if dst_req_k == 1:
+            n_idxs = [int(entry_argmin)] if bool((valid_entry_idx == int(entry_argmin)).any().item()) else [int(valid_entry_idx[0].item())]
+        elif dst_req_k == int(PORT_SPAN_ALL):
+            n_idxs = [int(j.item()) for j in valid_entry_idx]
+        else:
+            dst_eff_k = min(int(dst_req_k), int(valid_entry_idx.numel()))
+            anchor_exit = placed_exits[src_row, int(exit_argmin), :]
+            entries = placed_entries[dst_row, valid_entry_idx, :]
+            dist = (entries - anchor_exit.view(1, 2)).abs().sum(dim=1)
+            take = torch.topk(dist, k=dst_eff_k, largest=False).indices
+            n_idxs = [int(valid_entry_idx[int(i.item())].item()) for i in take]
 
         pair_list = []
         for ei in e_idxs:
@@ -229,8 +248,8 @@ class FactoryLayoutEnv(gym.Env):
         placed_entries_mask: torch.Tensor,
         placed_exits_mask: torch.Tensor,
         flow_w: torch.Tensor,
-        exit_modes: Optional[torch.Tensor],
-        entry_modes: Optional[torch.Tensor],
+        exit_k: Optional[torch.Tensor],
+        entry_k: Optional[torch.Tensor],
     ) -> None:
         nodes_key = tuple(placed_nodes)
         if updated_gid not in nodes_key:
@@ -265,8 +284,8 @@ class FactoryLayoutEnv(gym.Env):
             target_ports=placed_entries,
             target_mask=placed_entries_mask,
             target_weight=flow_w[updated_row:updated_row + 1, :],
-            c_modes=exit_modes[updated_row:updated_row + 1] if exit_modes is not None else None,
-            t_modes=entry_modes,
+            c_k=exit_k[updated_row:updated_row + 1] if exit_k is not None else None,
+            t_k=entry_k,
         )
         _, in_c_idx, in_p_idx = flow_comp._reduce_distance(
             candidate_ports=placed_exits,
@@ -274,8 +293,8 @@ class FactoryLayoutEnv(gym.Env):
             target_ports=placed_entries[updated_row:updated_row + 1],
             target_mask=placed_entries_mask[updated_row:updated_row + 1],
             target_weight=flow_w[:, updated_row:updated_row + 1],
-            c_modes=exit_modes,
-            t_modes=entry_modes[updated_row:updated_row + 1] if entry_modes is not None else None,
+            c_k=exit_k,
+            t_k=entry_k[updated_row:updated_row + 1] if entry_k is not None else None,
         )
         if out_c_idx is None or out_p_idx is None or in_c_idx is None or in_p_idx is None:
             raise RuntimeError(
@@ -294,8 +313,8 @@ class FactoryLayoutEnv(gym.Env):
                 placed_exits=placed_exits,
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
 
         for src_row, src_gid in enumerate(placed_nodes):
@@ -310,8 +329,8 @@ class FactoryLayoutEnv(gym.Env):
                 placed_exits=placed_exits,
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
 
         self._state.set_flow_port_pairs(pairs, nodes=placed_nodes)
@@ -319,8 +338,8 @@ class FactoryLayoutEnv(gym.Env):
     def _update_flow_port_pairs(self, *, updated_gid: GroupId) -> None:
         """Update per-edge port pair cache for visualization.
 
-        For min-mode ports: store the single argmin pair.
-        For mean-mode ports: store all valid ports (cartesian product).
+        For span=1 ports: store the single argmin pair.
+        For span>1 / span=all: store selected port combinations.
         """
         flow_comp = self._reward.components.get("flow")
         if flow_comp is None:
@@ -330,7 +349,7 @@ class FactoryLayoutEnv(gym.Env):
             self._state.clear_flow_port_pairs()
             return
         flow_w = self._state.build_flow_w()
-        exit_modes, entry_modes = self._reward._port_mode_tensors(
+        exit_k, entry_k = self._reward._port_span_tensors(
             placed_nodes, placed_entries.device,
         )
         self._try_update_flow_port_pairs_incremental(
@@ -342,8 +361,8 @@ class FactoryLayoutEnv(gym.Env):
             placed_entries_mask=placed_entries_mask,
             placed_exits_mask=placed_exits_mask,
             flow_w=flow_w,
-            exit_modes=exit_modes,
-            entry_modes=entry_modes,
+            exit_k=exit_k,
+            entry_k=entry_k,
         )
 
     @property

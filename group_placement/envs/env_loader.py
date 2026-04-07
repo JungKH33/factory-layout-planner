@@ -9,7 +9,7 @@ import torch
 
 from group_placement.envs.action import EnvAction
 from group_placement.envs.env import FactoryLayoutEnv
-from group_placement.envs.placement.base import GroupSpec
+from group_placement.envs.placement.base import GroupSpec, normalize_port_span
 from group_placement.envs.placement.static import StaticRectSpec, StaticIrregularSpec
 
 GroupId = Union[int, str]
@@ -174,6 +174,13 @@ def load_env(
     for gid, g in groups_cfg.items():
         variants_raw = g.get("variants")
         group_type = str(g.get("type", "rect")).lower()
+        if "entry_port_mode" in g or "exit_port_mode" in g:
+            raise ValueError(
+                f"groups.{gid}: 'entry_port_mode/exit_port_mode' are no longer supported; "
+                "use 'entry_port_span/exit_port_span' (int or 'all')"
+            )
+        entry_port_span = normalize_port_span(g.get("entry_port_span", 1), name=f"groups.{gid}.entry_port_span")
+        exit_port_span = normalize_port_span(g.get("exit_port_span", 1), name=f"groups.{gid}.exit_port_span")
 
         # --- parse top-level width/height/ports ---
         # When "variants" is present, top-level width/height are optional
@@ -289,8 +296,8 @@ def load_env(
             rotatable=bool(g.get("rotatable", True)),
             mirrorable=bool(g.get("mirrorable", True)),
             zone_values=dict(zone_values_raw),
-            _entry_port_mode=str(g.get("entry_port_mode", "min")),
-            _exit_port_mode=str(g.get("exit_port_mode", "min")),
+            _entry_port_span=int(entry_port_span),
+            _exit_port_span=int(exit_port_span),
             _variant_defs=variant_defs,
             **clearance_kwargs,
         )

@@ -188,8 +188,8 @@ Ports define where material enters/exits a facility. Coordinates are relative to
 |---|---|---|---|
 | `entries_rel` | `[[x,y], ...]` | center | Entry port positions (BL-relative) |
 | `exits_rel` | `[[x,y], ...]` | center | Exit port positions (BL-relative) |
-| `entry_port_mode` | string | `"min"` | Port aggregation: `"min"` or `"mean"` |
-| `exit_port_mode` | string | `"min"` | Port aggregation: `"min"` or `"mean"` |
+| `entry_port_span` | int or string | `1` | Number of entry ports to use: `1`, `2`, ..., or `"all"` |
+| `exit_port_span` | int or string | `1` | Number of exit ports to use: `1`, `2`, ..., or `"all"` |
 
 **Legacy single-port format (still supported):**
 
@@ -206,12 +206,12 @@ Ports define where material enters/exits a facility. Coordinates are relative to
   "width": 100, "height": 80,
   "entries_rel": [[0, 20], [0, 40], [0, 60]],
   "exits_rel": [[100, 20], [100, 60]],
-  "entry_port_mode": "mean",
-  "exit_port_mode": "min"
+  "entry_port_span": "all",
+  "exit_port_span": 1
 }
 ```
 
-> See [Port Aggregation Modes](#port-aggregation-modes-min-vs-mean) for a detailed explanation with examples.
+> See [Port Span Selection](#port-span-selection-entry_port_span--exit_port_span) for a detailed explanation with examples.
 
 #### Clearance
 
@@ -625,87 +625,29 @@ Conv2D-based validity expansion for dynamic facilities with capacity optimizatio
 - **Tensor indexing**: `tensor[y, x]` (row = y, column = x)
 - **Port coordinates**: always relative to BL corner at rotation 0
 
-### Port Aggregation Modes (`min` vs `mean`)
+### Port Span Selection (`entry_port_span` / `exit_port_span`)
 
-When a facility has **multiple** entry or exit ports, the port aggregation mode controls how distances from those ports are combined into a single cost value.
+When a facility has multiple entry/exit ports, `*_port_span` controls how many closest ports are averaged.
 
-**Setup:** Consider facility A (source) with 2 exit ports, and facility B (target) with 3 entry ports. The flow cost from A to B requires reducing the 2x3 port-pair distance matrix to a single number.
+- `1`: use the single closest port (same behavior as old `min`)
+- `k` (`k>=2`): average over the `k` closest valid ports
+- `"all"`: average over all valid ports (same behavior as old `mean`)
 
-#### `"min"` mode (default)
+Exit and entry spans are independent. For flow `A -> B`:
 
-Use the **closest** port pair. Only the single best-matching port contributes to cost.
+1. `A.exit_port_span` reduces A's exit ports
+2. `B.entry_port_span` reduces B's entry ports
 
-**Example:** A 3x3 facility with 3 entry ports at `[[0,0], [0,1], [0,2]]` and port mode `"min"`:
-
-```
-Incoming material from facility X's exit at (5, 1):
-
-  Port (0,0): distance = |5-0| + |1-0| = 6
-  Port (0,1): distance = |5-0| + |1-1| = 5  <-- minimum
-  Port (0,2): distance = |5-0| + |1-2| = 6
-
-  min mode result = 5
-```
-
-Best interpretation: material is routed to whichever port is closest. Use this when ports are alternatives (e.g., multiple loading docks -- material goes to the nearest one).
-
-#### `"mean"` mode
-
-Use the **average** distance across all valid ports.
-
-**Example:** Same setup as above:
-
-```
-  Port (0,0): distance = 6
-  Port (0,1): distance = 5
-  Port (0,2): distance = 6
-
-  mean mode result = (6 + 5 + 6) / 3 = 5.67
-```
-
-Best interpretation: material must reach all ports. Use this when ports represent distributed access points that all need to be served (e.g., multiple workstations within a facility that all receive input).
-
-#### Combining Modes
-
-Exit and entry ports have **independent** modes. With flow A -> B:
-
-1. A's `exit_port_mode` controls how A's exit ports are aggregated
-2. B's `entry_port_mode` controls how B's entry ports are aggregated
-
-**Full example with a 6x4 facility:**
-
-```json
-"A": {
-  "width": 6, "height": 4,
-  "exits_rel": [[6, 1], [6, 3]],
-  "exit_port_mode": "min"
-}
-```
-
-```
-+------+
-|      * (6,3) exit port 1
-|  A   |
-|      * (6,1) exit port 0
-+------+
-```
-
-If B has `entry_port_mode: "mean"` with entries at `[[0, 2], [0, 6], [0, 10]]`:
-
-```
-Step 1: For each of A's exits, compute distance to EACH of B's entries (all pairs)
-Step 2: Reduce B's entries using "mean" -> average across B's 3 entry ports
-Step 3: Reduce A's exits using "min" -> pick the closer of A's 2 exit ports
-```
+If requested span is larger than available ports, the engine clamps to available count and prints a warning.
 
 #### Compact Summary Table
 
-| Facility Ports | `"min"` | `"mean"` |
-|---|---|---|
-| 1 port | no effect | no effect |
-| 2 ports | closest port wins | average of 2 |
-| 3 ports | closest port wins | average of 3 |
-| N ports | `min(d_1, ..., d_N)` | `(d_1 + ... + d_N) / N` |
+| Facility Ports | `span=1` | `span=2` | `span="all"` |
+|---|---|---|---|
+| 1 port | closest(only) | average of 1 | average of 1 |
+| 2 ports | closest 1 | average of closest 2 | average of 2 |
+| 3 ports | closest 1 | average of closest 2 | average of 3 |
+| N ports | `min(d_1, ..., d_N)` | average of top-2 smallest | `(d_1 + ... + d_N) / N` |
 
 ### Zone Constraints
 
@@ -839,6 +781,6 @@ engine.set_state(state_copy)             # restore snapshot
 | `basic_01.json` | Minimal rectangles, no constraints | 9 |
 | `clearance_01.json` | Uniform 10-cell clearance halos | 9 |
 | `zones_01.json` | Weight/height/dry zone constraints | 10 |
-| `multiport_01.json` | Multiple ports with min/mean modes | 5 |
+| `multiport_01.json` | Multiple ports with span selection (`1`, `k`, `"all"`) | 5 |
 | `mixed_01.json` | Irregular polygons + rectangles | 8 |
 | `placed_01.json` | 2 pre-placed, rest by agent | 9 |

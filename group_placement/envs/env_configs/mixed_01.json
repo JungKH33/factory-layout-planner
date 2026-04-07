@@ -13,8 +13,8 @@
       "width": 75,
       "height": 50,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           0,
@@ -47,8 +47,8 @@
       "width": 62,
       "height": 62,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           18,
@@ -84,8 +84,8 @@
       "width": 75,
       "height": 50,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           0,
@@ -143,8 +143,8 @@
       "width": 56,
       "height": 44,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           16,
@@ -180,8 +180,8 @@
       "width": 69,
       "height": 56,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           0,
@@ -217,8 +217,8 @@
       "width": 93,
       "height": 93,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           18,
@@ -288,8 +288,8 @@
       "width": 56,
       "height": 56,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           0,
@@ -347,8 +347,8 @@
       "width": 64,
       "height": 256,
       "rotatable": true,
-      "entry_port_mode": "mean",
-      "exit_port_mode": "mean",
+      "entry_port_span": "all",
+      "exit_port_span": "all",
       "entries_rel": [
         [
           0,
@@ -402,8 +402,8 @@
       "width": 96,
       "height": 144,
       "rotatable": true,
-      "entry_port_mode": "mean",
-      "exit_port_mode": "mean",
+      "entry_port_span": "all",
+      "exit_port_span": "all",
       "entries_rel": [
         [
           0,
@@ -465,8 +465,8 @@
       "width": 108,
       "height": 72,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           18,
@@ -540,8 +540,8 @@
       "width": 60,
       "height": 48,
       "rotatable": true,
-      "entry_port_mode": "min",
-      "exit_port_mode": "min",
+      "entry_port_span": 1,
+      "exit_port_span": 1,
       "entries_rel": [
         [
           22,

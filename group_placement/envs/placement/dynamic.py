@@ -34,8 +34,8 @@ class DynamicSpec(GroupSpec):
     device: torch.device
     id: object | None = None
     zone_values: Dict[str, object] = field(default_factory=dict)
-    _entry_port_mode: str = "min"
-    _exit_port_mode: str = "min"
+    _entry_port_span: int = 1
+    _exit_port_span: int = 1
 
     def validate(self) -> None:
         if int(self.unit_w) <= 0 or int(self.unit_h) <= 0:

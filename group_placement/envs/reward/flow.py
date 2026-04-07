@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+
+from ..placement.base import PORT_SPAN_ALL
 
 if TYPE_CHECKING:
     from ..action import GroupId
@@ -67,34 +69,59 @@ class FlowReward:
         raise ValueError(f"weight must be [T] or [M,T], got dim={w.dim()}")
 
     @staticmethod
-    def _mode_tensor(mode: str, n: int, device: torch.device) -> Optional[torch.Tensor]:
-        """Convert ``"min"``/``"mean"`` to bool tensor. Returns None for ``"min"`` (fast-path)."""
-        if mode == "mean":
-            return torch.ones((n,), dtype=torch.bool, device=device)
-        return None
+    def _select_k_tensor(select_k: int, n: int, device: torch.device) -> Optional[torch.Tensor]:
+        """Convert scalar ``select_k`` to ``[n]`` int tensor. Returns None for ``1`` fast-path."""
+        k = int(select_k)
+        if k == 1:
+            return None
+        if k != PORT_SPAN_ALL and k <= 0:
+            raise ValueError(f"select_k must be >= 1 or {PORT_SPAN_ALL} (all), got {select_k!r}")
+        return torch.full((n,), k, dtype=torch.int32, device=device)
+
+    @staticmethod
+    def _normalize_k_tensor(
+        k: Optional[torch.Tensor],
+        *,
+        n: int,
+        name: str,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        if k is None:
+            return None
+        out = k.to(device=device, dtype=torch.int32).view(-1)
+        if int(out.numel()) != int(n):
+            raise ValueError(f"{name} must have shape ({n},), got {tuple(out.shape)}")
+        valid = (out == int(PORT_SPAN_ALL)) | (out >= 1)
+        if not bool(valid.all().item()):
+            bad = out[~valid][0].item()
+            raise ValueError(f"{name} must be >=1 or {PORT_SPAN_ALL} (all), got {bad!r}")
+        if bool((out == 1).all().item()):
+            return None
+        return out
 
     @staticmethod
     def _masked_pair_reduce(
         cost: torch.Tensor,
         valid: torch.Tensor,
-        c_modes: Optional[torch.Tensor] = None,
-        t_modes: Optional[torch.Tensor] = None,
+        c_k: Optional[torch.Tensor] = None,
+        t_k: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Reduce [M,T,C,P] cost to [M,T] using per-facility port aggregation.
+        """Reduce [M,T,C,P] to [M,T] using per-facility k-port averaging.
 
-        c_modes: [M] bool (True=mean, False=min). None → all min.
-        t_modes: [T] bool (True=mean, False=min). None → all min.
-
-        Returns (values [M,T], c_idx [M,T], p_idx [M,T]).
-        c_idx/p_idx are argmin indices from the min path; for mean-mode
-        facilities they serve as placeholders (callers use the valid mask
-        to enumerate all ports instead).
+        - ``k=1``: min reduction (closest port)
+        - ``k=PORT_SPAN_ALL``: average over all valid ports
+        - ``k>1``: average over top-k closest valid ports
         """
         if cost.dim() != 4 or valid.dim() != 4:
             raise ValueError("cost/valid must be rank-4 tensors [M,T,C,P]")
         if tuple(cost.shape) != tuple(valid.shape):
             raise ValueError(f"cost and valid shape mismatch: {tuple(cost.shape)} vs {tuple(valid.shape)}")
 
+        m = int(cost.shape[0])
+        t = int(cost.shape[1])
+        device = cost.device
+        c_k_t = FlowReward._normalize_k_tensor(c_k, n=m, name="c_k", device=device)
+        t_k_t = FlowReward._normalize_k_tensor(t_k, n=t, name="t_k", device=device)
         has_valid = valid.any(dim=3).any(dim=2)  # [M,T]
 
         # Always compute min over P for argmin indices
@@ -102,17 +129,32 @@ class FlowReward:
         min_p = masked_inf.min(dim=3)  # values [M,T,C], indices [M,T,C]
 
         # --- P-dim reduction (target ports) ---
-        t_all_min = t_modes is None or not t_modes.any().item()
-        if t_all_min:
+        t_all_one = t_k_t is None or bool((t_k_t == 1).all().item())
+        t_all_all = t_k_t is not None and bool((t_k_t == int(PORT_SPAN_ALL)).all().item())
+        if t_all_one:
             reduced_p = min_p.values
-        else:
+        elif t_all_all:
+            p_valid = valid.any(dim=3)
             zero_filled = cost.masked_fill(~valid, 0.0)
             count_p = valid.sum(dim=3).clamp(min=1).to(torch.float32)
             mean_p = zero_filled.sum(dim=3) / count_p  # [M,T,C]
-            if t_modes.all().item():
-                reduced_p = mean_p
-            else:
-                reduced_p = torch.where(t_modes.view(1, -1, 1), mean_p, min_p.values)
+            reduced_p = torch.where(p_valid, mean_p, torch.zeros_like(mean_p))
+        else:
+            sorted_p = masked_inf.sort(dim=3).values
+            cumsum_p = sorted_p.cumsum(dim=3)
+            count_p = valid.sum(dim=3).to(dtype=torch.int32)  # [M,T,C]
+            p_has = count_p > 0
+            req_t = t_k_t.view(1, -1, 1).expand_as(count_p)
+            eff_p = torch.where(
+                req_t == int(PORT_SPAN_ALL),
+                count_p,
+                torch.minimum(req_t, count_p),
+            )
+            eff_p_safe = torch.where(p_has, eff_p.clamp(min=1), torch.ones_like(eff_p))
+            gather_idx = (eff_p_safe - 1).to(dtype=torch.long).unsqueeze(3)
+            sum_p = cumsum_p.gather(3, gather_idx).squeeze(3)
+            avg_p = sum_p / eff_p_safe.to(dtype=torch.float32)
+            reduced_p = torch.where(p_has, avg_p, torch.zeros_like(avg_p))
 
         # C-dim validity after P reduction
         c_valid = valid.any(dim=3)  # [M,T,C]
@@ -120,18 +162,31 @@ class FlowReward:
         min_c = reduced_p_inf.min(dim=2)  # values [M,T], indices [M,T]
 
         # --- C-dim reduction (candidate ports) ---
-        c_all_min = c_modes is None or not c_modes.any().item()
-        if c_all_min:
+        c_all_one = c_k_t is None or bool((c_k_t == 1).all().item())
+        c_all_all = c_k_t is not None and bool((c_k_t == int(PORT_SPAN_ALL)).all().item())
+        if c_all_one:
             result = torch.where(has_valid, min_c.values, torch.zeros_like(min_c.values))
-        else:
+        elif c_all_all:
             reduced_p_zero = reduced_p.masked_fill(~c_valid, 0.0)
             count_c = c_valid.sum(dim=2).clamp(min=1).to(torch.float32)
             mean_c = reduced_p_zero.sum(dim=2) / count_c  # [M,T]
-            if c_modes.all().item():
-                raw = mean_c
-            else:
-                raw = torch.where(c_modes.view(-1, 1), mean_c, min_c.values)
-            result = torch.where(has_valid, raw, torch.zeros_like(raw))
+            result = torch.where(has_valid, mean_c, torch.zeros_like(mean_c))
+        else:
+            sorted_c = reduced_p_inf.sort(dim=2).values
+            cumsum_c = sorted_c.cumsum(dim=2)
+            count_c = c_valid.sum(dim=2).to(dtype=torch.int32)  # [M,T]
+            c_has = count_c > 0
+            req_c = c_k_t.view(-1, 1).expand_as(count_c)
+            eff_c = torch.where(
+                req_c == int(PORT_SPAN_ALL),
+                count_c,
+                torch.minimum(req_c, count_c),
+            )
+            eff_c_safe = torch.where(c_has, eff_c.clamp(min=1), torch.ones_like(eff_c))
+            gather_idx = (eff_c_safe - 1).to(dtype=torch.long).unsqueeze(2)
+            sum_c = cumsum_c.gather(2, gather_idx).squeeze(2)
+            avg_c = sum_c / eff_c_safe.to(dtype=torch.float32)
+            result = torch.where(has_valid, avg_c, torch.zeros_like(avg_c))
 
         c_idx = min_c.indices
         p_idx = min_p.indices.gather(2, c_idx.unsqueeze(2)).squeeze(2)
@@ -145,8 +200,8 @@ class FlowReward:
         target_ports: torch.Tensor,             # [T,P,2]
         target_mask: Optional[torch.Tensor],    # [T,P]
         target_weight: torch.Tensor,            # [T] or [M,T]
-        c_modes: Optional[torch.Tensor] = None, # [M] bool (True=mean)
-        t_modes: Optional[torch.Tensor] = None, # [T] bool (True=mean)
+        c_k: Optional[torch.Tensor] = None, # [M] int (1|min, -1|all, k>1 top-k)
+        t_k: Optional[torch.Tensor] = None, # [T] int (1|min, -1|all, k>1 top-k)
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Returns ([M], c_idx [M,T], p_idx [M,T]).
 
@@ -174,8 +229,10 @@ class FlowReward:
 
         cand_mask = self._port_mask(candidate_ports, candidate_mask, name="candidate_mask")
         tgt_mask = self._port_mask(target_ports, target_mask, name="target_mask")
+        c_k_t = self._normalize_k_tensor(c_k, n=m, name="c_k", device=candidate_ports.device)
+        t_k_t = self._normalize_k_tensor(t_k, n=t, name="t_k", device=candidate_ports.device)
         valid = cand_mask[:, None, :, None] & tgt_mask[None, :, None, :]  # [M,T,C,P]
-        dist_reduced, c_idx, p_idx = self._masked_pair_reduce(dist, valid, c_modes, t_modes)
+        dist_reduced, c_idx, p_idx = self._masked_pair_reduce(dist, valid, c_k_t, t_k_t)
         return (dist_reduced * weight_mt).sum(dim=1), c_idx, p_idx
 
     def score(
@@ -186,14 +243,14 @@ class FlowReward:
         placed_entries_mask: Optional[torch.Tensor],
         placed_exits_mask: Optional[torch.Tensor],
         flow_w: torch.Tensor,
-        exit_modes: Optional[torch.Tensor] = None,
-        entry_modes: Optional[torch.Tensor] = None,
+        exit_k: Optional[torch.Tensor] = None,
+        entry_k: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
     ):
         """Compute absolute flow score for the placed state (tensor-only).
 
-        exit_modes / entry_modes: [P] bool (True=mean) per placed facility.
-        None → all min (backward compatible).
+        exit_k / entry_k: [P] int per placed facility.
+        None → all span=1.
 
         If return_argmin=True, returns (scalar, c_idx [P,P], p_idx [P,P]).
         """
@@ -210,8 +267,8 @@ class FlowReward:
             target_ports=placed_en,
             target_mask=placed_entries_mask,
             target_weight=flow_w,
-            c_modes=exit_modes,
-            t_modes=entry_modes,
+            c_k=exit_k,
+            t_k=entry_k,
         )
         total = per_src.sum()
         return (total, c_idx, p_idx) if return_argmin else total
@@ -229,17 +286,17 @@ class FlowReward:
         candidate_exits: torch.Tensor,
         candidate_entries_mask: Optional[torch.Tensor],
         candidate_exits_mask: Optional[torch.Tensor],
-        c_exit_mode: str = "min",
-        c_entry_mode: str = "min",
-        t_entry_modes: Optional[torch.Tensor] = None,
-        t_exit_modes: Optional[torch.Tensor] = None,
+        c_exit_k: int = 1,
+        c_entry_k: int = 1,
+        t_entry_k: Optional[torch.Tensor] = None,
+        t_exit_k: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
     ):
         """Compute incremental flow cost for M candidate placements.
 
-        Port aggregation modes:
-          c_exit_mode / c_entry_mode: candidate facility's mode (uniform for all M).
-          t_entry_modes / t_exit_modes: [T] bool per placed facility. None → all min.
+        Port span selection:
+          c_exit_k / c_entry_k: candidate facility span (uniform for all M).
+          t_entry_k / t_exit_k: [T] span tensors for placed facilities. None → all 1.
 
         If return_argmin=True, returns a tuple:
           (delta [M],
@@ -283,8 +340,8 @@ class FlowReward:
                 target_ports=out_entries,
                 target_mask=out_entries_mask,
                 target_weight=out_w,
-                c_modes=self._mode_tensor(c_exit_mode, m, device),
-                t_modes=t_entry_modes[out_idx] if t_entry_modes is not None else None,
+                c_k=self._select_k_tensor(c_exit_k, m, device),
+                t_k=t_entry_k[out_idx] if t_entry_k is not None else None,
             )
             if return_argmin:
                 out_am = (oc_idx, op_idx, out_idx)
@@ -298,8 +355,8 @@ class FlowReward:
                 target_ports=in_exits,
                 target_mask=in_exits_mask,
                 target_weight=in_w,
-                c_modes=self._mode_tensor(c_entry_mode, m, device),
-                t_modes=t_exit_modes[in_idx] if t_exit_modes is not None else None,
+                c_k=self._select_k_tensor(c_entry_k, m, device),
+                t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
             )
             if return_argmin:
                 in_am = (ic_idx, ip_idx, in_idx)
@@ -385,8 +442,8 @@ class FlowCollisionReward:
         blocked: torch.Tensor,
         row_ps: torch.Tensor,
         col_ps: torch.Tensor,
-        c_modes: Optional[torch.Tensor] = None,
-        t_modes: Optional[torch.Tensor] = None,
+        c_k: Optional[torch.Tensor] = None,
+        t_k: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         m = int(candidate_ports.shape[0])
         if m == 0:
@@ -421,7 +478,7 @@ class FlowCollisionReward:
         cand_valid = FlowReward._port_mask(candidate_ports, candidate_mask, name="candidate_mask")
         tgt_valid = FlowReward._port_mask(target_ports, target_mask, name="target_mask")
         valid = cand_valid[:, None, :, None] & tgt_valid[None, :, None, :]
-        cost_reduced, _, _ = FlowReward._masked_pair_reduce(cost, valid, c_modes, t_modes)
+        cost_reduced, _, _ = FlowReward._masked_pair_reduce(cost, valid, c_k, t_k)
         return (cost_reduced * weight_mt).sum(dim=1)
 
     def score(
@@ -433,8 +490,8 @@ class FlowCollisionReward:
         placed_exits_mask: Optional[torch.Tensor],
         flow_w: torch.Tensor,
         route_blocked: Optional[torch.Tensor],
-        exit_modes: Optional[torch.Tensor] = None,
-        entry_modes: Optional[torch.Tensor] = None,
+        exit_k: Optional[torch.Tensor] = None,
+        entry_k: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if route_blocked is None:
             return FlowReward().score(
@@ -443,8 +500,8 @@ class FlowCollisionReward:
                 placed_entries_mask=placed_entries_mask,
                 placed_exits_mask=placed_exits_mask,
                 flow_w=flow_w,
-                exit_modes=exit_modes,
-                entry_modes=entry_modes,
+                exit_k=exit_k,
+                entry_k=entry_k,
             )
         placed_en = FlowReward._to_port_tensor(placed_entries, name="placed_entries", allow_2d=True)
         placed_ex = FlowReward._to_port_tensor(placed_exits, name="placed_exits", allow_2d=True)
@@ -464,8 +521,8 @@ class FlowCollisionReward:
             blocked=blocked,
             row_ps=row_ps,
             col_ps=col_ps,
-            c_modes=exit_modes,
-            t_modes=entry_modes,
+            c_k=exit_k,
+            t_k=entry_k,
         )
         return per_src.sum()
 
@@ -483,10 +540,10 @@ class FlowCollisionReward:
         candidate_entries_mask: Optional[torch.Tensor],
         candidate_exits_mask: Optional[torch.Tensor],
         route_blocked: Optional[torch.Tensor],
-        c_exit_mode: str = "min",
-        c_entry_mode: str = "min",
-        t_entry_modes: Optional[torch.Tensor] = None,
-        t_exit_modes: Optional[torch.Tensor] = None,
+        c_exit_k: int = 1,
+        c_entry_k: int = 1,
+        t_entry_k: Optional[torch.Tensor] = None,
+        t_exit_k: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if route_blocked is None:
             return FlowReward().delta(
@@ -500,10 +557,10 @@ class FlowCollisionReward:
                 candidate_exits=candidate_exits,
                 candidate_entries_mask=candidate_entries_mask,
                 candidate_exits_mask=candidate_exits_mask,
-                c_exit_mode=c_exit_mode,
-                c_entry_mode=c_entry_mode,
-                t_entry_modes=t_entry_modes,
-                t_exit_modes=t_exit_modes,
+                c_exit_k=c_exit_k,
+                c_entry_k=c_entry_k,
+                t_entry_k=t_entry_k,
+                t_exit_k=t_exit_k,
             )
         cand_entries = FlowReward._to_port_tensor(candidate_entries, name="candidate_entries", allow_2d=True)
         cand_exits = FlowReward._to_port_tensor(candidate_exits, name="candidate_exits", allow_2d=True)
@@ -546,8 +603,8 @@ class FlowCollisionReward:
                 blocked=blocked,
                 row_ps=row_ps,
                 col_ps=col_ps,
-                c_modes=FlowReward._mode_tensor(c_exit_mode, m, device),
-                t_modes=t_entry_modes[out_idx] if t_entry_modes is not None else None,
+                c_k=FlowReward._select_k_tensor(c_exit_k, m, device),
+                t_k=t_entry_k[out_idx] if t_entry_k is not None else None,
             )
 
         if has_in:
@@ -563,10 +620,8 @@ class FlowCollisionReward:
                 blocked=blocked,
                 row_ps=row_ps,
                 col_ps=col_ps,
-                c_modes=FlowReward._mode_tensor(c_entry_mode, m, device),
-                t_modes=t_exit_modes[in_idx] if t_exit_modes is not None else None,
+                c_k=FlowReward._select_k_tensor(c_entry_k, m, device),
+                t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
             )
 
         return out_term + in_term
-
-

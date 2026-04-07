@@ -1,6 +1,23 @@
 from .pathfinder import RoutePlanner, RouteResult
 from .output import print_summary, routes_to_dict, routes_to_polylines, save_routes_json
 from .reward import FlowLaneDistanceReward
+from .envs import (
+    ActionSpace,
+    EnvState,
+    FactoryLaneEnv,
+    LaneAction,
+    LaneAdapter,
+    LaneAdapterConfig,
+    LaneFlowGraph,
+    LaneFlowSpec,
+    LaneLengthReward,
+    LaneMaps,
+    LaneRoute,
+    LoadedLaneEnv,
+    RewardComposer,
+    TerminalReward,
+    load_lane_env,
+)
 
 __all__ = [
     "RoutePlanner",
@@ -10,4 +27,19 @@ __all__ = [
     "routes_to_polylines",
     "save_routes_json",
     "FlowLaneDistanceReward",
+    "LaneAction",
+    "LaneRoute",
+    "ActionSpace",
+    "LaneAdapter",
+    "LaneAdapterConfig",
+    "FactoryLaneEnv",
+    "LoadedLaneEnv",
+    "load_lane_env",
+    "EnvState",
+    "LaneFlowGraph",
+    "LaneFlowSpec",
+    "LaneMaps",
+    "LaneLengthReward",
+    "RewardComposer",
+    "TerminalReward",
 ]
