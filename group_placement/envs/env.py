@@ -15,7 +15,7 @@ from .reward import (
     RewardComposer,
     TerminalReward,
 )
-from .placement.base import PORT_SPAN_ALL, GroupSpec
+from .placement.base import GroupSpec
 from .placement.static import StaticRectSpec
 from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
@@ -207,8 +207,6 @@ class FactoryLayoutEnv(gym.Env):
 
         if src_req_k == 1:
             e_idxs = [int(exit_argmin)] if bool((valid_exit_idx == int(exit_argmin)).any().item()) else [int(valid_exit_idx[0].item())]
-        elif src_req_k == int(PORT_SPAN_ALL):
-            e_idxs = [int(j.item()) for j in valid_exit_idx]
         else:
             src_eff_k = min(int(src_req_k), int(valid_exit_idx.numel()))
             anchor_entry = placed_entries[dst_row, int(entry_argmin), :]
@@ -219,8 +217,6 @@ class FactoryLayoutEnv(gym.Env):
 
         if dst_req_k == 1:
             n_idxs = [int(entry_argmin)] if bool((valid_entry_idx == int(entry_argmin)).any().item()) else [int(valid_entry_idx[0].item())]
-        elif dst_req_k == int(PORT_SPAN_ALL):
-            n_idxs = [int(j.item()) for j in valid_entry_idx]
         else:
             dst_eff_k = min(int(dst_req_k), int(valid_entry_idx.numel()))
             anchor_exit = placed_exits[src_row, int(exit_argmin), :]

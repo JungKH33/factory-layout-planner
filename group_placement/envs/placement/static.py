@@ -186,6 +186,20 @@ class StaticSpec(GroupSpec):
             idxs = [i for i, v in enumerate(self._variants) if v.shape_key == sk]
             self._shape_variant_indices[sk] = torch.tensor(idxs, dtype=torch.long, device=self.device)
 
+    def _resolve_port_span_all(self) -> None:
+        """Replace ``PORT_SPAN_ALL`` sentinel with actual max port count across variants.
+
+        Must be called after ``_store_variants``. After this, ``_entry_port_span``
+        and ``_exit_port_span`` are always concrete integers ``>= 1``, so no
+        downstream code needs to know about the sentinel.
+        """
+        max_entries = max((len(vi.entry_offsets) for vi in self._variants), default=0)
+        max_exits = max((len(vi.exit_offsets) for vi in self._variants), default=0)
+        if int(self._entry_port_span) == int(PORT_SPAN_ALL):
+            self._entry_port_span = max(1, int(max_entries))
+        if int(self._exit_port_span) == int(PORT_SPAN_ALL):
+            self._exit_port_span = max(1, int(max_exits))
+
     @property
     def num_sources(self) -> int:
         """Number of distinct source shape definitions."""
@@ -800,6 +814,7 @@ class StaticRectSpec(StaticSpec):
                 shape_tensors_by_key[pk] = (body_mask, clearance_mask, clearance_origin, is_rectangular)
 
         self._store_variants(variants_list, shape_tensors_by_key)
+        self._resolve_port_span_all()
 
         logger.info(
             "StaticRectSpec %r variant summary: sources=%d, raw=%d, unique=%d, unique_shapes=%d",
@@ -1308,6 +1323,7 @@ class StaticIrregularSpec(StaticSpec):
                     shape_tensors_by_key[pk] = (body_mask, clearance_mask, clearance_origin, is_rectangular)
 
         self._store_variants(variants_list, shape_tensors_by_key)
+        self._resolve_port_span_all()
 
         logger.info(
             "StaticIrregularSpec %r variant summary: sources=%d, raw=%d, unique=%d, unique_shapes=%d",

@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
-from ..placement.base import PORT_SPAN_ALL
-
 if TYPE_CHECKING:
     from ..action import GroupId
     from ..state.base import EnvState
@@ -74,8 +72,8 @@ class FlowReward:
         k = int(select_k)
         if k == 1:
             return None
-        if k != PORT_SPAN_ALL and k <= 0:
-            raise ValueError(f"select_k must be >= 1 or {PORT_SPAN_ALL} (all), got {select_k!r}")
+        if k < 1:
+            raise ValueError(f"select_k must be >= 1, got {select_k!r}")
         return torch.full((n,), k, dtype=torch.int32, device=device)
 
     @staticmethod
@@ -91,10 +89,9 @@ class FlowReward:
         out = k.to(device=device, dtype=torch.int32).view(-1)
         if int(out.numel()) != int(n):
             raise ValueError(f"{name} must have shape ({n},), got {tuple(out.shape)}")
-        valid = (out == int(PORT_SPAN_ALL)) | (out >= 1)
-        if not bool(valid.all().item()):
-            bad = out[~valid][0].item()
-            raise ValueError(f"{name} must be >=1 or {PORT_SPAN_ALL} (all), got {bad!r}")
+        if not bool((out >= 1).all().item()):
+            bad = out[out < 1][0].item()
+            raise ValueError(f"{name} must be >= 1, got {bad!r}")
         if bool((out == 1).all().item()):
             return None
         return out
@@ -129,27 +126,20 @@ class FlowReward:
         min_p = masked_inf.min(dim=3)  # values [M,T,C], indices [M,T,C]
 
         # --- P-dim reduction (target ports) ---
+        # k=1 → min, k>1 → average over top-k closest valid ports (clamped to
+        # the actual valid count, so "use all" is expressed as any k >= max ports).
         t_all_one = t_k_t is None or bool((t_k_t == 1).all().item())
-        t_all_all = t_k_t is not None and bool((t_k_t == int(PORT_SPAN_ALL)).all().item())
         if t_all_one:
             reduced_p = min_p.values
-        elif t_all_all:
-            p_valid = valid.any(dim=3)
-            zero_filled = cost.masked_fill(~valid, 0.0)
-            count_p = valid.sum(dim=3).clamp(min=1).to(torch.float32)
-            mean_p = zero_filled.sum(dim=3) / count_p  # [M,T,C]
-            reduced_p = torch.where(p_valid, mean_p, torch.zeros_like(mean_p))
         else:
-            sorted_p = masked_inf.sort(dim=3).values
+            sorted_p = masked_inf.sort(dim=3).values  # inf values sort to tail
             cumsum_p = sorted_p.cumsum(dim=3)
             count_p = valid.sum(dim=3).to(dtype=torch.int32)  # [M,T,C]
             p_has = count_p > 0
             req_t = t_k_t.view(1, -1, 1).expand_as(count_p)
-            eff_p = torch.where(
-                req_t == int(PORT_SPAN_ALL),
-                count_p,
-                torch.minimum(req_t, count_p),
-            )
+            eff_p = torch.minimum(req_t, count_p)
+            # gather at (eff_p - 1) always points to the last valid port in the
+            # sorted order, so inf tail values are never included in the sum.
             eff_p_safe = torch.where(p_has, eff_p.clamp(min=1), torch.ones_like(eff_p))
             gather_idx = (eff_p_safe - 1).to(dtype=torch.long).unsqueeze(3)
             sum_p = cumsum_p.gather(3, gather_idx).squeeze(3)
@@ -163,25 +153,15 @@ class FlowReward:
 
         # --- C-dim reduction (candidate ports) ---
         c_all_one = c_k_t is None or bool((c_k_t == 1).all().item())
-        c_all_all = c_k_t is not None and bool((c_k_t == int(PORT_SPAN_ALL)).all().item())
         if c_all_one:
             result = torch.where(has_valid, min_c.values, torch.zeros_like(min_c.values))
-        elif c_all_all:
-            reduced_p_zero = reduced_p.masked_fill(~c_valid, 0.0)
-            count_c = c_valid.sum(dim=2).clamp(min=1).to(torch.float32)
-            mean_c = reduced_p_zero.sum(dim=2) / count_c  # [M,T]
-            result = torch.where(has_valid, mean_c, torch.zeros_like(mean_c))
         else:
-            sorted_c = reduced_p_inf.sort(dim=2).values
+            sorted_c = reduced_p_inf.sort(dim=2).values  # inf values sort to tail
             cumsum_c = sorted_c.cumsum(dim=2)
             count_c = c_valid.sum(dim=2).to(dtype=torch.int32)  # [M,T]
             c_has = count_c > 0
             req_c = c_k_t.view(-1, 1).expand_as(count_c)
-            eff_c = torch.where(
-                req_c == int(PORT_SPAN_ALL),
-                count_c,
-                torch.minimum(req_c, count_c),
-            )
+            eff_c = torch.minimum(req_c, count_c)
             eff_c_safe = torch.where(c_has, eff_c.clamp(min=1), torch.ones_like(eff_c))
             gather_idx = (eff_c_safe - 1).to(dtype=torch.long).unsqueeze(2)
             sum_c = cumsum_c.gather(2, gather_idx).squeeze(2)
