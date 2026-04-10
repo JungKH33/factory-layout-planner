@@ -2,6 +2,7 @@ from .base import BaseSearch, BaseSearchConfig, BaseHierarchicalSearch, SearchOu
 from .mcts import MCTSConfig, MCTSSearch
 from .beam import BeamConfig, BeamSearch
 from .best import BestFirstConfig, BestFirstSearch, BestConfig, BestSearch
+from .astar import AStarConfig, AStarSearch
 from .hierarchical_mcts import HierarchicalMCTSConfig, HierarchicalMCTSSearch
 from .hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
 from .hierarchical_best import (
@@ -23,6 +24,8 @@ __all__ = [
     "BeamSearch",
     "BestFirstConfig",
     "BestFirstSearch",
+    "AStarConfig",
+    "AStarSearch",
     "BestConfig",
     "BestSearch",
     "HierarchicalMCTSConfig",

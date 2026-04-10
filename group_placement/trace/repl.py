@@ -33,6 +33,7 @@ from group_placement.agents.ordering import DifficultyOrderingAgent
 from group_placement.agents.registry import create as create_agent
 from group_placement.envs.env_loader import load_env
 from group_placement.search.beam import BeamConfig, BeamSearch
+from group_placement.search.astar import AStarConfig, AStarSearch
 from group_placement.search.best import BestFirstConfig, BestFirstSearch
 from group_placement.search.mcts import MCTSConfig, MCTSSearch
 from group_placement.search.hierarchical_beam import HierarchicalBeamConfig, HierarchicalBeamSearch
@@ -1036,6 +1037,13 @@ def build_search(args):
             expansion_topk=args.expansion_topk,
             track_top_k=args.topk,
         ))
+    elif mode in ("astar", "a_star"):
+        return AStarSearch(config=AStarConfig(
+            max_expansions=args.sims,
+            depth=args.depth,
+            expansion_topk=args.expansion_topk,
+            track_top_k=args.topk,
+        ))
     elif mode == "h_mcts":
         return HierarchicalMCTSSearch(config=HierarchicalMCTSConfig(
             num_simulations=args.sims,
@@ -1085,10 +1093,10 @@ def main() -> None:
     parser.add_argument("--method", default="greedyv4", help="Adapter method")
     parser.add_argument("--agent", default="greedy", help="Agent type")
     parser.add_argument("--search", default="none",
-                        choices=["none", "mcts", "beam", "best", "best_first", "h_mcts", "h_beam", "h_best", "h_best_first"],
+                        choices=["none", "mcts", "astar", "beam", "best", "best_first", "h_mcts", "h_beam", "h_best", "h_best_first"],
                         help="Search algorithm")
     parser.add_argument("--ordering", default="none", choices=["none", "difficulty"])
-    parser.add_argument("--sims", type=int, default=200, help="Simulations (MCTS) or max expansions (best-first)")
+    parser.add_argument("--sims", type=int, default=200, help="Simulations (MCTS) or max expansions (astar/best-first)")
     parser.add_argument("--beam-width", type=int, default=8)
     parser.add_argument("--depth", type=int, default=5, help="Search depth (beam/best)")
     parser.add_argument("--expansion-topk", type=int, default=16)

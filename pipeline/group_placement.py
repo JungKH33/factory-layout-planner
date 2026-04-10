@@ -11,6 +11,8 @@ from group_placement.agents.registry import create as create_agent
 from group_placement.envs.export import export_group_placement
 from group_placement.envs.env_loader import load_env
 from group_placement.search import (
+    AStarConfig,
+    AStarSearch,
     BeamConfig,
     BeamSearch,
     BestFirstConfig,
@@ -35,7 +37,7 @@ class GroupPlacementConfig:
     backend_selection: str = "benchmark"
     wrapper_mode: str = "greedyv3"
     agent_mode: str = "greedy"
-    search_mode: str = "mcts"  # none|mcts|hierarchical_mcts|best_first|h_best_first|beam|hierarchical_beam
+    search_mode: str = "mcts"  # none|mcts|astar|hierarchical_mcts|best_first|h_best_first|beam|hierarchical_beam
     ordering_mode: str = "none"  # none|difficulty
     max_decisions: int = 0
     mcts_sims: int = 1000
@@ -76,6 +78,14 @@ def _build_search(cfg: GroupPlacementConfig):
     if mode in {"best_first", "best"}:
         return BestFirstSearch(
             config=BestFirstConfig(
+                max_expansions=int(cfg.max_expansions),
+                depth=int(cfg.search_depth),
+                expansion_topk=int(cfg.expansion_topk),
+            )
+        )
+    if mode in {"astar", "a_star"}:
+        return AStarSearch(
+            config=AStarConfig(
                 max_expansions=int(cfg.max_expansions),
                 depth=int(cfg.search_depth),
                 expansion_topk=int(cfg.expansion_topk),

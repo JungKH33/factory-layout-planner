@@ -14,6 +14,7 @@ from lane_generation.pathfinder import RoutePlanner
 from facility_placement import save_facility_layout
 
 from group_placement.trace.explorer import Explorer
+from group_placement.search.astar import AStarConfig, AStarSearch
 from group_placement.search.beam import BeamConfig, BeamSearch
 from group_placement.search.best import BestFirstConfig, BestFirstSearch
 from group_placement.search.mcts import MCTSConfig, MCTSSearch
@@ -41,7 +42,7 @@ TOPK_CELL_SIZE: int = 50
 TOPK_PER_CELL: int = 20
 ALPHACHIP_GRID: int = 128
 
-SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
+SEARCH_MODE: str = "mcts"  # "none" | "mcts" | "astar" | "hierarchical_mcts" | "h_best_first" | "hierarchical_beam" | "best_first" | "beam"
 ORDERING_MODE: str = "none"  # "none" | "difficulty"
 MCTS_SIMS: int = 1000
 BEST_MAX_EXPANSIONS: int = 20
@@ -63,6 +64,7 @@ BEAM_CACHE_DECISION_STATE: bool = False
 HBEAM_WORKER_TOPK: int = 4
 BEST_USE_VALUE_HEURISTIC: bool = True
 HBEST_USE_VALUE_HEURISTIC: bool = True
+ASTAR_USE_VALUE_HEURISTIC: bool = False
 
 # Top-K tracking: search 중 최고 결과 K개 저장
 TRACK_TOP_K: int = 5  # 0이면 비활성화
@@ -169,6 +171,17 @@ def main() -> None:
                 track_top_k=TRACK_TOP_K,
             )
         )
+    elif SEARCH_MODE in {"astar", "a_star"}:
+        search = AStarSearch(
+            config=AStarConfig(
+                max_expansions=BEST_MAX_EXPANSIONS,
+                depth=BEAM_DEPTH,
+                expansion_topk=BEAM_EXPANSION_TOPK,
+                cache_decision_state=bool(BEAM_CACHE_DECISION_STATE),
+                use_value_heuristic=bool(ASTAR_USE_VALUE_HEURISTIC),
+                track_top_k=TRACK_TOP_K,
+            )
+        )
     elif SEARCH_MODE == "beam":
         search = BeamSearch(
             config=BeamConfig(
@@ -182,7 +195,7 @@ def main() -> None:
     else:
         raise ValueError(
             f"Unknown SEARCH_MODE={SEARCH_MODE!r} "
-            "(expected 'none'|'mcts'|'hierarchical_mcts'|'h_best_first'|'hierarchical_beam'|'best_first'|'beam')"
+            "(expected 'none'|'mcts'|'astar'|'hierarchical_mcts'|'h_best_first'|'hierarchical_beam'|'best_first'|'beam')"
         )
 
     if ORDERING_MODE == "none":
