@@ -302,46 +302,6 @@ class BestFirstSearch(BaseSearch):
             best_v = 0.0
         progress_fn(iteration, total, visits.copy(), values_out.copy(), best_a, best_v)
 
-    def _safe_value(
-        self,
-        *,
-        agent: Agent,
-        obs: dict,
-        action_space: ActionSpace,
-    ) -> float:
-        try:
-            value = agent.value(obs=obs, action_space=action_space)
-        except Exception:
-            return 0.0
-        try:
-            return float(value)
-        except Exception:
-            if isinstance(value, torch.Tensor) and value.numel() > 0:
-                return float(value.view(-1)[0].item())
-            return 0.0
-
-    def _fallback_action(
-        self,
-        *,
-        agent: Agent,
-        obs: dict,
-        root_action_space: ActionSpace,
-        device: torch.device,
-    ) -> int:
-        valid = root_action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
-        valid_idx = torch.where(valid)[0]
-        if int(valid_idx.numel()) <= 0:
-            return -1
-        try:
-            scores = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=device).view(-1)
-            scores = scores.masked_fill(~valid, float("-inf"))
-            if bool(torch.isfinite(scores).any().item()):
-                return int(torch.argmax(scores).item())
-        except Exception:
-            pass
-        return int(valid_idx[0].item())
-
-
 # Backward-compatible aliases
 BestConfig = BestFirstConfig
 BestSearch = BestFirstSearch

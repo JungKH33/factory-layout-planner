@@ -26,8 +26,14 @@ class AStarConfig(BaseSearchConfig):
     depth: int = 5
     expansion_topk: int = 16
     cache_decision_state: bool = False
-    # Converts agent value estimate (reward-like utility) to a non-negative
-    # cost heuristic via h=max(0,-value). False => uniform-cost search.
+    # False => h=0 (uniform-cost search). Provably finds the lowest-cost
+    # terminal reachable within the max_expansions/depth budget.
+    #
+    # True => h = max(0, -agent.value()). WARNING: this sacrifices A*
+    # optimality. agent.value() is a learned/heuristic utility, not a proven
+    # lower bound on remaining cost, so the heuristic may be inadmissible.
+    # Use only as a search-direction hint when you care more about speed
+    # to a good-enough solution than about the optimality guarantee.
     use_value_heuristic: bool = False
     track_top_k: int = 0
 
@@ -373,43 +379,4 @@ class AStarSearch(BaseSearch):
             best_a = 0
             best_v = 0.0
         progress_fn(iteration, total, visits.copy(), values_out.copy(), best_a, best_v)
-
-    def _safe_value(
-        self,
-        *,
-        agent: Agent,
-        obs: dict,
-        action_space: ActionSpace,
-    ) -> float:
-        try:
-            value = agent.value(obs=obs, action_space=action_space)
-        except Exception:
-            return 0.0
-        try:
-            return float(value)
-        except Exception:
-            if isinstance(value, torch.Tensor) and value.numel() > 0:
-                return float(value.view(-1)[0].item())
-            return 0.0
-
-    def _fallback_action(
-        self,
-        *,
-        agent: Agent,
-        obs: dict,
-        root_action_space: ActionSpace,
-        device: torch.device,
-    ) -> int:
-        valid = root_action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
-        valid_idx = torch.where(valid)[0]
-        if int(valid_idx.numel()) <= 0:
-            return -1
-        try:
-            scores = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=device).view(-1)
-            scores = scores.masked_fill(~valid, float("-inf"))
-            if bool(torch.isfinite(scores).any().item()):
-                return int(torch.argmax(scores).item())
-        except Exception:
-            pass
-        return int(valid_idx[0].item())
 

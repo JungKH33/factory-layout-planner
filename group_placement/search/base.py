@@ -316,6 +316,49 @@ class BaseSearch(ABC):
                     out.append(0.0)
         return out
 
+    # ---- value / fallback helpers (shared by flat searches) ----
+
+    def _safe_value(
+        self,
+        *,
+        agent: Agent,
+        obs: dict,
+        action_space: ActionSpace,
+    ) -> float:
+        """Call agent.value() and coerce to float, returning 0.0 on failure."""
+        try:
+            value = agent.value(obs=obs, action_space=action_space)
+        except Exception:
+            return 0.0
+        try:
+            return float(value)
+        except Exception:
+            if isinstance(value, torch.Tensor) and value.numel() > 0:
+                return float(value.view(-1)[0].item())
+            return 0.0
+
+    def _fallback_action(
+        self,
+        *,
+        agent: Agent,
+        obs: dict,
+        root_action_space: ActionSpace,
+        device: torch.device,
+    ) -> int:
+        """Pick a valid action via agent policy argmax; first valid index on failure."""
+        valid = root_action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
+        valid_idx = torch.where(valid)[0]
+        if int(valid_idx.numel()) <= 0:
+            return -1
+        try:
+            scores = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=device).view(-1)
+            scores = scores.masked_fill(~valid, float("-inf"))
+            if bool(torch.isfinite(scores).any().item()):
+                return int(torch.argmax(scores).item())
+        except Exception:
+            pass
+        return int(valid_idx[0].item())
+
     # ---- abstract API ----
 
     @abstractmethod

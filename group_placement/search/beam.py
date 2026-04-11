@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from group_placement.agents.base import Agent, BaseAdapter
+from group_placement.agents.base import Agent
 from group_placement.envs.action_space import ActionSpace
 from group_placement.search.base import (
     BaseSearch,
@@ -235,27 +235,6 @@ class BeamSearch(BaseSearch):
             iterations=total_depth,
             top_k=collect_top_k(topk_heap),
         )
-
-    def _fallback_action(
-        self,
-        *,
-        agent: Agent,
-        obs: dict,
-        root_action_space: ActionSpace,
-        device: torch.device,
-    ) -> int:
-        valid = root_action_space.valid_mask.to(dtype=torch.bool, device=device).view(-1)
-        valid_idx = torch.where(valid)[0]
-        if int(valid_idx.numel()) <= 0:
-            return -1
-        try:
-            scores = agent.policy(obs=obs, action_space=root_action_space).to(dtype=torch.float32, device=device).view(-1)
-            scores = scores.masked_fill(~valid, float("-inf"))
-            if bool(torch.isfinite(scores).any().item()):
-                return int(torch.argmax(scores).item())
-        except Exception:
-            pass
-        return int(valid_idx[0].item())
 
 
 

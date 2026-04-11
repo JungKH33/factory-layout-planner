@@ -351,24 +351,6 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
             best_v = 0.0
         progress_fn(iteration, total, visits.copy(), values_out.copy(), best_a, best_v)
 
-    def _safe_value(
-        self,
-        *,
-        agent: Agent,
-        obs: dict,
-        action_space: ActionSpace,
-    ) -> float:
-        try:
-            value = agent.value(obs=obs, action_space=action_space)
-        except Exception:
-            return 0.0
-        try:
-            return float(value)
-        except Exception:
-            if isinstance(value, torch.Tensor) and value.numel() > 0:
-                return float(value.view(-1)[0].item())
-            return 0.0
-
     def _top_worker_candidates(
         self,
         *,

@@ -74,12 +74,16 @@ class GroupSpec:
 
     @property
     def entry_port_span(self) -> int:
-        """How many entry ports to aggregate: ``1..N`` or ``PORT_SPAN_ALL``."""
+        """How many entry ports to aggregate. Always a concrete int >= 1;
+        user input ``"all"`` is resolved to the max port count across
+        variants at spec construction time."""
         return int(getattr(self, "_entry_port_span", 1))
 
     @property
     def exit_port_span(self) -> int:
-        """How many exit ports to aggregate: ``1..N`` or ``PORT_SPAN_ALL``."""
+        """How many exit ports to aggregate. Always a concrete int >= 1;
+        user input ``"all"`` is resolved to the max port count across
+        variants at spec construction time."""
         return int(getattr(self, "_exit_port_span", 1))
 
     @property

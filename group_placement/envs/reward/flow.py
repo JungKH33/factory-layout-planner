@@ -106,8 +106,9 @@ class FlowReward:
         """Reduce [M,T,C,P] to [M,T] using per-facility k-port averaging.
 
         - ``k=1``: min reduction (closest port)
-        - ``k=PORT_SPAN_ALL``: average over all valid ports
-        - ``k>1``: average over top-k closest valid ports
+        - ``k>1``: average over top-k closest valid ports, clamped per
+          candidate to the actual valid count (so ``k >= max_ports`` is
+          equivalent to averaging over all valid ports).
         """
         if cost.dim() != 4 or valid.dim() != 4:
             raise ValueError("cost/valid must be rank-4 tensors [M,T,C,P]")
