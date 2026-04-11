@@ -11,7 +11,11 @@ import torch
 
 from .action import LaneRoute
 from .action_space import ActionSpace
-from .wavefront import backtrace_shortest_path, wavefront_distance_field
+from .wavefront import (
+    backtrace_shortest_path,
+    wavefront_distance_field,
+    wavefront_distance_field_batched,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +24,13 @@ logger = logging.getLogger(__name__)
 class LaneAdapterConfig:
     candidate_k: int = 8
     max_wave_iters: int = 0
-    max_backtrace_steps: int = 0
+    max_path_steps: int = 0
     random_seed: int = 0
     route_algorithm: str = "wavefront"  # wavefront | astar | dijkstra | auto
     route_algorithm_selection: str = "static"  # static | benchmark
     benchmark_warmup: int = 2
     benchmark_rounds: int = 6
     benchmark_max_flows_per_method: int = 6
-    # Backward-compatible aliases (deprecated).
-    algorithm: Optional[str] = None
-    algorithm_selection: Optional[str] = None
 
 
 class LaneAdapter:
@@ -45,9 +46,17 @@ class LaneAdapter:
         self._rng = torch.Generator()
         self._rng.manual_seed(int(self.config.random_seed))
         self._selected_algorithms: Dict[str, str] = {}
+        # Prewave cache: BFS distance fields for ALL flows, computed once per
+        # episode. Key encodes the static-blockage tensor identity and the
+        # flow.dst_ports tensor identity, both of which are shared by reference
+        # across state.copy() — so MCTS snapshots reuse the same cache.
+        self._prewave_dist: Optional[torch.Tensor] = None
+        self._prewave_key: Optional[Tuple[int, int, int, str]] = None
 
     def bind(self, env) -> None:
         self.env = env
+        self._prewave_dist = None
+        self._prewave_key = None
         self._resolve_algorithms()
 
     def _empty_action_space(self, *, flow_index: int, device: torch.device) -> ActionSpace:
@@ -73,16 +82,10 @@ class LaneAdapter:
         return mode
 
     def _config_route_algorithm(self) -> str:
-        raw = self.config.algorithm if self.config.algorithm is not None else self.config.route_algorithm
-        return self._normalize_algorithm(raw)
+        return self._normalize_algorithm(self.config.route_algorithm)
 
     def _config_route_algorithm_selection(self) -> str:
-        raw = (
-            self.config.algorithm_selection
-            if self.config.algorithm_selection is not None
-            else self.config.route_algorithm_selection
-        )
-        return self._normalize_selection_mode(raw)
+        return self._normalize_selection_mode(self.config.route_algorithm_selection)
 
     def _method_key(self, *, src_ports: torch.Tensor) -> str:
         src_n = int(src_ports.shape[0]) if src_ports.dim() >= 1 else 0
@@ -108,7 +111,7 @@ class LaneAdapter:
             dist=dist,
             src_xy=src_xy,
             rng=rng,
-            max_steps=int(self.config.max_backtrace_steps),
+            max_steps=int(self.config.max_path_steps),
         )
 
     def _route_graph_search(
@@ -127,17 +130,19 @@ class LaneAdapter:
         if algo not in {"astar", "dijkstra"}:
             raise ValueError(f"algorithm must be 'astar' or 'dijkstra', got {algorithm!r}")
 
-        h, w = int(free_map.shape[0]), int(free_map.shape[1])
+        # Cache to numpy once to eliminate torch->Python scalar fetch in the inner loop.
+        free_np = free_map.detach().cpu().numpy().astype(bool, copy=False)
+        h, w = int(free_np.shape[0]), int(free_np.shape[1])
         sx, sy = int(src_xy[0]), int(src_xy[1])
         if not (0 <= sx < w and 0 <= sy < h):
             return None
-        if not bool(free_map[sy, sx].item()):
+        if not bool(free_np[sy, sx]):
             return None
 
         goals: Set[Tuple[int, int]] = {
             (int(x), int(y))
             for x, y in goals_xy
-            if 0 <= int(x) < w and 0 <= int(y) < h and bool(free_map[int(y), int(x)].item())
+            if 0 <= int(x) < w and 0 <= int(y) < h and bool(free_np[int(y), int(x)])
         }
         if not goals:
             return None
@@ -157,7 +162,7 @@ class LaneAdapter:
         g_best = {(sx, sy): 0}
         prev = {(sx, sy): None}
         pq: List[Tuple[int, int, int, int]] = [(heuristic(sx, sy), 0, sx, sy)]
-        cap = int(self.config.max_backtrace_steps)
+        cap = int(self.config.max_path_steps)
 
         while pq:
             _f, g, x, y = heapq.heappop(pq)
@@ -180,7 +185,7 @@ class LaneAdapter:
                 nx, ny = int(x + dx), int(y + dy)
                 if nx < 0 or nx >= w or ny < 0 or ny >= h:
                     continue
-                if not bool(free_map[ny, nx].item()):
+                if not free_np[ny, nx]:
                     continue
 
                 old = g_best.get((nx, ny), None)
@@ -250,6 +255,38 @@ class LaneAdapter:
                 break
         return samples
 
+    def _get_prewave_field(
+        self,
+        *,
+        state,
+        free_map: torch.Tensor,
+        flow_idx: int,
+    ) -> torch.Tensor:
+        """Return the BFS distance field for ``flow_idx``, building once per
+        episode and reusing for every subsequent flow / MCTS snapshot.
+
+        Cache key combines the identities of ``blocked_static`` (which never
+        mutates within an episode) and ``flow.dst_ports`` / ``flow.dst_mask``
+        (shared by reference across ``LaneFlowGraph.copy()``). When any of
+        those change — e.g. on a fresh ``env.reset()`` — the cache rebuilds.
+        """
+        flow = state.flow
+        key = (
+            id(state.maps.blocked_static),
+            id(flow.dst_ports),
+            id(flow.dst_mask),
+            str(free_map.device),
+        )
+        if self._prewave_dist is None or self._prewave_key != key:
+            self._prewave_dist = wavefront_distance_field_batched(
+                free_map=free_map,
+                seeds_xy=flow.dst_ports,
+                seeds_mask=flow.dst_mask,
+                max_iters=int(self.config.max_wave_iters),
+            )
+            self._prewave_key = key
+        return self._prewave_dist[int(flow_idx)]
+
     def _build_candidates(
         self,
         *,
@@ -260,6 +297,7 @@ class LaneAdapter:
         k_target: int,
         algorithm: str,
         rng: Optional[torch.Generator],
+        wavefront_dist: Optional[torch.Tensor] = None,
     ) -> Tuple[List[torch.Tensor], List[int]]:
         candidates: List[torch.Tensor] = []
         turns_l: List[int] = []
@@ -271,11 +309,14 @@ class LaneAdapter:
             raise ValueError("internal error: _build_candidates requires concrete algorithm")
 
         if algo == "wavefront":
-            dist = wavefront_distance_field(
-                free_map=free_map,
-                seeds_xy=dst_ports,
-                max_iters=int(self.config.max_wave_iters),
-            )
+            if wavefront_dist is not None:
+                dist = wavefront_dist
+            else:
+                dist = wavefront_distance_field(
+                    free_map=free_map,
+                    seeds_xy=dst_ports,
+                    max_iters=int(self.config.max_wave_iters),
+                )
 
             def build_path(src_xy: Tuple[int, int]) -> Optional[List[Tuple[int, int]]]:
                 return self._route_wavefront(
@@ -477,6 +518,13 @@ class LaneAdapter:
         free_map = (~state.maps.blocked_static).to(dtype=torch.bool, device=state.device)
         k_target = max(1, int(self.config.candidate_k))
         algorithm = self._algorithm_for_flow(src_ports=src_ports)
+        wavefront_dist: Optional[torch.Tensor] = None
+        if algorithm == "wavefront":
+            wavefront_dist = self._get_prewave_field(
+                state=state,
+                free_map=free_map,
+                flow_idx=int(flow_idx),
+            )
         candidates, turns_l = self._build_candidates(
             state=state,
             free_map=free_map,
@@ -485,6 +533,7 @@ class LaneAdapter:
             k_target=k_target,
             algorithm=algorithm,
             rng=self._rng,
+            wavefront_dist=wavefront_dist,
         )
 
         if len(candidates) == 0:
