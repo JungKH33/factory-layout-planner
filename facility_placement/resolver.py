@@ -1,6 +1,6 @@
 """Phase 2 resolver — unfold facilities from cluster placements.
 
-Consumes ONLY the dict produced by ``envs.export.export_group_placement``; has
+Consumes ONLY the dict produced by ``group_placement.envs.interchange.export_group_placement``; has
 zero imports from ``envs`` / ``agents`` / ``search``.  Deterministic geometry
 unfold — no search, no placeability re-validation.
 """
@@ -166,7 +166,7 @@ def resolve_facilities(
     """Unfold cluster placements into per-cluster facility lists.
 
     Args:
-        state_dict: Dict from ``envs.export.export_group_placement``.  Required
+        state_dict: Dict from ``export_group_placement``.  Required
             keys: ``placements``, ``facilities``, ``layouts``.
         on_missing: ``"warn"`` (default), ``"silent"``, or ``"error"`` — how
             to report missing ``layout_ref`` or unknown ``fid`` references.

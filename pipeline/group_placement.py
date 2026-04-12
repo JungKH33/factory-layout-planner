@@ -8,7 +8,7 @@ import torch
 
 from group_placement.agents.ordering import DifficultyOrderingAgent
 from group_placement.agents.registry import create as create_agent
-from group_placement.envs.export import export_group_placement
+from group_placement.envs.interchange import export_group_placement
 from group_placement.envs.env_loader import load_env
 from group_placement.search import (
     AStarConfig,

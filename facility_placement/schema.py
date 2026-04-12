@@ -1,7 +1,7 @@
 """Output schema for Phase 2 facility placement.
 
 Only the output side is a dataclass — input (state dict, facilities, layouts,
-slots) is handled as plain dicts matching ``envs.export.export_group_placement``.
+slots) is handled as plain dicts matching ``export_group_placement`` interchange output.
 """
 
 from __future__ import annotations

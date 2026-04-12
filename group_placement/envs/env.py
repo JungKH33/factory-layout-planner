@@ -565,9 +565,8 @@ class FactoryLayoutEnv(gym.Env):
         self._state.set_remaining(list(ordered_remaining))
     
     # ---- Export API ----
-    # Placement/state export lives in ``envs.export`` (single unified surface).
-    # Use ``envs.export.export_group_placement(loaded)`` or
-    # ``envs.export.save_group_placement(loaded, path)``.
+    # Placement interchange: ``group_placement.envs.interchange`` (export_placement /
+    # import_placement).
 
     def _fail(self, reason: str) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         """실패 처리 통합 헬퍼."""
@@ -685,10 +684,34 @@ class FactoryLayoutEnv(gym.Env):
 
         # Apply initial placements via the same resolve_action path as step_action.
         initial_placements = options.get("initial_placements", None)
+        placement_order = options.get("placement_order", None)
+        strict_initial = bool(options.get("strict_initial_placements", False))
         if initial_placements is not None:
             if not isinstance(initial_placements, dict):
                 raise ValueError("reset(options): initial_placements must be a dict {gid: EnvAction}")
-            for gid, action in initial_placements.items():
+            if placement_order is not None:
+                if not isinstance(placement_order, list):
+                    raise ValueError("reset(options): placement_order must be a list of group ids")
+                iter_gids: List[GroupId] = list(placement_order)
+                seen_po: set = set()
+                for gid in iter_gids:
+                    if gid not in initial_placements:
+                        raise ValueError(
+                            f"reset(options): placement_order contains gid={gid!r} missing from initial_placements"
+                        )
+                    if gid in seen_po:
+                        raise ValueError(f"reset(options): placement_order duplicate gid={gid!r}")
+                    seen_po.add(gid)
+                if strict_initial and len(seen_po) != len(initial_placements):
+                    raise ValueError(
+                        "reset(options): strict_initial_placements requires placement_order to list "
+                        "every initial_placements key exactly once"
+                    )
+            else:
+                iter_gids = list(initial_placements.keys())
+
+            for gid in iter_gids:
+                action = initial_placements[gid]
                 if not isinstance(action, EnvAction):
                     raise TypeError(
                         f"reset(options): initial_placements[{gid!r}] must be EnvAction, "
@@ -702,11 +725,13 @@ class FactoryLayoutEnv(gym.Env):
                     raise ValueError(f"reset(options): initial_placements contains duplicate gid: {gid!r}")
                 _gid, placement = self.resolve_action(action)
                 if placement is None:
-                    warnings.warn(
+                    msg = (
                         f"reset(options): not placeable gid={gid!r} "
-                        f"x_center={action.x_center} y_center={action.y_center} vi={action.variant_index} — skipping",
-                        stacklevel=2,
+                        f"x_center={action.x_center} y_center={action.y_center} vi={action.variant_index}"
                     )
+                    if strict_initial:
+                        raise RuntimeError(msg)
+                    warnings.warn(f"{msg} — skipping", stacklevel=2)
                     continue
                 self._apply_resolved_placement(placement)
         return {}, {}

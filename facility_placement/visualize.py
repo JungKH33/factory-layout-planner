@@ -60,7 +60,7 @@ def draw_cluster_outlines(
 
     Default ``edgecolor`` is ``steelblue`` (no interior fill).
 
-    ``cluster_placements`` entries match ``export_group_placement`` items:
+    ``cluster_placements`` entries match interchange ``export_group_placement`` items:
     ``x_bl_mm``, ``y_bl_mm``, ``cluster_w_mm``, ``cluster_h_mm``, optional ``gid``.
     """
     artists: List[Any] = []
@@ -274,7 +274,7 @@ def plot_facility_layout(
     optionally calls ``plt.show()``.  Mirrors ``envs.visualizer.plot_layout``.
 
     Args:
-        state_dict: Dict from ``envs.export.export_group_placement``.
+        state_dict: Dict from ``export_group_placement``.
         resolved: Pre-computed ``resolve_facilities`` output; resolved inline
             when ``None``.
         on_missing: Forwarded to ``resolve_facilities`` when resolving inline.
@@ -323,7 +323,7 @@ def save_facility_layout(
     then closes the figure.
 
     Args:
-        state_dict: Dict from ``envs.export.export_group_placement``.
+        state_dict: Dict from ``export_group_placement``.
         save_path: Output file path (``.png`` / any format supported by
             ``Figure.savefig``).
         resolved: Pre-computed ``resolve_facilities`` output; resolved inline

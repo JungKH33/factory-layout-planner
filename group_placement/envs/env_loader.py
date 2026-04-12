@@ -23,7 +23,7 @@ class LoadedEnv:
     env: FactoryLayoutEnv
     reset_kwargs: Dict[str, Any]
     # Phase 2 (facility-level placement) interchange data.
-    # All three are JSON-serializable plain dicts/lists — envs.export.export_group_placement
+    # All three are JSON-serializable plain dicts/lists — interchange.export_group_placement
     # consumes them without any further type conversion.
     grid_size_mm: float = 1.0
     facilities_raw: Dict[str, Dict[str, Any]] = field(default_factory=dict)
