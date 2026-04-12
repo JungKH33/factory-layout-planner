@@ -8,7 +8,7 @@ import torch
 
 from group_placement.envs.env_loader import LoadedEnv, load_env
 from lane_generation.output import routes_to_dict
-from lane_generation.pathfinder import RoutePlanner
+from lane_generation.inference import RoutePlanner
 from pipeline.schema import (
     GroupLaneGenerationArtifact,
     load_json,

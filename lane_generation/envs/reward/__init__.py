@@ -1,8 +1,10 @@
 from .core import RewardComposer, TerminalReward
-from .flow import LaneLengthReward
+from .flow import LaneNewEdgeReward, LanePathLengthReward, LaneTurnReward
 
 __all__ = [
     "RewardComposer",
     "TerminalReward",
-    "LaneLengthReward",
+    "LaneNewEdgeReward",
+    "LanePathLengthReward",
+    "LaneTurnReward",
 ]

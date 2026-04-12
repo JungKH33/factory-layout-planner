@@ -11,7 +11,8 @@ from group_placement.envs.env_loader import load_env as load_group_env
 
 from .adapter import LaneAdapter, LaneAdapterConfig
 from .env import FactoryLaneEnv
-from .state import LaneFlowGraph, LaneFlowSpec
+from .state import RoutingConfig
+from .state import LaneFlowSpec
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ def load_lane_env(
     backend_selection: str = "benchmark",
     flow_ordering: str = "weight_desc",
     adapter_config: Optional[LaneAdapterConfig] = None,
+    routing_config: Optional[RoutingConfig] = None,
     reward_scale: float = 100.0,
     penalty_weight: float = 50000.0,
 ) -> LoadedLaneEnv:
@@ -128,13 +130,14 @@ def load_lane_env(
         dtype=torch.bool,
     )
 
-    flow_graph = LaneFlowGraph(flow_specs, device=dev, ordering=flow_ordering)
     lane_env = FactoryLaneEnv(
         grid_width=int(loaded_group.env.grid_width),
         grid_height=int(loaded_group.env.grid_height),
         blocked_static=blocked_static,
-        flow_graph=flow_graph,
+        flows=flow_specs,
         device=dev,
+        flow_ordering=flow_ordering,
+        routing_config=routing_config,
         reward_scale=float(reward_scale),
         penalty_weight=float(penalty_weight),
     )

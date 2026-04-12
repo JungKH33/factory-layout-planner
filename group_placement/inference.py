@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -78,7 +79,7 @@ logger = logging.getLogger(__name__)
 
 
 @torch.no_grad()
-def main() -> None:
+def main(*, output_dir: Path | str | None = None) -> None:
     if not logging.getLogger().handlers:
         logging.basicConfig(
             level=logging.INFO,
@@ -339,7 +340,7 @@ def main() -> None:
                 i + 1, result["cost"], len(result["positions"]), result["cum_reward"],
             )
 
-    out_dir = Path("results") / "inference"
+    out_dir = Path(output_dir).expanduser() if output_dir is not None else Path("results") / "inference"
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"{ts}_{AGENT_MODE}_{WRAPPER_MODE}_{SEARCH_MODE}.png"
@@ -383,11 +384,11 @@ def main() -> None:
     if save_facility_layout(state_dict, save_path=str(facility_path)):
         logger.info("saved_facility_layout=%s", facility_path)
 
-    # Save top-K result layouts
+    # Save top-K result layouts (PNG + interchange JSON per rank)
     if all_top_k:
         for i, result in enumerate(all_top_k):
             engine.set_state(result["engine_state"])
-            top_path = out_dir / f"{ts}_top{i+1}_cost{result['cost']:.1f}.png"
+            top_path = out_dir / f"{ts}_top{i+1}.png"
             save_layout(
                 adapter,
                 show_masks=SHOW_MASKS,
@@ -398,7 +399,20 @@ def main() -> None:
                 save_path=str(top_path),
             )
             logger.info("saved_top_%s=%s", i + 1, top_path)
+            top_json = out_dir / f"{ts}_top{i+1}.json"
+            save_group_placement(loaded, str(top_json))
+            logger.info("saved_top_%s_placement=%s", i + 1, top_json)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Group placement inference")
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Directory for saved PNG/JSON (default: results/inference)",
+    )
+    _args = parser.parse_args()
+    main(output_dir=_args.output_dir)

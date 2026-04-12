@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import torch
 
 from .action import LaneAction, LaneRoute
 from .action_space import ActionSpace
-from .adapter import LaneAdapter
-from .reward import LaneLengthReward, RewardComposer, TerminalReward
-from .state import EnvState, LaneFlowGraph, LaneMaps
+from .adapter import BaseLaneAdapter
+from .reward import LaneNewEdgeReward, LanePathLengthReward, LaneTurnReward, RewardComposer, TerminalReward
+from .state import LaneFlowSpec, LaneState, RoutingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -26,35 +26,48 @@ class FactoryLaneEnv(gym.Env):
         grid_width: int,
         grid_height: int,
         blocked_static: torch.Tensor,
-        flow_graph: LaneFlowGraph,
+        flows: Sequence[LaneFlowSpec],
         device: Optional[torch.device] = None,
+        flow_ordering: str = "weight_desc",
+        routing_config: Optional[RoutingConfig] = None,
         max_steps: Optional[int] = None,
         reward_scale: float = 100.0,
+        reward_weights: Optional[Dict[str, float]] = None,
         penalty_weight: float = 50000.0,
         log: bool = False,
     ) -> None:
         super().__init__()
         self.grid_width = int(grid_width)
         self.grid_height = int(grid_height)
-        self.device = torch.device(device or flow_graph.weights.device)
+        self.device = torch.device(
+            device or (blocked_static.device if torch.is_tensor(blocked_static) else "cpu")
+        )
         self.max_steps = max_steps
         self.log = bool(log)
 
-        maps = LaneMaps.build(
+        self._state = LaneState.build(
             grid_height=self.grid_height,
             grid_width=self.grid_width,
             blocked_static=blocked_static,
+            flows=flows,
             device=self.device,
-        )
-        self._state = EnvState.empty(
-            maps=maps,
-            flow=flow_graph,
-            device=self.device,
+            flow_ordering=flow_ordering,
         )
 
+        self._state.configure_routing(routing_config or RoutingConfig())
+
+        rw = dict(reward_weights or {})
         self._reward = RewardComposer(
-            components={"lane": LaneLengthReward()},
-            weights={"lane": 1.0},
+            components={
+                "path_length": LanePathLengthReward(),
+                "turn": LaneTurnReward(),
+                "new_edge": LaneNewEdgeReward(),
+            },
+            weights={
+                "path_length": float(rw.get("path_length", 0.0)),
+                "turn": float(rw.get("turn", 0.0)),
+                "new_edge": float(rw.get("new_edge", 1.0)),
+            },
             reward_scale=float(reward_scale),
         )
         self._terminal = TerminalReward(
@@ -62,23 +75,20 @@ class FactoryLaneEnv(gym.Env):
             reward_scale=float(reward_scale),
         )
 
-        self.adapter: Optional[LaneAdapter] = None
+        self.adapter: Optional[BaseLaneAdapter] = None
         self.action_space = gym.spaces.Discrete(1)
         self.observation_space = gym.spaces.Dict({})
 
-    def set_adapter(self, adapter: LaneAdapter) -> None:
+    def set_adapter(self, adapter: BaseLaneAdapter) -> None:
         self.adapter = adapter
         self.adapter.bind(self)
 
-    def get_maps(self) -> LaneMaps:
-        return self._state.maps
-
-    def get_state(self) -> EnvState:
+    def get_state(self) -> LaneState:
         return self._state
 
-    def set_state(self, state: EnvState) -> None:
-        if not isinstance(state, EnvState):
-            raise TypeError(f"state must be EnvState, got {type(state).__name__}")
+    def set_state(self, state: LaneState) -> None:
+        if not isinstance(state, LaneState):
+            raise TypeError(f"state must be LaneState, got {type(state).__name__}")
         self._state.restore(state)
 
     @property
@@ -131,7 +141,6 @@ class FactoryLaneEnv(gym.Env):
         if self._state.done:
             return {}, 0.0, True, False, {"reason": "done"}
 
-        # Score single route by wrapping as K=1 candidate batch.
         e = route.edge_indices.to(device=self.device, dtype=torch.long).view(-1)
         l = int(e.numel())
         edge_idx = torch.zeros((1, max(1, l)), dtype=torch.long, device=self.device)
@@ -185,8 +194,8 @@ class FactoryLaneEnv(gym.Env):
         initial_edges = options.get("initial_edges", None)
         if initial_edges is not None:
             t = torch.as_tensor(initial_edges, dtype=torch.long, device=self.device).view(-1)
-            valid = (t >= 0) & (t < int(self._state.maps.edge_count))
-            self._state.maps.apply_edges(t[valid])
+            valid = (t >= 0) & (t < int(self._state.edge_count))
+            self._state.apply_edges(t[valid])
 
         return {}, {}
 
