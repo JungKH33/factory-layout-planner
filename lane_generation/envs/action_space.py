@@ -23,6 +23,7 @@ class ActionSpace:
     candidate_path_len: Optional[torch.Tensor] = None
     candidate_turns: Optional[torch.Tensor] = None
     candidate_cost: Optional[torch.Tensor] = None
+    candidate_lane_slot_idx: Optional[torch.Tensor] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate_edge_idx, torch.Tensor):
@@ -54,3 +55,11 @@ class ActionSpace:
         if self.candidate_cost is not None:
             if self.candidate_cost.shape != (k,):
                 raise ValueError("candidate_cost must be [K]")
+        if self.candidate_lane_slot_idx is not None:
+            if self.candidate_lane_slot_idx.shape != self.candidate_edge_idx.shape:
+                raise ValueError(
+                    "candidate_lane_slot_idx shape mismatch: "
+                    f"{tuple(self.candidate_lane_slot_idx.shape)} vs {tuple(self.candidate_edge_idx.shape)}"
+                )
+            if self.candidate_lane_slot_idx.dtype not in (torch.int16, torch.int32, torch.int64):
+                raise TypeError("candidate_lane_slot_idx must be an integer tensor")

@@ -50,7 +50,15 @@ def _route_to_dict(route: LaneRoute, state) -> Dict[str, Any]:
             if pt not in seen:
                 cells.append([dx, dy])
 
-    return {
+    lane_slots = None
+    try:
+        slots = state.route_lane_slots_by_flow.get(fi, None)
+        if isinstance(slots, tuple) and len(slots) == len(edge_list):
+            lane_slots = [int(s) for s in slots]
+    except Exception:
+        lane_slots = None
+
+    out = {
         "flow_index": fi,
         "src_gid": str(spec.src_gid),
         "dst_gid": str(spec.dst_gid),
@@ -62,6 +70,9 @@ def _route_to_dict(route: LaneRoute, state) -> Dict[str, Any]:
         "path_length": float(route.path_length),
         "turns": int(route.turns),
     }
+    if lane_slots is not None:
+        out["lane_slots"] = lane_slots
+    return out
 
 
 def _failed_flow_dict(state, flow_index: int) -> Dict[str, Any]:

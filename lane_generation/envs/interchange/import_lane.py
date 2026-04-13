@@ -70,7 +70,6 @@ def apply_interchange_to_env(
         if rd.get("success") and rd.get("edges"):
             route_by_fi[fi] = rd
 
-    all_edges: List[torch.Tensor] = []
     routes_out: List[LaneRoute] = []
     routed_fis: List[int] = []
 
@@ -79,7 +78,13 @@ def apply_interchange_to_env(
         rd = route_by_fi.get(fi)
         if rd is not None:
             edges_t = torch.tensor(rd["edges"], dtype=torch.long, device=state.device)
-            all_edges.append(edges_t)
+            lane_slots_raw = rd.get("lane_slots", None)
+            lane_slots = None
+            if isinstance(lane_slots_raw, list) and len(lane_slots_raw) == int(edges_t.numel()):
+                lane_slots = [int(x) for x in lane_slots_raw]
+            state.apply_edges(edges_t, lane_slots=lane_slots)
+            if lane_slots is not None:
+                state.route_lane_slots_by_flow[fi] = tuple(lane_slots)
             routed_fis.append(fi)
             routes_out.append(LaneRoute(
                 flow_index=fi,
@@ -89,16 +94,10 @@ def apply_interchange_to_env(
                 turns=int(rd.get("turns", 0)),
             ))
 
-    if all_edges:
-        combined = torch.cat(all_edges, dim=0)
-        state.apply_edges(combined)
-
     for fi in routed_fis:
         state.routed_mask[fi] = True
 
     state.step_count = int(state.flow_count)
-    state.generation = len(routed_fis)
-
     return routes_out
 
 

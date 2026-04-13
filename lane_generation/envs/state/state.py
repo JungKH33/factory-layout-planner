@@ -7,18 +7,16 @@ Lifecycle:
 
 * :meth:`LaneState.build` constructs everything in one shot — edge tables
   and flow arrays.
-* :meth:`LaneState.copy` shares the static graph and flow arrays by reference;
-  only ``lane_dir_flat`` and ``routed_mask`` are cloned, so MCTS snapshots
-  stay cheap.
-* :meth:`LaneState.apply_route` records the new lane on ``lane_dir_flat`` and
-  bumps ``generation`` so any cached distance fields invalidate themselves on
-  the next :meth:`ensure_wavefront_dist` call.
+* :meth:`LaneState.copy` shares static tensors/caches by reference and clones
+  only runtime route state, so MCTS snapshots stay cheap.
+* :meth:`LaneState.apply_route` records directed edges and lane slots on
+  ``edge_map`` / ``edge_lane_mask``.
 """
 from __future__ import annotations
 
 import random as _random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import torch
 
@@ -51,6 +49,8 @@ class RoutingConfig:
     benchmark_warmup: int = 2
     benchmark_rounds: int = 6
     benchmark_max_flows_per_method: int = 6
+    merge_allow: bool = True
+    reverse_allow: bool = True
 
 
 # ----------------------------------------------------------------------
@@ -119,6 +119,8 @@ def _build_edge_tables(
         edge_src_cell=src,
         edge_dst_cell=dst,
         lane_dir_flat=torch.zeros((n_edges,), dtype=torch.bool, device=dev),
+        edge_map=torch.zeros((h, w, 4), dtype=torch.int16, device=dev),
+        edge_lane_mask=torch.zeros((h, w, 4), dtype=torch.int64, device=dev),
     )
 
 
@@ -208,7 +210,7 @@ class LaneState:
     * Per-flow tensor bundle (shared by reference across copies).
     * Per-flow python metadata (gids, original specs).
     * Episode progression.
-    * Cache invalidation generation counter.
+    * Static pathfinding caches.
     """
 
     grid_height: int
@@ -221,6 +223,8 @@ class LaneState:
     edge_src_cell: torch.Tensor
     edge_dst_cell: torch.Tensor
     lane_dir_flat: torch.Tensor
+    edge_map: torch.Tensor
+    edge_lane_mask: torch.Tensor
 
     weights: torch.Tensor
     src_ports: torch.Tensor
@@ -235,24 +239,25 @@ class LaneState:
 
     step_count: int
     routed_mask: torch.Tensor
-
-    generation: int = 0
+    route_lane_slots_by_flow: Dict[int, Tuple[int, ...]]
+    runtime_max_lane_slot: int
 
     # Pathfinding algorithm configuration.
     _algorithm: str = "wavefront"
     _algorithm_multi_src: str = "wavefront"
     _max_wave_iters: int = 0
     _max_path_steps: int = 0
+    _route_merge_allow: bool = True
+    _route_reverse_allow: bool = True
 
-    # Lazy group-id → port-cells lookup (static, shared on copy).
-    _gid_port_cache: Optional[Dict[str, torch.Tensor]] = None
+    # Static/shared caches.
+    _static_port_cells_by_gid: Optional[Dict[str, torch.Tensor]] = None
+    _static_port_xy_set: Optional[Set[Tuple[int, int]]] = None
+    _static_walkable_map: Optional[torch.Tensor] = None
+    _cache_dist_map_by_port_targets: Optional[Dict[Tuple[Tuple[int, int], ...], torch.Tensor]] = None
 
-    # Wavefront BFS distance cache (shared by ref on copy).
-    # Keyed on ``(generation, src_gid, dst_gid)``.
-    _wavefront_dist: Optional[torch.Tensor] = None   # [H,W] int32
-    _wavefront_dist_gen: int = -1
-    _wavefront_dist_src_gid: Optional[str] = None
-    _wavefront_dist_dst_gid: Optional[str] = None
+    # Runtime/debug: last computed distance map.
+    _runtime_last_dist_map: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -289,6 +294,8 @@ class LaneState:
             edge_src_cell=edge["edge_src_cell"],
             edge_dst_cell=edge["edge_dst_cell"],
             lane_dir_flat=edge["lane_dir_flat"],
+            edge_map=edge["edge_map"],
+            edge_lane_mask=edge["edge_lane_mask"],
             weights=flow_arrays["weights"],
             src_ports=flow_arrays["src_ports"],
             dst_ports=flow_arrays["dst_ports"],
@@ -301,7 +308,8 @@ class LaneState:
             flow_specs=tuple(flows),
             step_count=0,
             routed_mask=torch.zeros((f,), dtype=torch.bool, device=dev),
-            generation=0,
+            route_lane_slots_by_flow={},
+            runtime_max_lane_slot=-1,
         )
 
     # ------------------------------------------------------------------
@@ -319,6 +327,8 @@ class LaneState:
             edge_src_cell=self.edge_src_cell,
             edge_dst_cell=self.edge_dst_cell,
             lane_dir_flat=self.lane_dir_flat.clone(),
+            edge_map=self.edge_map.clone(),
+            edge_lane_mask=self.edge_lane_mask.clone(),
             weights=self.weights,
             src_ports=self.src_ports,
             dst_ports=self.dst_ports,
@@ -331,17 +341,20 @@ class LaneState:
             flow_specs=self.flow_specs,
             step_count=int(self.step_count),
             routed_mask=self.routed_mask.clone(),
-            generation=int(self.generation),
+            route_lane_slots_by_flow=dict(self.route_lane_slots_by_flow),
+            runtime_max_lane_slot=int(self.runtime_max_lane_slot),
         )
         c._algorithm = self._algorithm
         c._algorithm_multi_src = self._algorithm_multi_src
         c._max_wave_iters = self._max_wave_iters
         c._max_path_steps = self._max_path_steps
-        c._gid_port_cache = self._gid_port_cache
-        c._wavefront_dist = self._wavefront_dist
-        c._wavefront_dist_gen = self._wavefront_dist_gen
-        c._wavefront_dist_src_gid = self._wavefront_dist_src_gid
-        c._wavefront_dist_dst_gid = self._wavefront_dist_dst_gid
+        c._route_merge_allow = self._route_merge_allow
+        c._route_reverse_allow = self._route_reverse_allow
+        c._static_port_cells_by_gid = self._static_port_cells_by_gid
+        c._static_port_xy_set = self._static_port_xy_set
+        c._static_walkable_map = self._static_walkable_map
+        c._cache_dist_map_by_port_targets = self._cache_dist_map_by_port_targets
+        c._runtime_last_dist_map = self._runtime_last_dist_map
         return c
 
     def restore(self, src: "LaneState") -> None:
@@ -350,29 +363,33 @@ class LaneState:
         if (self.grid_height, self.grid_width) != (src.grid_height, src.grid_width):
             raise ValueError("grid shape mismatch")
         self.lane_dir_flat.copy_(src.lane_dir_flat.to(device=self.device, dtype=torch.bool))
+        self.edge_map.copy_(src.edge_map.to(device=self.device, dtype=torch.int16))
+        self.edge_lane_mask.copy_(src.edge_lane_mask.to(device=self.device, dtype=torch.int64))
         self.routed_mask.copy_(src.routed_mask.to(device=self.device, dtype=torch.bool))
         self.step_count = int(src.step_count)
-        self.generation = int(src.generation)
+        self.route_lane_slots_by_flow = dict(src.route_lane_slots_by_flow)
+        self.runtime_max_lane_slot = int(src.runtime_max_lane_slot)
+        self._runtime_last_dist_map = None
 
     def reset_runtime(self) -> None:
         self.lane_dir_flat.zero_()
+        self.edge_map.zero_()
+        self.edge_lane_mask.zero_()
         self.routed_mask.zero_()
         self.step_count = 0
-        self.generation = 0
-        self._wavefront_dist = None
-        self._wavefront_dist_gen = -1
-        self._wavefront_dist_src_gid = None
-        self._wavefront_dist_dst_gid = None
+        self.route_lane_slots_by_flow = {}
+        self.runtime_max_lane_slot = -1
+        self._runtime_last_dist_map = None
 
     # ------------------------------------------------------------------
     # Group port lookup & per-route free map
     # ------------------------------------------------------------------
 
-    def _ensure_gid_port_cache(self) -> Dict[str, torch.Tensor]:
-        if self._gid_port_cache is not None:
-            return self._gid_port_cache
+    def _ensure_static_port_cells_by_gid(self) -> Dict[str, torch.Tensor]:
+        if self._static_port_cells_by_gid is not None:
+            return self._static_port_cells_by_gid
         cache: Dict[str, List[Tuple[int, int]]] = {}
-        for i, spec in enumerate(self.flow_specs):
+        for spec in self.flow_specs:
             for gid, ports in ((spec.src_gid, spec.src_ports), (spec.dst_gid, spec.dst_ports)):
                 cells = cache.setdefault(gid, [])
                 for xy in ports:
@@ -381,93 +398,141 @@ class LaneState:
         for gid, cells in cache.items():
             t = torch.tensor(cells, dtype=torch.long, device=self.device)
             result[gid] = torch.unique(t, dim=0) if t.numel() > 0 else t
-        self._gid_port_cache = result
+        self._static_port_cells_by_gid = result
         return result
+
+    def _ensure_static_port_xy_set(self) -> Set[Tuple[int, int]]:
+        if self._static_port_xy_set is not None:
+            return self._static_port_xy_set
+        cells_by_gid = self._ensure_static_port_cells_by_gid()
+        out: Set[Tuple[int, int]] = set()
+        for cells in cells_by_gid.values():
+            for p in cells.detach().cpu().tolist():
+                out.add((int(p[0]), int(p[1])))
+        self._static_port_xy_set = out
+        return out
 
     def group_port_cells(self, gid: str) -> torch.Tensor:
         """Return ``[N, 2]`` unique port cells (x, y) for group *gid*."""
-        cache = self._ensure_gid_port_cache()
+        cache = self._ensure_static_port_cells_by_gid()
         return cache.get(gid, torch.empty((0, 2), dtype=torch.long, device=self.device))
 
-    def _free_map(
-        self,
-        src_gid: Optional[str] = None,
-        dst_gid: Optional[str] = None,
-    ) -> torch.Tensor:
-        """Build a free-cell map, unblocking port cells for the given groups.
+    def _get_static_walkable_map(self) -> torch.Tensor:
+        """Build a static walkable map with all known port cells unblocked.
 
-        Facility bodies are marked as blocked in ``blocked_static``, but the
-        port cells of the source/destination facilities must be walkable so
-        the pathfinder can enter/exit them.
+        ``blocked_static`` marks placed facility bodies as blocked.  For lane
+        routing we must treat port cells as walkable.  Since group placement
+        is fixed during lane generation, this map is static and shared.
         """
-        base = (~self.blocked_static).to(dtype=torch.bool, device=self.device)
+        if self._static_walkable_map is not None:
+            return self._static_walkable_map
+
+        walkable = (~self.blocked_static).to(dtype=torch.bool, device=self.device)
         h, w = int(self.grid_height), int(self.grid_width)
-        for gid in (src_gid, dst_gid):
-            if gid is None:
-                continue
-            for p in self.group_port_cells(gid):
-                x, y = int(p[0].item()), int(p[1].item())
-                if 0 <= y < h and 0 <= x < w:
-                    base[y, x] = True
-        return base
+        for pxy in self._ensure_static_port_xy_set():
+            x, y = int(pxy[0]), int(pxy[1])
+            if 0 <= y < h and 0 <= x < w:
+                walkable[y, x] = True
+        self._static_walkable_map = walkable
+        return walkable
 
     # ------------------------------------------------------------------
     # Wavefront cache
     # ------------------------------------------------------------------
 
-    def ensure_wavefront_dist(
+    @staticmethod
+    def _canonical_target_points(targets_xy: torch.Tensor) -> Tuple[Tuple[int, int], ...]:
+        pts = targets_xy.detach().to(dtype=torch.long, device="cpu").view(-1, 2).tolist()
+        uniq = sorted({(int(p[0]), int(p[1])) for p in pts})
+        return tuple(uniq)
+
+    def _build_port_target_cache_key(self, targets_xy: torch.Tensor) -> Optional[Tuple[Tuple[int, int], ...]]:
+        points = self._canonical_target_points(targets_xy)
+        if len(points) == 0:
+            return None
+        h, w = int(self.grid_height), int(self.grid_width)
+        port_set = self._ensure_static_port_xy_set()
+        for x, y in points:
+            if not (0 <= x < w and 0 <= y < h):
+                return None
+            if (int(x), int(y)) not in port_set:
+                return None
+        return points
+
+    def get_dist_map_for_targets(
         self,
         *,
         targets_xy: torch.Tensor,
-        src_gid: Optional[str] = None,
-        dst_gid: Optional[str] = None,
         allow_mask: Optional[torch.Tensor] = None,
         max_wave_iters: int = 0,
     ) -> torch.Tensor:
-        """Return a ``[H,W]`` BFS distance field, rebuilding if stale.
+        """Return ``[H,W]`` distance map for *targets_xy*.
 
-        The result is cached and keyed on ``(generation, src_gid, dst_gid)``
-        so that each group pair gets its own distance field with the correct
-        port cells unblocked.
+        Cache policy:
+        - If *allow_mask* is None and all targets are known ports, cache by
+          canonicalized target-port tuple.
+        - Otherwise (non-port targets or directional constraints), compute
+          without cache.
         """
-        gen = int(self.generation)
-        if (self._wavefront_dist is not None
-                and self._wavefront_dist_gen == gen
-                and self._wavefront_dist_src_gid == src_gid
-                and self._wavefront_dist_dst_gid == dst_gid):
-            return self._wavefront_dist
+        cache_key = None
+        if allow_mask is None:
+            cache_key = self._build_port_target_cache_key(targets_xy)
+            if cache_key is not None:
+                cache = self._cache_dist_map_by_port_targets
+                if cache is not None:
+                    hit = cache.get(cache_key, None)
+                    if hit is not None:
+                        self._runtime_last_dist_map = hit
+                        return hit
 
         from .wavefront import wavefront_distance_field, _wavefront_with_mask
 
-        free_map = self._free_map(src_gid=src_gid, dst_gid=dst_gid)
+        walkable_map = self._get_static_walkable_map()
         mi = int(max_wave_iters)
         if allow_mask is not None:
             dist = _wavefront_with_mask(
-                free_map=free_map,
+                free_map=walkable_map,
                 allow_4d=allow_mask,
                 seeds_xy=targets_xy,
                 max_iters=mi,
             )
         else:
             dist = wavefront_distance_field(
-                free_map=free_map,
+                free_map=walkable_map,
                 seeds_xy=targets_xy,
                 max_iters=mi,
             )
-        self._wavefront_dist = dist
-        self._wavefront_dist_gen = gen
-        self._wavefront_dist_src_gid = src_gid
-        self._wavefront_dist_dst_gid = dst_gid
+            if cache_key is not None:
+                if self._cache_dist_map_by_port_targets is None:
+                    self._cache_dist_map_by_port_targets = {}
+                self._cache_dist_map_by_port_targets[cache_key] = dist
+        self._runtime_last_dist_map = dist
         return dist
 
     @property
-    def wavefront_dist(self) -> Optional[torch.Tensor]:
-        """Read-only access to the current wavefront cache (may be ``None``)."""
-        return self._wavefront_dist
+    def last_dist_map(self) -> Optional[torch.Tensor]:
+        """Read-only access to the latest computed distance map."""
+        return self._runtime_last_dist_map
 
     @property
-    def wavefront_dist_gen(self) -> int:
-        return int(self._wavefront_dist_gen)
+    def static_walkable_map(self) -> torch.Tensor:
+        """Static walkable grid [H,W] (facility blocked, known ports unblocked)."""
+        return self._get_static_walkable_map()
+
+    @property
+    def cache_dist_map_by_port_targets(self) -> Dict[Tuple[Tuple[int, int], ...], torch.Tensor]:
+        """Read-only accessor for cached port-target distance maps."""
+        if self._cache_dist_map_by_port_targets is None:
+            return {}
+        return self._cache_dist_map_by_port_targets
+
+    @property
+    def route_merge_allow(self) -> bool:
+        return bool(self._route_merge_allow)
+
+    @property
+    def route_reverse_allow(self) -> bool:
+        return bool(self._route_reverse_allow)
 
     # ------------------------------------------------------------------
     # Static-graph helpers (formerly LaneMaps methods)
@@ -529,11 +594,154 @@ class LaneState:
             ordered_unique.append(e)
         return torch.tensor(ordered_unique, dtype=torch.long, device=self.device), int(turns)
 
-    def apply_edges(self, edge_indices: torch.Tensor) -> None:
+    @staticmethod
+    def _first_set_slot(mask: int) -> Optional[int]:
+        if int(mask) == 0:
+            return None
+        lsb = int(mask) & -int(mask)
+        return int(lsb.bit_length() - 1)
+
+    @staticmethod
+    def _first_free_slot(forbidden_mask: int, *, max_slots: int = 63) -> int:
+        m = int(forbidden_mask)
+        for s in range(int(max_slots) + 1):
+            if ((m >> s) & 1) == 0:
+                return int(s)
+        raise RuntimeError(f"no free lane slot available within 0..{int(max_slots)}")
+
+    def _choose_lane_slot(self, *, dir_mask: int, rev_mask: int) -> int:
+        merge = bool(self._route_merge_allow)
+        rev_allow = bool(self._route_reverse_allow)
+        if merge:
+            reuse_dir = self._first_set_slot(dir_mask)
+            if reuse_dir is not None:
+                return int(reuse_dir)
+            if rev_allow:
+                reuse_rev = self._first_set_slot(rev_mask)
+                if reuse_rev is not None:
+                    return int(reuse_rev)
+            forbidden = int(rev_mask) if not rev_allow else 0
+            return self._first_free_slot(forbidden)
+
+        if rev_allow:
+            shared = int(rev_mask) & ~int(dir_mask)
+            reuse_shared = self._first_set_slot(shared)
+            if reuse_shared is not None:
+                return int(reuse_shared)
+            forbidden = int(dir_mask)
+            return self._first_free_slot(forbidden)
+
+        forbidden = int(dir_mask) | int(rev_mask)
+        return self._first_free_slot(forbidden)
+
+    def _lane_slot_for_edge(self, edge_id: int) -> int:
+        edge_flat = self.edge_lane_mask.view(-1)
+        rev_flat = self.reverse_edge_lut.view(-1)
+        e = int(edge_id)
+        if e < 0 or e >= int(edge_flat.shape[0]):
+            raise ValueError(f"edge id out of range: {e}")
+        r = int(rev_flat[e].item())
+        dir_mask = int(edge_flat[e].item())
+        rev_mask = int(edge_flat[r].item()) if 0 <= r < int(edge_flat.shape[0]) else 0
+        return self._choose_lane_slot(dir_mask=dir_mask, rev_mask=rev_mask)
+
+    def preview_lane_slots_batch(
+        self,
+        *,
+        candidate_edge_idx: torch.Tensor,
+        candidate_edge_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Plan lane slots per candidate edge without mutating runtime state.
+
+        Returns int16 tensor [K,L]. Invalid/padded entries are -1.
+        """
+        idx = candidate_edge_idx.to(device=self.device, dtype=torch.long)
+        mask = candidate_edge_mask.to(device=self.device, dtype=torch.bool)
+        if idx.shape != mask.shape:
+            raise ValueError(
+                f"shape mismatch: candidate_edge_idx {tuple(idx.shape)} vs candidate_edge_mask {tuple(mask.shape)}"
+            )
+
+        k = int(idx.shape[0])
+        l = int(idx.shape[1]) if idx.dim() == 2 else 0
+        out = torch.full((k, l), -1, dtype=torch.int16, device=self.device)
+        if k == 0 or l == 0:
+            return out
+
+        mask_flat = self.edge_lane_mask.view(-1)
+        rev_flat = self.reverse_edge_lut.view(-1)
+        valid_flat = self.edge_valid_flat.view(-1)
+        n_edges = int(mask_flat.shape[0])
+
+        def _get_mask(edge_id: int, overrides: Dict[int, int]) -> int:
+            override = overrides.get(edge_id, None)
+            if override is not None:
+                return int(override)
+            return int(mask_flat[edge_id].item())
+
+        for ci in range(k):
+            overrides: Dict[int, int] = {}
+            for li in range(l):
+                if not bool(mask[ci, li].item()):
+                    continue
+                e = int(idx[ci, li].item())
+                if e < 0 or e >= n_edges:
+                    continue
+                if not bool(valid_flat[e].item()):
+                    continue
+                r = int(rev_flat[e].item())
+                dir_mask = _get_mask(e, overrides)
+                rev_mask = _get_mask(r, overrides) if 0 <= r < n_edges else 0
+                slot = int(self._choose_lane_slot(dir_mask=dir_mask, rev_mask=rev_mask))
+                out[ci, li] = int(slot)
+                overrides[e] = int(dir_mask | (1 << int(slot)))
+        return out
+
+    def apply_edges(
+        self,
+        edge_indices: torch.Tensor,
+        *,
+        lane_slots: Optional[Sequence[int]] = None,
+    ) -> None:
         if edge_indices.numel() == 0:
             return
         idx = edge_indices.to(device=self.device, dtype=torch.long).view(-1)
-        self.lane_dir_flat[idx] = True
+        mask_flat = self.edge_lane_mask.view(-1)
+        count_flat = self.edge_map.view(-1)
+        lane_flat = self.lane_dir_flat.view(-1)
+
+        if lane_slots is not None and len(lane_slots) != int(idx.numel()):
+            raise ValueError("lane_slots length must match edge_indices length")
+
+        for i in range(int(idx.numel())):
+            e = int(idx[i].item())
+            if e < 0 or e >= int(mask_flat.shape[0]):
+                continue
+            if lane_slots is None:
+                slot = 0
+            else:
+                slot = int(lane_slots[i])
+                if slot < 0 or slot > 63:
+                    raise ValueError(f"lane slot out of range [0,63]: {slot}")
+            new_mask = int(mask_flat[e].item()) | (1 << int(slot))
+            mask_flat[e] = int(new_mask)
+            count_flat[e] = int(int(new_mask).bit_count())
+            lane_flat[e] = bool(new_mask != 0)
+            if int(slot) > int(self.runtime_max_lane_slot):
+                self.runtime_max_lane_slot = int(slot)
+
+    @property
+    def lane_map(self) -> torch.Tensor:
+        """Dense lane-slot map ``[H,W,N,4]`` (bool)."""
+        h, w = self.shape
+        n = int(self.runtime_max_lane_slot) + 1
+        if n <= 0:
+            return torch.zeros((h, w, 0, 4), dtype=torch.bool, device=self.device)
+        out = torch.zeros((h, w, n, 4), dtype=torch.bool, device=self.device)
+        mask = self.edge_lane_mask
+        for s in range(n):
+            out[:, :, s, :] = ((mask >> int(s)) & 1).to(dtype=torch.bool)
+        return out
 
     # ------------------------------------------------------------------
     # Flow helpers (formerly LaneFlowGraph methods)
@@ -597,10 +805,24 @@ class LaneState:
             raise ValueError(
                 f"route.flow_index={route.flow_index} does not match current flow={cur}"
             )
-        self.apply_edges(route.edge_indices)
+        e = route.edge_indices.to(device=self.device, dtype=torch.long).view(-1)
+        lane_slots: List[int] = []
+        planned = route.planned_lane_slots
+        if isinstance(planned, torch.Tensor) and int(planned.numel()) == int(e.numel()):
+            p = planned.to(device=self.device, dtype=torch.long).view(-1)
+            for i in range(int(p.numel())):
+                s = int(p[i].item())
+                if s < 0:
+                    raise ValueError("planned_lane_slots must be non-negative for active edges")
+                lane_slots.append(s)
+        else:
+            for i in range(int(e.numel())):
+                lane_slots.append(int(self._lane_slot_for_edge(int(e[i].item()))))
+            route.planned_lane_slots = torch.tensor(lane_slots, dtype=torch.long, device=self.device)
+        self.apply_edges(e, lane_slots=lane_slots)
+        self.route_lane_slots_by_flow[int(cur)] = tuple(lane_slots)
         self.routed_mask[int(cur)] = True
         self.step_count += 1
-        self.generation += 1
 
     def step(self, *, apply: bool, route: Optional[LaneRoute] = None) -> None:
         if not apply:
@@ -621,6 +843,8 @@ class LaneState:
         """
         self._max_wave_iters = int(config.max_wave_iters)
         self._max_path_steps = int(config.max_path_steps)
+        self._route_merge_allow = bool(config.merge_allow)
+        self._route_reverse_allow = bool(config.reverse_allow)
 
         mode = (config.selection or "static").strip().lower()
         if mode == "benchmark":
@@ -666,9 +890,9 @@ class LaneState:
     ) -> Optional[List[Tuple[int, int]]]:
         """Find one shortest path from *src_xy* to any point in *dst_xy*.
 
-        When *src_gid* / *dst_gid* are given, the corresponding facility
-        port cells are unblocked in the free map so the pathfinder can
-        enter and exit them.
+        *src_gid* / *dst_gid* are kept for compatibility with existing call
+        sites.  The walkable map is static for lane-generation and already
+        includes all known port cells.
         """
         return self._dispatch_pathfind(
             algorithm=self._algorithm,
@@ -740,10 +964,10 @@ class LaneState:
         rng: Optional[torch.Generator],
     ) -> Optional[List[Tuple[int, int]]]:
         from .wavefront import backtrace_shortest_path, _backtrace_with_mask
+        _ = src_gid, dst_gid  # fixed static walkable map does not vary by src/dst
 
-        dist = self.ensure_wavefront_dist(
+        dist = self.get_dist_map_for_targets(
             targets_xy=dst_xy,
-            src_gid=src_gid, dst_gid=dst_gid,
             allow_mask=allow_mask,
             max_wave_iters=self._max_wave_iters,
         )
@@ -778,8 +1002,9 @@ class LaneState:
         rng: Optional[torch.Generator],
     ) -> Optional[List[Tuple[int, int]]]:
         from .dijkstra import _route_graph_search
+        _ = src_gid, dst_gid  # fixed static walkable map does not vary by src/dst
 
-        free_np = self._free_map(src_gid=src_gid, dst_gid=dst_gid).detach().cpu().numpy()
+        free_np = self._get_static_walkable_map().detach().cpu().numpy()
         allow_np = allow_mask.detach().cpu().numpy() if allow_mask is not None else None
         goals = [(int(p[0]), int(p[1])) for p in dst_xy.detach().cpu().tolist()]
         return _route_graph_search(

@@ -27,3 +27,4 @@ class LaneRoute:
     edge_indices: torch.Tensor  # [L]
     path_length: float
     turns: int = 0
+    planned_lane_slots: Optional[torch.Tensor] = None  # [L], int slot index

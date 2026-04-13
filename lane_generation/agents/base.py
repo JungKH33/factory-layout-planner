@@ -96,11 +96,16 @@ class BaseAdapter(ABC):
             path_len[i] = float(n)
 
         valid = edge_mask.any(dim=1)
+        planned_slot_idx = state.preview_lane_slots_batch(
+            candidate_edge_idx=edge_idx,
+            candidate_edge_mask=edge_mask,
+        )
 
         costs = self.env.reward_composer.delta_batch(
             state,
             candidate_edge_idx=edge_idx,
             candidate_edge_mask=edge_mask,
+            candidate_lane_slot_idx=planned_slot_idx,
             candidate_turns=turns_t,
         )
 
@@ -112,6 +117,7 @@ class BaseAdapter(ABC):
             candidate_path_len=path_len,
             candidate_turns=turns_t,
             candidate_cost=costs,
+            candidate_lane_slot_idx=planned_slot_idx,
         )
 
     def resolve_action(self, action_idx: int, action_space: "ActionSpace") -> Optional["LaneRoute"]:
@@ -125,6 +131,9 @@ class BaseAdapter(ABC):
             return None
 
         edges = action_space.candidate_edge_idx[i][action_space.candidate_edge_mask[i]]
+        planned_slots = None
+        if action_space.candidate_lane_slot_idx is not None:
+            planned_slots = action_space.candidate_lane_slot_idx[i][action_space.candidate_edge_mask[i]]
         turns = int(action_space.candidate_turns[i].item()) if action_space.candidate_turns is not None else 0
         path_len = (
             float(action_space.candidate_path_len[i].item())
@@ -137,5 +146,5 @@ class BaseAdapter(ABC):
             edge_indices=edges,
             path_length=path_len,
             turns=turns,
+            planned_lane_slots=planned_slots,
         )
-

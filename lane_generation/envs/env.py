@@ -146,14 +146,25 @@ class FactoryLaneEnv(gym.Env):
         l = int(e.numel())
         edge_idx = torch.zeros((1, max(1, l)), dtype=torch.long, device=self.device)
         edge_mask = torch.zeros((1, max(1, l)), dtype=torch.bool, device=self.device)
+        lane_slot_idx = torch.full((1, max(1, l)), -1, dtype=torch.int16, device=self.device)
         if l > 0:
             edge_idx[0, :l] = e
             edge_mask[0, :l] = True
+            planned = route.planned_lane_slots
+            if isinstance(planned, torch.Tensor) and int(planned.numel()) == l:
+                lane_slot_idx[0, :l] = planned.to(device=self.device, dtype=torch.int16).view(-1)
+            else:
+                lane_slot_idx = self._state.preview_lane_slots_batch(
+                    candidate_edge_idx=edge_idx,
+                    candidate_edge_mask=edge_mask,
+                ).to(dtype=torch.int16, device=self.device)
+                route.planned_lane_slots = lane_slot_idx[0, :l].to(dtype=torch.long).clone()
         turns = torch.tensor([float(route.turns)], dtype=torch.float32, device=self.device)
         delta_cost = self._reward.delta_batch(
             self._state,
             candidate_edge_idx=edge_idx,
             candidate_edge_mask=edge_mask,
+            candidate_lane_slot_idx=lane_slot_idx,
             candidate_turns=turns,
         )[0]
         if not bool(torch.isfinite(delta_cost).item()):

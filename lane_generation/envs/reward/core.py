@@ -44,7 +44,12 @@ class RewardComposer:
 
     def score(self, state: LaneState) -> torch.Tensor:
         total = torch.tensor(0.0, dtype=torch.float32, device=state.device)
-        kw = dict(lane_dir_flat=state.lane_dir_flat)
+        kw = dict(
+            edge_map=state.edge_map,
+            edge_lane_mask=state.edge_lane_mask,
+            edge_valid_flat=state.edge_valid_flat,
+            reverse_edge_lut=state.reverse_edge_lut,
+        )
         for name, comp in self.components.items():
             w = float(self.weights.get(name, 1.0))
             if w == 0.0:
@@ -59,14 +64,19 @@ class RewardComposer:
         *,
         candidate_edge_idx: torch.Tensor,
         candidate_edge_mask: torch.Tensor,
+        candidate_lane_slot_idx: Optional[torch.Tensor] = None,
         candidate_turns: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         k = int(candidate_edge_idx.shape[0])
         total = torch.zeros((k,), dtype=torch.float32, device=state.device)
         kw = dict(
-            lane_dir_flat=state.lane_dir_flat,
+            edge_map=state.edge_map,
+            edge_lane_mask=state.edge_lane_mask,
+            edge_valid_flat=state.edge_valid_flat,
+            reverse_edge_lut=state.reverse_edge_lut,
             candidate_edge_idx=candidate_edge_idx,
             candidate_edge_mask=candidate_edge_mask,
+            candidate_lane_slot_idx=candidate_lane_slot_idx,
             candidate_turns=candidate_turns,
         )
         for name, comp in self.components.items():
