@@ -6,7 +6,7 @@ import sys
 
 import torch
 
-from lane_generation.envs.adapter import LaneAdapter, LaneAdapterConfig
+from lane_generation.agents.placement.greedy import LaneAdapter, LaneAdapterConfig
 from lane_generation.envs.env import FactoryLaneEnv
 from lane_generation.envs.routing import RoutingConfig
 from lane_generation.envs.state import LaneFlowSpec

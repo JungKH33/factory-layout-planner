@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Mapping, Optional
 import torch
 
 from group_placement.envs.env_loader import load_env as load_group_env
+from lane_generation.agents.placement.greedy import LaneAdapter, LaneAdapterConfig
 
-from .adapter import LaneAdapter, LaneAdapterConfig
 from .env import FactoryLaneEnv
 from .state import RoutingConfig
 from .state import LaneFlowSpec

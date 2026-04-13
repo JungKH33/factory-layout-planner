@@ -1,6 +1,7 @@
 from .action import LaneAction, LaneRoute
 from .action_space import ActionSpace
-from .adapter import BaseLaneAdapter, DirectRouteAdapter, HananAdapter, LaneAdapter, LaneAdapterConfig
+from lane_generation.agents.base import BaseAdapter as BaseLaneAdapter
+from lane_generation.agents.placement.greedy import DirectRouteAdapter, HananAdapter, LaneAdapter, LaneAdapterConfig
 from .env import FactoryLaneEnv
 from .env_loader import LoadedLaneEnv, load_lane_env
 from .reward import LaneNewEdgeReward, LanePathLengthReward, LaneTurnReward, RewardComposer, TerminalReward

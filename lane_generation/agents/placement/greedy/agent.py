@@ -1,27 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
-from lane_generation.envs.action_space import ActionSpace
+if TYPE_CHECKING:
+    from lane_generation.envs.action_space import ActionSpace
 
 
 @dataclass(frozen=True)
 class GreedyLaneAgent:
-    """Greedy lane agent: pick the lowest-cost candidate route.
-
-    - select_action: argmin(candidate_cost) among valid candidates.
-    - policy: softmax(-cost / temperature) over valid candidates.
-    - value: heuristic estimate from top-k candidate costs.
-    """
+    """Greedy lane agent: pick the lowest-cost candidate route."""
 
     prior_temperature: float = 1.0
     value_topk: int = 3
     value_risk_beta: float = 0.3
     value_min_reward_scale: float = 1e-6
 
-    def policy(self, *, obs: dict, action_space: ActionSpace) -> torch.Tensor:
+    def policy(self, *, obs: dict, action_space: "ActionSpace") -> torch.Tensor:
         k = int(action_space.valid_mask.shape[0])
         device = action_space.valid_mask.device
         priors = torch.zeros((k,), dtype=torch.float32, device=device)
@@ -49,7 +46,7 @@ class GreedyLaneAgent:
         priors[valid_idx] = probs
         return priors
 
-    def select_action(self, *, obs: dict, action_space: ActionSpace) -> int:
+    def select_action(self, *, obs: dict, action_space: "ActionSpace") -> int:
         k = int(action_space.valid_mask.shape[0])
         if k <= 0:
             return 0
@@ -67,7 +64,7 @@ class GreedyLaneAgent:
         best_k = int(torch.argmin(scores).item()) if scores.numel() > 0 else 0
         return int(valid_idx[best_k].item()) if int(valid_idx.numel()) > 0 else 0
 
-    def value(self, *, obs: dict, action_space: ActionSpace) -> float:
+    def value(self, *, obs: dict, action_space: "ActionSpace") -> float:
         v = obs.get("state_value", None)
         if isinstance(v, torch.Tensor) and v.numel() > 0:
             return float(v.view(-1)[0].item())
@@ -116,36 +113,3 @@ class GreedyLaneAgent:
         risk = 1.0 / float(valid_n + 1)
         beta = max(0.0, float(self.value_risk_beta))
         return float(step_term + beta * risk * fail)
-
-
-if __name__ == "__main__":
-    import time
-
-    from lane_generation.envs import load_lane_env, LaneAdapterConfig
-
-    GROUP_PLACEMENT_JSON = "results/inference/sample_placement.json"
-    ENV_JSON = "group_placement/envs/env_configs/clearance_03.json"
-
-    device = torch.device("cpu")
-    loaded = load_lane_env(
-        env_json=ENV_JSON,
-        group_placement=GROUP_PLACEMENT_JSON,
-        device=device,
-        adapter_config=LaneAdapterConfig(candidate_k=8),
-    )
-    engine = loaded.env
-    engine.reset()
-
-    agent = GreedyLaneAgent(prior_temperature=1.0)
-    action_space = engine.build_action_space()
-
-    t0 = time.perf_counter()
-    pri = agent.policy(obs={}, action_space=action_space)
-    a = agent.select_action(obs={}, action_space=action_space)
-    dt_ms = (time.perf_counter() - t0) * 1000.0
-
-    valid_n = int(action_space.valid_mask.sum().item())
-    print("lane_generation.agents.greedy demo")
-    print(f"  flow_index={action_space.flow_index} valid_actions={valid_n}")
-    print(f"  action={a} prior={float(pri[a].item()) if pri.numel() > 0 else 0.0:.4f}")
-    print(f"  elapsed_ms={dt_ms:.3f}")

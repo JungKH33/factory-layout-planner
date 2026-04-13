@@ -6,9 +6,10 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import gymnasium as gym
 import torch
 
+from lane_generation.agents.base import BaseAdapter
+
 from .action import LaneAction, LaneRoute
 from .action_space import ActionSpace
-from .adapter import BaseLaneAdapter
 from .reward import LaneNewEdgeReward, LanePathLengthReward, LaneTurnReward, RewardComposer, TerminalReward
 from .state import LaneFlowSpec, LaneState, RoutingConfig
 
@@ -75,11 +76,11 @@ class FactoryLaneEnv(gym.Env):
             reward_scale=float(reward_scale),
         )
 
-        self.adapter: Optional[BaseLaneAdapter] = None
+        self.adapter: Optional[BaseAdapter] = None
         self.action_space = gym.spaces.Discrete(1)
         self.observation_space = gym.spaces.Dict({})
 
-    def set_adapter(self, adapter: BaseLaneAdapter) -> None:
+    def set_adapter(self, adapter: BaseAdapter) -> None:
         self.adapter = adapter
         self.adapter.bind(self)
 
