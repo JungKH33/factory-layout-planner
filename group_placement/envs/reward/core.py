@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Tuple, Type
 
 import torch
+
+from .area import AreaReward, GridOccupancyReward
+from .flow import FlowCollisionReward, FlowReward
 
 if TYPE_CHECKING:
     from ..action import GroupId
@@ -32,6 +35,12 @@ class RewardComposer:
         if torch.is_tensor(value):
             return -value.to(dtype=torch.float32) / float(self.reward_scale)
         return -float(value) / float(self.reward_scale)
+
+    def find_component(self, cls: Type[object]) -> Tuple[Optional[str], Optional[object]]:
+        for name, comp in self.components.items():
+            if isinstance(comp, cls):
+                return name, comp
+        return None, None
 
     def required(self) -> set[str]:
         needed: set[str] = set()
@@ -71,13 +80,67 @@ class RewardComposer:
             return None, None
         return exit_k, entry_k
 
-    def score(
+    def _score_component(
+        self,
+        *,
+        comp: object,
+        placed_count: int,
+        placed_entries: torch.Tensor,
+        placed_exits: torch.Tensor,
+        placed_entries_mask: torch.Tensor,
+        placed_exits_mask: torch.Tensor,
+        flow_w: torch.Tensor,
+        exit_k: Optional[torch.Tensor],
+        entry_k: Optional[torch.Tensor],
+        cur_min_x: float,
+        cur_max_x: float,
+        cur_min_y: float,
+        cur_max_y: float,
+        route_blocked: Optional[torch.Tensor],
+        placed_cell_occupied: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        device = placed_entries.device
+        if isinstance(comp, FlowReward):
+            return comp.score(
+                placed_entries=placed_entries,
+                placed_exits=placed_exits,
+                placed_entries_mask=placed_entries_mask,
+                placed_exits_mask=placed_exits_mask,
+                flow_w=flow_w,
+                exit_k=exit_k,
+                entry_k=entry_k,
+            )
+        if isinstance(comp, FlowCollisionReward):
+            return comp.score(
+                placed_entries=placed_entries,
+                placed_exits=placed_exits,
+                placed_entries_mask=placed_entries_mask,
+                placed_exits_mask=placed_exits_mask,
+                flow_w=flow_w,
+                route_blocked=route_blocked,
+                exit_k=exit_k,
+                entry_k=entry_k,
+            )
+        if isinstance(comp, AreaReward):
+            return comp.score(
+                placed_count=placed_count,
+                min_x=torch.tensor(float(cur_min_x), dtype=torch.float32, device=device),
+                max_x=torch.tensor(float(cur_max_x), dtype=torch.float32, device=device),
+                min_y=torch.tensor(float(cur_min_y), dtype=torch.float32, device=device),
+                max_y=torch.tensor(float(cur_max_y), dtype=torch.float32, device=device),
+            )
+        if isinstance(comp, GridOccupancyReward):
+            return comp.score(placed_cell_occupied=placed_cell_occupied)
+        raise TypeError(f"unsupported reward component type: {type(comp).__name__}")
+
+    def score_dict(
         self,
         state: "EnvState",
         *,
+        weighted: bool = True,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> Dict[str, float]:
         (
             placed_nodes,
             placed_entries,
@@ -88,60 +151,56 @@ class RewardComposer:
         placed_count = len(placed_nodes)
         cur_min_x, cur_max_x, cur_min_y, cur_max_y = state.placed_bbox()
         flow_w = state.build_flow_w()
-        device = placed_entries.device
-        total = torch.tensor(0.0, dtype=torch.float32, device=device)
+        exit_k, entry_k = self._port_span_tensors(placed_nodes, placed_entries.device)
 
-        exit_k, entry_k = self._port_span_tensors(placed_nodes, device)
-
-        flow = self.components.get("flow", None)
-        if flow is not None:
-            w = float(self.weights.get("flow", 1.0))
-            total = total + w * flow.score(
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                flow_w=flow_w,
-                exit_k=exit_k,
-                entry_k=entry_k,
-            )
-
-        flow_collision = self.components.get("flow_collision", None)
-        if flow_collision is not None:
-            w = float(self.weights.get("flow_collision", 1.0))
-            total = total + w * flow_collision.score(
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                flow_w=flow_w,
-                route_blocked=route_blocked,
-                exit_k=exit_k,
-                entry_k=entry_k,
-            )
-
-        area = self.components.get("area", None)
-        if area is not None:
-            w = float(self.weights.get("area", 1.0))
-            min_x_t = torch.tensor(float(cur_min_x), dtype=torch.float32, device=device)
-            max_x_t = torch.tensor(float(cur_max_x), dtype=torch.float32, device=device)
-            min_y_t = torch.tensor(float(cur_min_y), dtype=torch.float32, device=device)
-            max_y_t = torch.tensor(float(cur_max_y), dtype=torch.float32, device=device)
-            total = total + w * area.score(
+        out: Dict[str, float] = {}
+        total = 0.0
+        for name, comp in self.components.items():
+            if comp is None:
+                continue
+            val_t = self._score_component(
+                comp=comp,
                 placed_count=placed_count,
-                min_x=min_x_t,
-                max_x=max_x_t,
-                min_y=min_y_t,
-                max_y=max_y_t,
-            )
-
-        grid_occ = self.components.get("grid_occupancy", None)
-        if grid_occ is not None:
-            w = float(self.weights.get("grid_occupancy", 1.0))
-            total = total + w * grid_occ.score(
+                placed_entries=placed_entries,
+                placed_exits=placed_exits,
+                placed_entries_mask=placed_entries_mask,
+                placed_exits_mask=placed_exits_mask,
+                flow_w=flow_w,
+                exit_k=exit_k,
+                entry_k=entry_k,
+                cur_min_x=cur_min_x,
+                cur_max_x=cur_max_x,
+                cur_min_y=cur_min_y,
+                cur_max_y=cur_max_y,
+                route_blocked=route_blocked,
                 placed_cell_occupied=placed_cell_occupied,
             )
-        return total
+            val = float(val_t.item())
+            if weighted:
+                val *= float(self.weights.get(name, 1.0))
+            out[name] = val
+            total += val
+        out["total"] = float(total)
+        return out
+
+    def score(
+        self,
+        state: "EnvState",
+        *,
+        route_blocked: Optional[torch.Tensor] = None,
+        placed_cell_occupied: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        scores = self.score_dict(
+            state,
+            weighted=True,
+            route_blocked=route_blocked,
+            placed_cell_occupied=placed_cell_occupied,
+        )
+        return torch.tensor(
+            float(scores.get("total", 0.0)),
+            dtype=torch.float32,
+            device=state.device,
+        )
 
     def delta_batch(
         self,
@@ -186,12 +245,18 @@ class RewardComposer:
                 break
 
         total = torch.zeros((m,), dtype=torch.float32, device=device)
-        flow = self.components.get("flow", None)
-        flow_collision = self.components.get("flow_collision", None)
-        area = self.components.get("area", None)
-        grid_occ = self.components.get("grid_occupancy", None)
+        has_flow_like = any(
+            isinstance(comp, (FlowReward, FlowCollisionReward))
+            for comp in self.components.values()
+            if comp is not None
+        )
+        has_area_like = any(
+            isinstance(comp, (AreaReward, GridOccupancyReward))
+            for comp in self.components.values()
+            if comp is not None
+        )
 
-        if flow is not None or flow_collision is not None:
+        if has_flow_like:
             entry_points = _require(entry_points, "entry_points")
             exit_points = _require(exit_points, "exit_points")
 
@@ -205,72 +270,76 @@ class RewardComposer:
                 c_exit_k = int(getattr(c_spec, "exit_port_span", 1))
                 c_entry_k = int(getattr(c_spec, "entry_port_span", 1))
 
-        if flow is not None:
-            w = float(self.weights.get("flow", 1.0))
-            total = total + w * flow.delta(
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                w_out=w_out,
-                w_in=w_in,
-                candidate_entries=entry_points,
-                candidate_exits=exit_points,
-                candidate_entries_mask=entry_mask,
-                candidate_exits_mask=exit_mask,
-                c_exit_k=c_exit_k,
-                c_entry_k=c_entry_k,
-                t_entry_k=t_entry_k,
-                t_exit_k=t_exit_k,
-            )
-        if flow_collision is not None:
-            w = float(self.weights.get("flow_collision", 1.0))
-            total = total + w * flow_collision.delta(
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                w_out=w_out,
-                w_in=w_in,
-                candidate_entries=entry_points,
-                candidate_exits=exit_points,
-                candidate_entries_mask=entry_mask,
-                candidate_exits_mask=exit_mask,
-                route_blocked=route_blocked,
-                c_exit_k=c_exit_k,
-                c_entry_k=c_entry_k,
-                t_entry_k=t_entry_k,
-                t_exit_k=t_exit_k,
-            )
-
-        if area is not None or grid_occ is not None:
+        if has_area_like:
             min_x = _require(min_x, "min_x")
             max_x = _require(max_x, "max_x")
             min_y = _require(min_y, "min_y")
             max_y = _require(max_y, "max_y")
 
-        if area is not None:
-            w = float(self.weights.get("area", 1.0))
-            total = total + w * area.delta(
-                placed_count=placed_count,
-                cur_min_x=cur_min_x,
-                cur_max_x=cur_max_x,
-                cur_min_y=cur_min_y,
-                cur_max_y=cur_max_y,
-                candidate_min_x=min_x,
-                candidate_max_x=max_x,
-                candidate_min_y=min_y,
-                candidate_max_y=max_y,
-            )
-        if grid_occ is not None:
-            w = float(self.weights.get("grid_occupancy", 1.0))
-            total = total + w * grid_occ.delta(
-                placed_cell_occupied=placed_cell_occupied,
-                candidate_min_x=min_x,
-                candidate_max_x=max_x,
-                candidate_min_y=min_y,
-                candidate_max_y=max_y,
-            )
+        for name, comp in self.components.items():
+            if comp is None:
+                continue
+            w = float(self.weights.get(name, 1.0))
+            if isinstance(comp, FlowReward):
+                total = total + w * comp.delta(
+                    placed_entries=placed_entries,
+                    placed_exits=placed_exits,
+                    placed_entries_mask=placed_entries_mask,
+                    placed_exits_mask=placed_exits_mask,
+                    w_out=w_out,
+                    w_in=w_in,
+                    candidate_entries=entry_points,
+                    candidate_exits=exit_points,
+                    candidate_entries_mask=entry_mask,
+                    candidate_exits_mask=exit_mask,
+                    c_exit_k=c_exit_k,
+                    c_entry_k=c_entry_k,
+                    t_entry_k=t_entry_k,
+                    t_exit_k=t_exit_k,
+                )
+                continue
+            if isinstance(comp, FlowCollisionReward):
+                total = total + w * comp.delta(
+                    placed_entries=placed_entries,
+                    placed_exits=placed_exits,
+                    placed_entries_mask=placed_entries_mask,
+                    placed_exits_mask=placed_exits_mask,
+                    w_out=w_out,
+                    w_in=w_in,
+                    candidate_entries=entry_points,
+                    candidate_exits=exit_points,
+                    candidate_entries_mask=entry_mask,
+                    candidate_exits_mask=exit_mask,
+                    route_blocked=route_blocked,
+                    c_exit_k=c_exit_k,
+                    c_entry_k=c_entry_k,
+                    t_entry_k=t_entry_k,
+                    t_exit_k=t_exit_k,
+                )
+                continue
+            if isinstance(comp, AreaReward):
+                total = total + w * comp.delta(
+                    placed_count=placed_count,
+                    cur_min_x=cur_min_x,
+                    cur_max_x=cur_max_x,
+                    cur_min_y=cur_min_y,
+                    cur_max_y=cur_max_y,
+                    candidate_min_x=min_x,
+                    candidate_max_x=max_x,
+                    candidate_min_y=min_y,
+                    candidate_max_y=max_y,
+                )
+                continue
+            if isinstance(comp, GridOccupancyReward):
+                total = total + w * comp.delta(
+                    placed_cell_occupied=placed_cell_occupied,
+                    candidate_min_x=min_x,
+                    candidate_max_x=max_x,
+                    candidate_min_y=min_y,
+                    candidate_max_y=max_y,
+                )
+                continue
+            raise TypeError(f"unsupported reward component type: {type(comp).__name__}")
         return total
 
     def delta(

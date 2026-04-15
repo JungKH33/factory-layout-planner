@@ -28,7 +28,7 @@ from group_placement.envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "group_placement/envs/env_configs/facility_placement_demo.json"
+ENV_JSON: str = "group_placement/envs/env_configs/clearance_03.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "greedyv5" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
@@ -313,7 +313,7 @@ def main(*, output_dir: Path | str | None = None) -> None:
                 "end: terminated=%s truncated=%s step=%s placed=%s cost=%.3f",
                 terminated, truncated, step,
                 len(engine.get_state().placed),
-                engine.total_cost(),
+                engine.cost(),
             )
 
     end = time.perf_counter()

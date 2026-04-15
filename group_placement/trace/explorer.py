@@ -129,7 +129,6 @@ class Explorer:
             "placed": [str(g) for g in state.placed],
             "remaining": [str(g) for g in state.remaining],
             "cost": float(self.engine.cost()),
-            "total_cost": float(self.engine.total_cost()),
             "node_id": node.id,
             "terminal": node.terminal,
             "tree_size": len(self.tree.nodes),

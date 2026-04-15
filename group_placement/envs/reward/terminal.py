@@ -178,6 +178,7 @@ class TerminalFlowReward:
     batched_wavefront: bool = True
     batch_chunk_size: int = 64
     include_clear_invalid: bool = False
+    base_key: Optional[str] = None
 
     @staticmethod
     def _port_span_tensors(
@@ -486,54 +487,13 @@ class TerminalFlowReward:
         reduced_mt, _, _ = FlowReward._masked_pair_reduce(cost, valid, exit_k, entry_k)
         return (reduced_mt * flow_w).sum()
 
-    def terminal_cost_delta(
+    def terminal_score(
         self,
         *,
         state: "EnvState",
         maps: "GridMaps",
-        reward_composer: "RewardComposer",
     ) -> float:
-        """Return objective-space delta cost from terminal exact flow."""
-        exact = float(self.exact_flow_cost(state=state, maps=maps).item())
-
-        approx_comp = None
-        approx_weight = 0.0
-        for name, comp in reward_composer.components.items():
-            if isinstance(comp, FlowReward):
-                approx_comp = comp
-                approx_weight = float(reward_composer.weights.get(name, 1.0))
-                break
-        if approx_comp is None:
-            return exact
-        if approx_weight == 0.0:
-            return 0.0
-
-        (
-            placed_nodes,
-            placed_entries,
-            placed_exits,
-            placed_entries_mask,
-            placed_exits_mask,
-        ) = state.io_tensors()
-        if len(placed_nodes) == 0:
-            return 0.0
-        exit_k, entry_k = self._port_span_tensors(
-            gids=placed_nodes,
-            group_specs=self.group_specs,
-            device=placed_entries.device,
-        )
-        approx = float(
-            approx_comp.score(
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                flow_w=state.build_flow_w(),
-                exit_k=exit_k,
-                entry_k=entry_k,
-            ).item()
-        )
-        return float(approx_weight) * float(exact - approx)
+        return float(self.exact_flow_cost(state=state, maps=maps).item())
 
 
 @dataclass
@@ -548,55 +508,71 @@ class TerminalRewardComposer:
         if float(self.reward_scale) <= 0.0:
             raise ValueError(f"reward_scale must be > 0, got {self.reward_scale}")
 
-    def failure_penalty_cost(self, state: "EnvState") -> float:
-        total = 0.0
-        for name, comp in self.components.items():
-            fn = getattr(comp, "penalty_cost", None)
-            if callable(fn):
-                w = float(self.weights.get(name, 1.0))
-                total += w * float(fn(state=state))
-        return float(total)
+    @staticmethod
+    def _to_float_dict(v: Mapping[str, object]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for k, vv in v.items():
+            if torch.is_tensor(vv):
+                out[str(k)] = float(vv.item())
+            else:
+                out[str(k)] = float(vv)
+        return out
 
-    def failure_reward(self, state: "EnvState") -> float:
-        return -float(self.failure_penalty_cost(state)) / float(self.reward_scale)
-
-    def terminal_cost_delta(
+    def delta_dict(
         self,
         *,
         state: "EnvState",
         maps: "GridMaps",
         reward_composer: "RewardComposer",
-    ) -> float:
-        total = 0.0
+        failed: bool,
+        base_scores_unweighted: Optional[Mapping[str, object]] = None,
+    ) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        if bool(failed):
+            for name, comp in self.components.items():
+                fn = getattr(comp, "penalty_cost", None)
+                if not callable(fn):
+                    continue
+                tw = float(self.weights.get(name, 1.0))
+                out[name] = tw * float(fn(state=state))
+            return out
+
+        unweighted = (
+            self._to_float_dict(base_scores_unweighted)
+            if base_scores_unweighted is not None
+            else reward_composer.score_dict(state, weighted=False)
+        )
         for name, comp in self.components.items():
-            fn = getattr(comp, "terminal_cost_delta", None)
-            if callable(fn):
-                w = float(self.weights.get(name, 1.0))
-                total += w * float(
-                    fn(
-                        state=state,
-                        maps=maps,
-                        reward_composer=reward_composer,
-                    )
+            fn = getattr(comp, "terminal_score", None)
+            if not callable(fn):
+                continue
+            base_key = getattr(comp, "base_key", None) or name
+            if base_key not in unweighted:
+                raise KeyError(
+                    f"terminal component {name!r} targets base key {base_key!r}, "
+                    f"but available base keys are {sorted(unweighted.keys())}"
                 )
-        return float(total)
+            term_score = float(fn(state=state, maps=maps))
+            base_score = float(unweighted[base_key])
+            rw = float(reward_composer.weights.get(base_key, 1.0))
+            tw = float(self.weights.get(name, 1.0))
+            out[name] = tw * rw * (term_score - base_score)
+        return out
 
-    def terminal_adjustment_reward(
+    def delta_total(
         self,
         *,
         state: "EnvState",
         maps: "GridMaps",
         reward_composer: "RewardComposer",
+        failed: bool,
+        base_scores_unweighted: Optional[Mapping[str, object]] = None,
     ) -> float:
-        return -float(
-            self.terminal_cost_delta(
-                state=state,
-                maps=maps,
-                reward_composer=reward_composer,
-            )
-        ) / float(self.reward_scale)
-
-
-# Backward-compat alias
-TerminalReward = TerminalRewardComposer
-
+        delta = self.delta_dict(
+            state=state,
+            maps=maps,
+            reward_composer=reward_composer,
+            failed=bool(failed),
+            base_scores_unweighted=base_scores_unweighted,
+        )
+        return float(sum(float(v) for v in delta.values()))

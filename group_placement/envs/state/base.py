@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 import torch
 
@@ -29,6 +29,7 @@ class EnvState:
         "device",
         "maps",
         "flow",
+        "cost",
     )
 
     placements: Dict[GroupId, object]
@@ -39,7 +40,34 @@ class EnvState:
     device: torch.device
     maps: GridMaps
     flow: FlowGraph
+    cost: Dict[str, Any]
     _state_sig: Tuple[int, int, Tuple[str, ...]]
+
+    @staticmethod
+    def empty_cost_dict() -> Dict[str, Any]:
+        return {
+            "base": {"total": 0.0},
+            "terminal": {"delta": {}, "total": 0.0},
+            "final": {"total": 0.0},
+            "finalized": False,
+        }
+
+    @staticmethod
+    def _clone_cost_dict(src: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(src, dict):
+            return EnvState.empty_cost_dict()
+        base = dict(src.get("base", {}) or {})
+        terminal = dict(src.get("terminal", {}) or {})
+        terminal_delta = dict(terminal.get("delta", {}) or {})
+        terminal["delta"] = terminal_delta
+        final = dict(src.get("final", {}) or {})
+        finalized = bool(src.get("finalized", False))
+        return {
+            "base": base,
+            "terminal": terminal,
+            "final": final,
+            "finalized": finalized,
+        }
 
     @staticmethod
     def _make_state_sig(*, grid_height: int, grid_width: int, gids: List[GroupId]) -> Tuple[int, int, Tuple[str, ...]]:
@@ -69,6 +97,7 @@ class EnvState:
             device=dev,
             maps=maps,
             flow=flow,
+            cost=cls.empty_cost_dict(),
             _state_sig=cls._make_state_sig(grid_height=h, grid_width=w, gids=list(group_specs.keys())),
         )
 
@@ -89,6 +118,7 @@ class EnvState:
             device=self.device,
             maps=self.maps.copy(),
             flow=self.flow.copy(),
+            cost=self._clone_cost_dict(self.cost),
             _state_sig=self._state_sig,
         )
 
@@ -110,6 +140,7 @@ class EnvState:
         self.placed_nodes_order[:] = list(src.placed_nodes_order)
         self.maps.restore(src.maps)
         self.flow.restore(src.flow)
+        self.cost = self._clone_cost_dict(getattr(src, "cost", None))
 
     def reset_runtime(self, *, remaining: List[GroupId]) -> None:
         self.placements = {}
@@ -119,6 +150,7 @@ class EnvState:
         self.placed_nodes_order = []
         self.maps.reset_runtime()
         self.flow.reset_runtime()
+        self.cost = self.empty_cost_dict()
 
     def set_remaining(self, remaining: List[GroupId]) -> None:
         self.remaining = list(remaining)

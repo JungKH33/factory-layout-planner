@@ -70,7 +70,7 @@ def track_terminal(
     """
     if max_k <= 0:
         return counter
-    cost = engine.total_cost()
+    cost = engine.cost()
     # Deduplicate by cost
     if any(-neg_c == cost for neg_c, _, _ in heap):
         return counter

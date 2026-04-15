@@ -169,6 +169,7 @@ class FactoryLayoutEnv(gym.Env):
             weights=t_weights,
             reward_scale=float(self.reward_scale),
         )
+        self._refresh_base_cost_snapshot(reset_terminal=True)
 
     def _normalize_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> Dict[GroupId, GroupSpec]:
         """Normalize group specs onto env device and validate id/key consistency."""
@@ -202,6 +203,10 @@ class FactoryLayoutEnv(gym.Env):
         if not isinstance(state, EnvState):
             raise TypeError(f"state must be EnvState, got {type(state).__name__}")
         self._state.restore(state)
+        if bool(self._state.cost.get("finalized", False)):
+            self._refresh_base_cost_snapshot(reset_terminal=False)
+        else:
+            self._refresh_base_cost_snapshot(reset_terminal=True)
 
     def _as_long_tensor(self, v: object, *, name: str) -> torch.Tensor:
         """Coerce scalar/tensor values to integer tensor [N] with integer-value validation."""
@@ -371,7 +376,7 @@ class FactoryLayoutEnv(gym.Env):
         For span=1 ports: store the single argmin pair.
         For span>1 / span=all: store selected port combinations.
         """
-        flow_comp = self._reward.components.get("flow")
+        _flow_name, flow_comp = self._reward.find_component(FlowReward)
         if flow_comp is None:
             return
         placed_nodes, placed_entries, placed_exits, placed_entries_mask, placed_exits_mask = self._state.io_tensors()
@@ -549,6 +554,7 @@ class FactoryLayoutEnv(gym.Env):
         gid = placement.group_id
         self._state.place(placement=placement)
         self._update_flow_port_pairs(updated_gid=gid)
+        self._refresh_base_cost_snapshot(reset_terminal=True)
 
     def apply_dynamic_placement(self, placement: object) -> None:
         """Apply a pre-resolved dynamic placement object (DynamicPlacement-compatible)."""
@@ -559,36 +565,68 @@ class FactoryLayoutEnv(gym.Env):
 
     # ---- objective ----
 
+    @staticmethod
+    def _normalize_cost_breakdown(values: Dict[str, float]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for k, v in values.items():
+            out[str(k)] = float(v)
+        if "total" not in out:
+            out["total"] = float(sum(v for kk, v in out.items() if kk != "total"))
+        return out
+
+    def _refresh_base_cost_snapshot(self, *, reset_terminal: bool) -> Dict[str, float]:
+        base = self._normalize_cost_breakdown(self._reward.score_dict(self._state, weighted=True))
+        cs = self._state.cost
+        cs["base"] = base
+        if bool(reset_terminal):
+            cs["terminal"] = {"delta": {}, "total": 0.0}
+            cs["finalized"] = False
+            terminal_total = 0.0
+        else:
+            terminal = dict(cs.get("terminal", {}) or {})
+            terminal_delta = dict(terminal.get("delta", {}) or {})
+            terminal["delta"] = terminal_delta
+            terminal_total = float(terminal.get("total", 0.0))
+            cs["terminal"] = terminal
+        cs["final"] = {"total": float(base["total"]) + float(terminal_total)}
+        return base
+
+    def _finalize_terminal_snapshot(self, *, failed: bool) -> float:
+        cs = self._state.cost
+        if bool(cs.get("finalized", False)):
+            terminal = dict(cs.get("terminal", {}) or {})
+            return float(terminal.get("total", 0.0))
+
+        base_weighted = self._normalize_cost_breakdown(self._reward.score_dict(self._state, weighted=True))
+        base_unweighted = self._normalize_cost_breakdown(self._reward.score_dict(self._state, weighted=False))
+        delta = self._terminal.delta_dict(
+            state=self._state,
+            maps=self.get_maps(),
+            reward_composer=self._reward,
+            failed=bool(failed),
+            base_scores_unweighted=base_unweighted,
+        )
+        delta_norm = {str(k): float(v) for k, v in delta.items()}
+        delta_total = float(sum(delta_norm.values()))
+
+        cs["base"] = base_weighted
+        cs["terminal"] = {"delta": delta_norm, "total": delta_total}
+        cs["final"] = {"total": float(base_weighted["total"]) + delta_total}
+        cs["finalized"] = True
+        return delta_total
+
     def cost(self) -> float:
-        """현재 배치 목적함수 절댓값: weighted L1 flow + HPWL compactness."""
-        if not self._state.placed:
-            return 0.0
-        base = float(self._reward.score(self._state).item())
-        if len(self._state.remaining) == 0:
-            base += float(
-                self._terminal.terminal_cost_delta(
-                    state=self._state,
-                    maps=self.get_maps(),
-                    reward_composer=self._reward,
-                )
-            )
-        return float(base)
-
-    def total_cost(self) -> float:
-        """cost() + 미배치 페널티 (TopK 정렬·비교용).
-
-        완료된 레이아웃: cost()와 동일.
-        미완료: cost() + penalty_weight * remaining_ratio.
-        """
-        return float(self.cost()) + float(self._terminal.failure_penalty_cost(self._state))
+        """Current objective value cached in state runtime."""
+        final = self._state.cost.get("final", {}) if isinstance(self._state.cost, dict) else {}
+        if "total" not in final:
+            self._refresh_base_cost_snapshot(reset_terminal=not bool(self._state.cost.get("finalized", False)))
+            final = self._state.cost.get("final", {})
+        return float(final.get("total", 0.0))
 
     def failure_penalty(self) -> float:
-        """Penalty reward for failed placement or no valid actions (negative).
-        
-        스케일 통일: -(penalty_weight * remaining) / reward_scale
-        이로써 최종 reward = -total_cost() / reward_scale 관계 성립.
-        """
-        return self._terminal.failure_reward(self._state)
+        """Terminal-failure reward adjustment (negative)."""
+        delta = self._finalize_terminal_snapshot(failed=True)
+        return -float(delta) / float(self.reward_scale)
 
     def reorder_remaining(self, ordered_remaining: List[GroupId]) -> None:
         """Replace `remaining` order with a validated permutation of current remaining gids."""
@@ -615,17 +653,16 @@ class FactoryLayoutEnv(gym.Env):
         """실패 처리 통합 헬퍼."""
         reward = self.failure_penalty()
         info: Dict[str, Any] = {"reason": reason}
-
-        base_cost = float(self.cost())
-        penalty = float(self._terminal.failure_penalty_cost(self._state))
-        total_cost = base_cost + penalty
+        base_cost = float(self._state.cost.get("base", {}).get("total", 0.0))
+        terminal_delta = float(self._state.cost.get("terminal", {}).get("total", 0.0))
+        final_cost = float(self.cost())
         logger.warning(
-            "fail: reason=%s remaining=%d cost=%.3f (base=%.3f + penalty=%.3f) reward=%.3f",
+            "fail: reason=%s remaining=%d cost=%.3f (base=%.3f + terminal=%.3f) reward=%.3f",
             reason,
             len(self._state.remaining),
-            total_cost,
+            final_cost,
             base_cost,
-            penalty,
+            terminal_delta,
             reward,
         )
 
@@ -653,6 +690,7 @@ class FactoryLayoutEnv(gym.Env):
 
         self._state.step(apply=True, placement=placement)
         self._update_flow_port_pairs(updated_gid=gid)
+        self._refresh_base_cost_snapshot(reset_terminal=True)
 
         reward = float(self._reward.to_reward(delta_cost))
         terminated = len(self._state.remaining) == 0
@@ -660,20 +698,18 @@ class FactoryLayoutEnv(gym.Env):
         info: Dict[str, Any] = {"reason": "placed"}
 
         if terminated:
-            reward += float(
-                self._terminal.terminal_adjustment_reward(
-                    state=self._state,
-                    maps=self.get_maps(),
-                    reward_composer=self._reward,
-                )
-            )
+            terminal_delta = self._finalize_terminal_snapshot(failed=False)
+            reward += -float(terminal_delta) / float(self.reward_scale)
+        elif truncated:
+            terminal_delta = self._finalize_terminal_snapshot(failed=True)
+            reward += -float(terminal_delta) / float(self.reward_scale)
 
         if terminated or truncated:
             logger.info(
                 "end: terminated=%s truncated=%s remaining=%d placed=%d step=%d cost=%.3f reason=placed reward=%.3f",
                 terminated, truncated,
                 len(self._state.remaining), len(self._state.placed),
-                self._state.step_count, self.total_cost(), reward,
+                self._state.step_count, self.cost(), reward,
             )
 
         return {}, float(reward), bool(terminated), bool(truncated), info
@@ -786,6 +822,9 @@ class FactoryLayoutEnv(gym.Env):
                     warnings.warn(f"{msg} — skipping", stacklevel=2)
                     continue
                 self._apply_resolved_placement(placement)
+        self._refresh_base_cost_snapshot(reset_terminal=True)
+        if len(self._state.remaining) == 0 and len(self._state.placed) > 0:
+            self._finalize_terminal_snapshot(failed=False)
         return {}, {}
 
     def step(self, action: EnvAction):

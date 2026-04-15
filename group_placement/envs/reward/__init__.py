@@ -1,11 +1,10 @@
 from .core import RewardComposer
 from .flow import FlowCollisionReward, FlowReward
 from .area import AreaReward, GridOccupancyReward
-from .terminal import TerminalFlowReward, TerminalPenaltyReward, TerminalReward, TerminalRewardComposer
+from .terminal import TerminalFlowReward, TerminalPenaltyReward, TerminalRewardComposer
 
 __all__ = [
     "RewardComposer",
-    "TerminalReward",
     "TerminalRewardComposer",
     "TerminalPenaltyReward",
     "TerminalFlowReward",

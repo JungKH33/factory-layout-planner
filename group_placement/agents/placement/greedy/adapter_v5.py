@@ -388,4 +388,4 @@ if __name__ == "__main__":
         )
         if terminated or truncated:
             break
-    print(f"  total_cost={engine.total_cost():.3f}  total_reward={total_reward:.3f}")
+    print(f"  cost={engine.cost():.3f}  total_reward={total_reward:.3f}")
