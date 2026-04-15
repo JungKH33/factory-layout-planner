@@ -11,6 +11,7 @@ from group_placement.envs.action import EnvAction
 from group_placement.envs.env import FactoryLayoutEnv
 from group_placement.envs.placement.base import GroupSpec
 from group_placement.envs.placement.static import StaticRectSpec, StaticIrregularSpec
+from group_placement.envs.reward import TerminalFlowReward, TerminalPenaltyReward
 
 GroupId = Union[int, str]
 RectI = Tuple[int, int, int, int]  # (x0, y0, x1, y1) half-open
@@ -418,6 +419,43 @@ def load_env(
             "exclusive": exclusive,
         }
 
+    terminal_components: Optional[Dict[str, object]] = None
+    terminal_weights: Optional[Dict[str, float]] = None
+    terminal_cfg = env_cfg.get("terminal_reward", None)
+    if isinstance(terminal_cfg, dict):
+        comp_names = terminal_cfg.get("components", None)
+        if comp_names is not None:
+            if not isinstance(comp_names, list):
+                raise ValueError("env.terminal_reward.components must be a list")
+            group_areas = {gid: float(spec.body_area) for gid, spec in group_specs.items()}
+            terminal_components = {}
+            for name_raw in comp_names:
+                name = str(name_raw).strip().lower()
+                if name == "penalty":
+                    terminal_components["penalty"] = TerminalPenaltyReward(
+                        penalty_weight=float(env_cfg.get("penalty_weight", 50000.0)),
+                        group_areas=group_areas,
+                    )
+                elif name == "flow":
+                    terminal_components["flow"] = TerminalFlowReward(
+                        group_specs=group_specs,
+                        unreachable_cost=float(env_cfg.get("terminal_flow_unreachable_cost", 1e6)),
+                        max_wave_iters=int(env_cfg.get("terminal_flow_max_wave_iters", 0)),
+                        batched_wavefront=bool(env_cfg.get("terminal_flow_batched_wavefront", True)),
+                        include_clear_invalid=bool(env_cfg.get("terminal_flow_include_clearance", False)),
+                    )
+                else:
+                    raise ValueError(
+                        f"env.terminal_reward.components contains unknown component {name_raw!r}; "
+                        "expected 'penalty' or 'flow'"
+                    )
+
+        weights_raw = terminal_cfg.get("weights", None)
+        if weights_raw is not None:
+            if not isinstance(weights_raw, dict):
+                raise ValueError("env.terminal_reward.weights must be an object")
+            terminal_weights = {str(k): float(v) for k, v in weights_raw.items()}
+
     env = FactoryLayoutEnv(
         grid_width=grid_w,
         grid_height=grid_h,
@@ -428,6 +466,12 @@ def load_env(
         device=device,
         reward_scale=float(env_cfg.get("reward_scale", 100.0)),
         penalty_weight=float(env_cfg.get("penalty_weight", 50000.0)),
+        terminal_reward_components=terminal_components,
+        terminal_reward_weights=terminal_weights,
+        terminal_flow_unreachable_cost=float(env_cfg.get("terminal_flow_unreachable_cost", 1e6)),
+        terminal_flow_max_wave_iters=int(env_cfg.get("terminal_flow_max_wave_iters", 0)),
+        terminal_flow_batched_wavefront=bool(env_cfg.get("terminal_flow_batched_wavefront", True)),
+        terminal_flow_include_clearance=bool(env_cfg.get("terminal_flow_include_clearance", False)),
         backend_selection=backend_selection,
     )
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Iterable, Mapping, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Dict, Optional
 
 import torch
 
@@ -15,52 +15,6 @@ def _require(x: Optional[torch.Tensor], name: str) -> torch.Tensor:
     if x is None:
         raise ValueError(f"{name} is required but None")
     return x
-
-
-@dataclass
-class TerminalReward:
-    """Terminal/failure reward helper based on remaining-area penalty."""
-
-    penalty_weight: float
-    reward_scale: float
-    group_areas: Mapping[object, float]
-    total_area: float = field(init=False)
-
-    def __post_init__(self) -> None:
-        if float(self.reward_scale) <= 0.0:
-            raise ValueError(f"reward_scale must be > 0, got {self.reward_scale}")
-        self.total_area = float(sum(float(v) for v in self.group_areas.values()))
-
-    @staticmethod
-    def remaining_area_ratio(*, remaining_area: float, total_area: float) -> float:
-        total = float(total_area)
-        if total <= 0.0:
-            return 1.0
-        ratio = float(remaining_area) / total
-        if ratio < 0.0:
-            return 0.0
-        if ratio > 1.0:
-            return 1.0
-        return float(ratio)
-
-    def ratio(self, state: "EnvState") -> float:
-        remaining_area = self.remaining_area(state.remaining)
-        return self.remaining_area_ratio(
-            remaining_area=remaining_area,
-            total_area=self.total_area,
-        )
-
-    def remaining_area(self, remaining_gids: Iterable[object]) -> float:
-        remain = 0.0
-        for gid in set(remaining_gids):
-            remain += float(self.group_areas.get(gid, 0.0))
-        return float(remain)
-
-    def penalty(self, state: "EnvState") -> float:
-        return float(self.penalty_weight) * self.ratio(state)
-
-    def failure_reward(self, state: "EnvState") -> float:
-        return -self.penalty(state) / float(self.reward_scale)
 
 
 @dataclass

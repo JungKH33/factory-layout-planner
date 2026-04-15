@@ -82,9 +82,17 @@ def apply_interchange_to_env(
             lane_slots = None
             if isinstance(lane_slots_raw, list) and len(lane_slots_raw) == int(edges_t.numel()):
                 lane_slots = [int(x) for x in lane_slots_raw]
+            if lane_slots is None:
+                l = int(edges_t.numel())
+                edge_idx = edges_t.view(1, l)
+                edge_mask = torch.ones((1, l), dtype=torch.bool, device=state.device)
+                planned = state.preview_lane_slots_batch(
+                    candidate_edge_idx=edge_idx,
+                    candidate_edge_mask=edge_mask,
+                )
+                lane_slots = [int(x) for x in planned[0].to(dtype=torch.long).tolist()]
             state.apply_edges(edges_t, lane_slots=lane_slots)
-            if lane_slots is not None:
-                state.route_lane_slots_by_flow[fi] = tuple(lane_slots)
+            state.route_lane_slots_by_flow[fi] = tuple(lane_slots)
             routed_fis.append(fi)
             routes_out.append(LaneRoute(
                 flow_index=fi,
@@ -92,6 +100,7 @@ def apply_interchange_to_env(
                 edge_indices=edges_t,
                 path_length=float(rd.get("path_length", edges_t.numel())),
                 turns=int(rd.get("turns", 0)),
+                planned_lane_slots=torch.tensor(lane_slots, dtype=torch.long, device=state.device),
             ))
 
     for fi in routed_fis:

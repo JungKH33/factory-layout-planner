@@ -13,7 +13,9 @@ from .reward import (
     AreaReward,
     FlowReward,
     RewardComposer,
-    TerminalReward,
+    TerminalPenaltyReward,
+    TerminalFlowReward,
+    TerminalRewardComposer,
 )
 from .placement.base import GroupSpec
 from .placement.static import StaticRectSpec
@@ -60,6 +62,12 @@ class FactoryLayoutEnv(gym.Env):
         max_steps: Optional[int] = None,
         reward_scale: float = 100.0,
         penalty_weight: float = 50000.0,
+        terminal_reward_components: Optional[Dict[str, object]] = None,
+        terminal_reward_weights: Optional[Dict[str, float]] = None,
+        terminal_flow_unreachable_cost: float = 1e6,
+        terminal_flow_max_wave_iters: int = 0,
+        terminal_flow_batched_wavefront: bool = True,
+        terminal_flow_include_clearance: bool = False,
         log: bool = False,
         backend_selection: str = "static",
     ):
@@ -130,10 +138,36 @@ class FactoryLayoutEnv(gym.Env):
             gid: float(spec.body_area)
             for gid, spec in self.group_specs.items()
         }
-        self._terminal = TerminalReward(
-            penalty_weight=float(self.penalty_weight),
+        if terminal_reward_components is None:
+            t_components: Dict[str, object] = {
+                "penalty": TerminalPenaltyReward(
+                    penalty_weight=float(self.penalty_weight),
+                    group_areas=group_areas,
+                ),
+                "flow": TerminalFlowReward(
+                    group_specs=self.group_specs,
+                    unreachable_cost=float(terminal_flow_unreachable_cost),
+                    max_wave_iters=int(terminal_flow_max_wave_iters),
+                    batched_wavefront=bool(terminal_flow_batched_wavefront),
+                    include_clear_invalid=bool(terminal_flow_include_clearance),
+                ),
+            }
+        else:
+            t_components = dict(terminal_reward_components)
+            t_components.setdefault(
+                "penalty",
+                TerminalPenaltyReward(
+                    penalty_weight=float(self.penalty_weight),
+                    group_areas=group_areas,
+                ),
+            )
+        t_weights = dict(terminal_reward_weights or {})
+        if not t_weights:
+            t_weights = {name: 1.0 for name in t_components.keys()}
+        self._terminal = TerminalRewardComposer(
+            components=t_components,
+            weights=t_weights,
             reward_scale=float(self.reward_scale),
-            group_areas=group_areas,
         )
 
     def _normalize_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> Dict[GroupId, GroupSpec]:
@@ -529,7 +563,16 @@ class FactoryLayoutEnv(gym.Env):
         """현재 배치 목적함수 절댓값: weighted L1 flow + HPWL compactness."""
         if not self._state.placed:
             return 0.0
-        return float(self._reward.score(self._state).item())
+        base = float(self._reward.score(self._state).item())
+        if len(self._state.remaining) == 0:
+            base += float(
+                self._terminal.terminal_cost_delta(
+                    state=self._state,
+                    maps=self.get_maps(),
+                    reward_composer=self._reward,
+                )
+            )
+        return float(base)
 
     def total_cost(self) -> float:
         """cost() + 미배치 페널티 (TopK 정렬·비교용).
@@ -537,7 +580,7 @@ class FactoryLayoutEnv(gym.Env):
         완료된 레이아웃: cost()와 동일.
         미완료: cost() + penalty_weight * remaining_ratio.
         """
-        return float(self.cost()) + float(self._terminal.penalty(self._state))
+        return float(self.cost()) + float(self._terminal.failure_penalty_cost(self._state))
 
     def failure_penalty(self) -> float:
         """Penalty reward for failed placement or no valid actions (negative).
@@ -574,7 +617,7 @@ class FactoryLayoutEnv(gym.Env):
         info: Dict[str, Any] = {"reason": reason}
 
         base_cost = float(self.cost())
-        penalty = float(self._terminal.penalty(self._state))
+        penalty = float(self._terminal.failure_penalty_cost(self._state))
         total_cost = base_cost + penalty
         logger.warning(
             "fail: reason=%s remaining=%d cost=%.3f (base=%.3f + penalty=%.3f) reward=%.3f",
@@ -615,6 +658,15 @@ class FactoryLayoutEnv(gym.Env):
         terminated = len(self._state.remaining) == 0
         truncated = self.max_steps is not None and self._state.step_count >= self.max_steps
         info: Dict[str, Any] = {"reason": "placed"}
+
+        if terminated:
+            reward += float(
+                self._terminal.terminal_adjustment_reward(
+                    state=self._state,
+                    maps=self.get_maps(),
+                    reward_composer=self._reward,
+                )
+            )
 
         if terminated or truncated:
             logger.info(

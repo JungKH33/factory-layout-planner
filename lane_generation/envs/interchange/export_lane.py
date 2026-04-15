@@ -52,11 +52,21 @@ def _route_to_dict(route: LaneRoute, state) -> Dict[str, Any]:
 
     lane_slots = None
     try:
-        slots = state.route_lane_slots_by_flow.get(fi, None)
-        if isinstance(slots, tuple) and len(slots) == len(edge_list):
-            lane_slots = [int(s) for s in slots]
+        planned = route.planned_lane_slots
+        if planned is not None:
+            planned_list = planned.detach().to(dtype=edges.dtype, device="cpu").view(-1).tolist()
+            if len(planned_list) == len(edge_list):
+                lane_slots = [int(s) for s in planned_list]
     except Exception:
         lane_slots = None
+
+    if lane_slots is None:
+        try:
+            slots = state.route_lane_slots_by_flow.get(fi, None)
+            if isinstance(slots, tuple) and len(slots) == len(edge_list):
+                lane_slots = [int(s) for s in slots]
+        except Exception:
+            lane_slots = None
 
     out = {
         "flow_index": fi,
