@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
 
 import torch
 
@@ -79,6 +79,76 @@ class RewardComposer:
             return None, None
         return exit_k, entry_k
 
+    @staticmethod
+    def _to_gid_edge_key(
+        *,
+        raw_key: object,
+        edge_key_kind: str,
+        placed_nodes: list,
+    ) -> Optional[tuple[str, str]]:
+        if edge_key_kind == "row_index":
+            i: Optional[int] = None
+            j: Optional[int] = None
+            if isinstance(raw_key, str) and "->" in raw_key:
+                lhs, rhs = raw_key.split("->", 1)
+                lhs = lhs.strip()
+                rhs = rhs.strip()
+                if lhs.isdigit() and rhs.isdigit():
+                    i = int(lhs)
+                    j = int(rhs)
+            elif isinstance(raw_key, (tuple, list)) and len(raw_key) == 2:
+                if isinstance(raw_key[0], int) and isinstance(raw_key[1], int):
+                    i = int(raw_key[0])
+                    j = int(raw_key[1])
+            if i is None or j is None:
+                return None
+            if i < 0 or j < 0 or i >= len(placed_nodes) or j >= len(placed_nodes):
+                return None
+            return str(placed_nodes[i]), str(placed_nodes[j])
+
+        if isinstance(raw_key, str) and "->" in raw_key:
+            lhs, rhs = raw_key.split("->", 1)
+            lhs = lhs.strip()
+            rhs = rhs.strip()
+            if lhs and rhs:
+                return lhs, rhs
+            return None
+        if isinstance(raw_key, (tuple, list)) and len(raw_key) == 2:
+            return str(raw_key[0]), str(raw_key[1])
+        return None
+
+    def _normalize_component_meta(
+        self,
+        *,
+        comp_meta: Dict[str, Any],
+        placed_nodes: list,
+    ) -> Dict[str, Any]:
+        meta = dict(comp_meta or {})
+        raw_edges = meta.get("edges", None)
+        if not isinstance(raw_edges, dict):
+            return meta
+
+        edge_key_kind = str(meta.get("edge_key_kind", "gid"))
+        edges: Dict[str, Dict[str, Any]] = {}
+        for raw_key, raw_edge in raw_edges.items():
+            parsed = self._to_gid_edge_key(
+                raw_key=raw_key,
+                edge_key_kind=edge_key_kind,
+                placed_nodes=placed_nodes,
+            )
+            if parsed is None:
+                continue
+            src_gid, dst_gid = parsed
+            edge_key = f"{src_gid}->{dst_gid}"
+            edge_data = dict(raw_edge or {}) if isinstance(raw_edge, dict) else {}
+            edge_data["src"] = src_gid
+            edge_data["dst"] = dst_gid
+            edges[edge_key] = edge_data
+
+        meta["edge_key_kind"] = "gid"
+        meta["edges"] = edges
+        return meta
+
     def _score_component(
         self,
         *,
@@ -97,7 +167,8 @@ class RewardComposer:
         cur_max_y: float,
         route_blocked: Optional[torch.Tensor],
         placed_cell_occupied: Optional[torch.Tensor],
-    ) -> torch.Tensor:
+        return_meta: bool = False,
+    ):
         device = placed_entries.device
         if isinstance(comp, FlowReward):
             return comp.score(
@@ -108,6 +179,7 @@ class RewardComposer:
                 flow_w=flow_w,
                 exit_k=exit_k,
                 entry_k=entry_k,
+                return_meta=return_meta,
             )
         if isinstance(comp, FlowCollisionReward):
             return comp.score(
@@ -119,6 +191,7 @@ class RewardComposer:
                 route_blocked=route_blocked,
                 exit_k=exit_k,
                 entry_k=entry_k,
+                return_meta=return_meta,
             )
         if isinstance(comp, AreaReward):
             return comp.score(
@@ -127,9 +200,10 @@ class RewardComposer:
                 max_x=torch.tensor(float(cur_max_x), dtype=torch.float32, device=device),
                 min_y=torch.tensor(float(cur_min_y), dtype=torch.float32, device=device),
                 max_y=torch.tensor(float(cur_max_y), dtype=torch.float32, device=device),
+                return_meta=return_meta,
             )
         if isinstance(comp, GridOccupancyReward):
-            return comp.score(placed_cell_occupied=placed_cell_occupied)
+            return comp.score(placed_cell_occupied=placed_cell_occupied, return_meta=return_meta)
         raise TypeError(f"unsupported reward component type: {type(comp).__name__}")
 
     def score_dict(
@@ -139,7 +213,8 @@ class RewardComposer:
         weighted: bool = True,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-    ) -> Dict[str, float]:
+        return_meta: bool = False,
+    ):
         (
             placed_nodes,
             placed_entries,
@@ -153,11 +228,12 @@ class RewardComposer:
         exit_k, entry_k = self._port_span_tensors(placed_nodes, placed_entries.device)
 
         out: Dict[str, float] = {}
+        meta_out: Dict[str, Dict[str, Any]] = {}
         total = 0.0
         for name, comp in self.components.items():
             if comp is None:
                 continue
-            val_t = self._score_component(
+            val_raw = self._score_component(
                 comp=comp,
                 placed_count=placed_count,
                 placed_entries=placed_entries,
@@ -173,13 +249,26 @@ class RewardComposer:
                 cur_max_y=cur_max_y,
                 route_blocked=route_blocked,
                 placed_cell_occupied=placed_cell_occupied,
+                return_meta=return_meta,
             )
+            if return_meta:
+                if not (isinstance(val_raw, tuple) and len(val_raw) == 2):
+                    raise TypeError(f"{type(comp).__name__}.score(return_meta=True) must return (score, meta)")
+                val_t, comp_meta = val_raw
+                meta_out[str(name)] = self._normalize_component_meta(
+                    comp_meta=dict(comp_meta or {}),
+                    placed_nodes=placed_nodes,
+                )
+            else:
+                val_t = val_raw
             val = float(val_t.item())
             if weighted:
                 val *= float(self.weights.get(name, 1.0))
             out[name] = val
             total += val
         out["total"] = float(total)
+        if return_meta:
+            return out, meta_out
         return out
 
     def score(
@@ -188,17 +277,31 @@ class RewardComposer:
         *,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_meta: bool = False,
+    ):
         scores = self.score_dict(
             state,
             weighted=True,
             route_blocked=route_blocked,
             placed_cell_occupied=placed_cell_occupied,
+            return_meta=return_meta,
         )
+        meta_out: Optional[Dict[str, Dict[str, Any]]] = None
+        if return_meta:
+            if not (isinstance(scores, tuple) and len(scores) == 2):
+                raise TypeError("score_dict(return_meta=True) must return (scores, meta)")
+            scores, meta_out = scores
         return torch.tensor(
             float(scores.get("total", 0.0)),
             dtype=torch.float32,
             device=state.device,
+        ) if not return_meta else (
+            torch.tensor(
+                float(scores.get("total", 0.0)),
+                dtype=torch.float32,
+                device=state.device,
+            ),
+            meta_out or {},
         )
 
     def delta_batch(
@@ -216,7 +319,8 @@ class RewardComposer:
         max_y: Optional[torch.Tensor] = None,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_meta: bool = False,
+    ):
         """Compute incremental cost from keyword feature tensors.
 
         Same logic as ``delta()`` but reads features from kwargs
@@ -244,6 +348,7 @@ class RewardComposer:
                 break
 
         total = torch.zeros((m,), dtype=torch.float32, device=device)
+        meta_out: Dict[str, Dict[str, Any]] = {}
         has_flow_like = any(
             isinstance(comp, (FlowReward, FlowCollisionReward))
             for comp in self.components.values()
@@ -280,7 +385,7 @@ class RewardComposer:
                 continue
             w = float(self.weights.get(name, 1.0))
             if isinstance(comp, FlowReward):
-                total = total + w * comp.delta(
+                delta_raw = comp.delta(
                     placed_entries=placed_entries,
                     placed_exits=placed_exits,
                     placed_entries_mask=placed_entries_mask,
@@ -295,10 +400,19 @@ class RewardComposer:
                     c_entry_k=c_entry_k,
                     t_entry_k=t_entry_k,
                     t_exit_k=t_exit_k,
+                    return_meta=return_meta,
                 )
+                if return_meta:
+                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
+                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    delta_t, comp_meta = delta_raw
+                    meta_out[str(name)] = dict(comp_meta or {})
+                else:
+                    delta_t = delta_raw
+                total = total + w * delta_t
                 continue
             if isinstance(comp, FlowCollisionReward):
-                total = total + w * comp.delta(
+                delta_raw = comp.delta(
                     placed_entries=placed_entries,
                     placed_exits=placed_exits,
                     placed_entries_mask=placed_entries_mask,
@@ -314,10 +428,19 @@ class RewardComposer:
                     c_entry_k=c_entry_k,
                     t_entry_k=t_entry_k,
                     t_exit_k=t_exit_k,
+                    return_meta=return_meta,
                 )
+                if return_meta:
+                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
+                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    delta_t, comp_meta = delta_raw
+                    meta_out[str(name)] = dict(comp_meta or {})
+                else:
+                    delta_t = delta_raw
+                total = total + w * delta_t
                 continue
             if isinstance(comp, AreaReward):
-                total = total + w * comp.delta(
+                delta_raw = comp.delta(
                     placed_count=placed_count,
                     cur_min_x=cur_min_x,
                     cur_max_x=cur_max_x,
@@ -327,18 +450,38 @@ class RewardComposer:
                     candidate_max_x=max_x,
                     candidate_min_y=min_y,
                     candidate_max_y=max_y,
+                    return_meta=return_meta,
                 )
+                if return_meta:
+                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
+                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    delta_t, comp_meta = delta_raw
+                    meta_out[str(name)] = dict(comp_meta or {})
+                else:
+                    delta_t = delta_raw
+                total = total + w * delta_t
                 continue
             if isinstance(comp, GridOccupancyReward):
-                total = total + w * comp.delta(
+                delta_raw = comp.delta(
                     placed_cell_occupied=placed_cell_occupied,
                     candidate_min_x=min_x,
                     candidate_max_x=max_x,
                     candidate_min_y=min_y,
                     candidate_max_y=max_y,
+                    return_meta=return_meta,
                 )
+                if return_meta:
+                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
+                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    delta_t, comp_meta = delta_raw
+                    meta_out[str(name)] = dict(comp_meta or {})
+                else:
+                    delta_t = delta_raw
+                total = total + w * delta_t
                 continue
             raise TypeError(f"unsupported reward component type: {type(comp).__name__}")
+        if return_meta:
+            return total, meta_out
         return total
 
     def delta(
@@ -349,7 +492,8 @@ class RewardComposer:
         gid: Optional["str | int"] = None,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_meta: bool = False,
+    ):
         """Compute incremental cost for each candidate in *action_space*.
 
         Delegates to ``delta_batch`` using ActionSpace fields.
@@ -367,4 +511,5 @@ class RewardComposer:
             max_y=action_space.max_y,
             route_blocked=route_blocked,
             placed_cell_occupied=placed_cell_occupied,
+            return_meta=return_meta,
         )

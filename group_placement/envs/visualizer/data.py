@@ -249,37 +249,23 @@ def extract_layout_data(
     ports = PortData()
 
     if state.placed:
-        port_pairs = state.flow.flow_port_pairs
-        for src, targets in engine.group_flow.items():
-            if src not in state.placed:
-                continue
-            src_p = state.placements[src]
-            for dst, weight in targets.items():
-                if dst not in state.placed:
-                    continue
-                dst_p = state.placements[dst]
-                cached = port_pairs.get((src, dst))
-                if cached:
-                    draw_pairs = cached
-                else:
-                    draw_pairs = [((src_p.x_center, src_p.y_center), (dst_p.x_center, dst_p.y_center))]
-                for (sx, sy), (dx, dy) in draw_pairs:
-                    flow_arrows.append(FlowArrow(
-                        src_xy=(float(sx), float(sy)),
-                        dst_xy=(float(dx), float(dy)),
-                        weight=float(weight),
-                    ))
+        flow_edges = state.eval.edge_metadata(phase="base")
+        flow_pairs = state.eval.edge_port_pairs(phase="base")
+        for edge_key, pairs in flow_pairs.items():
+            edge = flow_edges.get(edge_key, {})
+            weight = float(edge.get("weight", 0.0))
+            for (sx, sy), (dx, dy) in pairs:
+                flow_arrows.append(FlowArrow(
+                    src_xy=(float(sx), float(sy)),
+                    dst_xy=(float(dx), float(dy)),
+                    weight=weight,
+                ))
 
         # Ports
         active_entries: set = set()
         active_exits: set = set()
-        for cached in port_pairs.values():
-            if not isinstance(cached, list):
-                continue
-            for pair in cached:
-                if not isinstance(pair, tuple) or len(pair) != 2:
-                    continue
-                exit_xy, entry_xy = pair
+        for pairs in flow_pairs.values():
+            for exit_xy, entry_xy in pairs:
                 active_exits.add(_coord_key(exit_xy[0], exit_xy[1]))
                 active_entries.add(_coord_key(entry_xy[0], entry_xy[1]))
 

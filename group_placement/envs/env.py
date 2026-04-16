@@ -118,6 +118,7 @@ class FactoryLayoutEnv(gym.Env):
             flow=flow,
             group_specs=self.group_specs,
             device=self.device,
+            reward_scale=float(self.reward_scale),
         )
 
         # Single RewardComposer used for both score() (cost) and delta() (delta_cost).
@@ -168,7 +169,7 @@ class FactoryLayoutEnv(gym.Env):
             weights=t_weights,
             reward_scale=float(self.reward_scale),
         )
-        self._refresh_base_cost_snapshot(reset_terminal=True)
+        self._refresh_base_eval_snapshot(reset_terminal=True)
 
     def _normalize_group_specs(self, group_specs: Dict[str | int, GroupSpec]) -> Dict[str | int, GroupSpec]:
         """Normalize group specs onto env device and validate id/key consistency."""
@@ -202,10 +203,10 @@ class FactoryLayoutEnv(gym.Env):
         if not isinstance(state, EnvState):
             raise TypeError(f"state must be EnvState, got {type(state).__name__}")
         self._state.restore(state)
-        if bool(self._state.cost.get("finalized", False)):
-            self._refresh_base_cost_snapshot(reset_terminal=False)
+        if bool(self._state.eval.objective.get("finalized", False)):
+            self._refresh_base_eval_snapshot(reset_terminal=False)
         else:
-            self._refresh_base_cost_snapshot(reset_terminal=True)
+            self._refresh_base_eval_snapshot(reset_terminal=True)
 
     def _as_long_tensor(self, v: object, *, name: str) -> torch.Tensor:
         """Coerce scalar/tensor values to integer tensor [N] with integer-value validation."""
@@ -220,184 +221,6 @@ class FactoryLayoutEnv(gym.Env):
                 t = r
             return t.to(dtype=torch.long).view(-1)
         return torch.tensor([int(v)], dtype=torch.long, device=self.device)
-
-    def _flow_pair_list(
-        self,
-        *,
-        src_row: int,
-        dst_row: int,
-        exit_argmin: int,
-        entry_argmin: int,
-        placed_entries: torch.Tensor,
-        placed_exits: torch.Tensor,
-        placed_entries_mask: torch.Tensor,
-        placed_exits_mask: torch.Tensor,
-        exit_k: Optional[torch.Tensor],
-        entry_k: Optional[torch.Tensor],
-    ) -> list:
-        src_req_k = 1 if exit_k is None else int(exit_k[src_row].item())
-        dst_req_k = 1 if entry_k is None else int(entry_k[dst_row].item())
-        valid_exit_idx = torch.where(placed_exits_mask[src_row])[0]
-        valid_entry_idx = torch.where(placed_entries_mask[dst_row])[0]
-
-        if int(valid_exit_idx.numel()) == 0 or int(valid_entry_idx.numel()) == 0:
-            return []
-
-        if src_req_k == 1:
-            e_idxs = [int(exit_argmin)] if bool((valid_exit_idx == int(exit_argmin)).any().item()) else [int(valid_exit_idx[0].item())]
-        else:
-            src_eff_k = min(int(src_req_k), int(valid_exit_idx.numel()))
-            anchor_entry = placed_entries[dst_row, int(entry_argmin), :]
-            exits = placed_exits[src_row, valid_exit_idx, :]
-            dist = (exits - anchor_entry.view(1, 2)).abs().sum(dim=1)
-            take = torch.topk(dist, k=src_eff_k, largest=False).indices
-            e_idxs = [int(valid_exit_idx[int(i.item())].item()) for i in take]
-
-        if dst_req_k == 1:
-            n_idxs = [int(entry_argmin)] if bool((valid_entry_idx == int(entry_argmin)).any().item()) else [int(valid_entry_idx[0].item())]
-        else:
-            dst_eff_k = min(int(dst_req_k), int(valid_entry_idx.numel()))
-            anchor_exit = placed_exits[src_row, int(exit_argmin), :]
-            entries = placed_entries[dst_row, valid_entry_idx, :]
-            dist = (entries - anchor_exit.view(1, 2)).abs().sum(dim=1)
-            take = torch.topk(dist, k=dst_eff_k, largest=False).indices
-            n_idxs = [int(valid_entry_idx[int(i.item())].item()) for i in take]
-
-        pair_list = []
-        for ei in e_idxs:
-            ex = (float(placed_exits[src_row, ei, 0].item()), float(placed_exits[src_row, ei, 1].item()))
-            for ni in n_idxs:
-                en = (float(placed_entries[dst_row, ni, 0].item()), float(placed_entries[dst_row, ni, 1].item()))
-                pair_list.append((ex, en))
-        return pair_list
-
-    def _try_update_flow_port_pairs_incremental(
-        self,
-        *,
-        updated_gid: str | int,
-        flow_comp: FlowReward,
-        placed_nodes: List[str | int],
-        placed_entries: torch.Tensor,
-        placed_exits: torch.Tensor,
-        placed_entries_mask: torch.Tensor,
-        placed_exits_mask: torch.Tensor,
-        flow_w: torch.Tensor,
-        exit_k: Optional[torch.Tensor],
-        entry_k: Optional[torch.Tensor],
-    ) -> None:
-        nodes_key = tuple(placed_nodes)
-        if updated_gid not in nodes_key:
-            raise KeyError(f"updated_gid={updated_gid!r} not found in placed_nodes")
-        prev_key = self._state.flow_port_pairs_nodes_key
-        updated_row = int(placed_nodes.index(updated_gid))
-
-        is_append = (
-            len(nodes_key) == len(prev_key) + 1
-            and nodes_key[:-1] == prev_key
-            and nodes_key[-1] == updated_gid
-        )
-        is_refresh = nodes_key == prev_key
-        if not (is_append or is_refresh):
-            raise RuntimeError(
-                "flow_port_pairs incremental update requires append-only growth "
-                f"or in-place refresh: prev={prev_key!r} current={nodes_key!r} updated_gid={updated_gid!r}"
-            )
-
-        if is_append:
-            pairs: Dict[Tuple[str | int, str | int], list] = dict(self._state.flow_port_pairs)
-        else:
-            pairs = {
-                key: value
-                for key, value in self._state.flow_port_pairs.items()
-                if key[0] != updated_gid and key[1] != updated_gid
-            }
-
-        _, out_c_idx, out_p_idx = flow_comp._reduce_distance(
-            candidate_ports=placed_exits[updated_row:updated_row + 1],
-            candidate_mask=placed_exits_mask[updated_row:updated_row + 1],
-            target_ports=placed_entries,
-            target_mask=placed_entries_mask,
-            target_weight=flow_w[updated_row:updated_row + 1, :],
-            c_k=exit_k[updated_row:updated_row + 1] if exit_k is not None else None,
-            t_k=entry_k,
-        )
-        _, in_c_idx, in_p_idx = flow_comp._reduce_distance(
-            candidate_ports=placed_exits,
-            candidate_mask=placed_exits_mask,
-            target_ports=placed_entries[updated_row:updated_row + 1],
-            target_mask=placed_entries_mask[updated_row:updated_row + 1],
-            target_weight=flow_w[:, updated_row:updated_row + 1],
-            c_k=exit_k,
-            t_k=entry_k[updated_row:updated_row + 1] if entry_k is not None else None,
-        )
-        if out_c_idx is None or out_p_idx is None or in_c_idx is None or in_p_idx is None:
-            raise RuntimeError(
-                f"flow_port_pairs incremental update failed to compute argmin indices for gid={updated_gid!r}"
-            )
-
-        for dst_row, dst_gid in enumerate(placed_nodes):
-            if float(flow_w[updated_row, dst_row].item()) <= 0.0:
-                continue
-            pairs[(updated_gid, dst_gid)] = self._flow_pair_list(
-                src_row=updated_row,
-                dst_row=dst_row,
-                exit_argmin=int(out_c_idx[0, dst_row].item()),
-                entry_argmin=int(out_p_idx[0, dst_row].item()),
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                exit_k=exit_k,
-                entry_k=entry_k,
-            )
-
-        for src_row, src_gid in enumerate(placed_nodes):
-            if src_row == updated_row or float(flow_w[src_row, updated_row].item()) <= 0.0:
-                continue
-            pairs[(src_gid, updated_gid)] = self._flow_pair_list(
-                src_row=src_row,
-                dst_row=updated_row,
-                exit_argmin=int(in_c_idx[src_row, 0].item()),
-                entry_argmin=int(in_p_idx[src_row, 0].item()),
-                placed_entries=placed_entries,
-                placed_exits=placed_exits,
-                placed_entries_mask=placed_entries_mask,
-                placed_exits_mask=placed_exits_mask,
-                exit_k=exit_k,
-                entry_k=entry_k,
-            )
-
-        self._state.set_flow_port_pairs(pairs, nodes=placed_nodes)
-
-    def _update_flow_port_pairs(self, *, updated_gid: str | int) -> None:
-        """Update per-edge port pair cache for visualization.
-
-        For span=1 ports: store the single argmin pair.
-        For span>1 / span=all: store selected port combinations.
-        """
-        _flow_name, flow_comp = self._reward.find_component(FlowReward)
-        if flow_comp is None:
-            return
-        placed_nodes, placed_entries, placed_exits, placed_entries_mask, placed_exits_mask = self._state.io_tensors()
-        if len(placed_nodes) == 0:
-            self._state.clear_flow_port_pairs()
-            return
-        flow_w = self._state.build_flow_w()
-        exit_k, entry_k = self._reward._port_span_tensors(
-            placed_nodes, placed_entries.device,
-        )
-        self._try_update_flow_port_pairs_incremental(
-            updated_gid=updated_gid,
-            flow_comp=flow_comp,
-            placed_nodes=placed_nodes,
-            placed_entries=placed_entries,
-            placed_exits=placed_exits,
-            placed_entries_mask=placed_entries_mask,
-            placed_exits_mask=placed_exits_mask,
-            flow_w=flow_w,
-            exit_k=exit_k,
-            entry_k=entry_k,
-        )
 
     @property
     def reward_composer(self) -> RewardComposer:
@@ -566,10 +389,8 @@ class FactoryLayoutEnv(gym.Env):
         self,
         placement: GroupPlacement,
     ) -> None:
-        gid = placement.group_id
         self._state.place(placement=placement)
-        self._update_flow_port_pairs(updated_gid=gid)
-        self._refresh_base_cost_snapshot(reset_terminal=True)
+        self._refresh_base_eval_snapshot(reset_terminal=True)
 
     def apply_dynamic_placement(self, placement: object) -> None:
         """Apply a pre-resolved dynamic placement object (DynamicPlacement-compatible)."""
@@ -580,67 +401,107 @@ class FactoryLayoutEnv(gym.Env):
 
     # ---- objective ----
 
-    @staticmethod
-    def _normalize_cost_breakdown(values: Dict[str, float]) -> Dict[str, float]:
-        out: Dict[str, float] = {}
-        for k, v in values.items():
-            out[str(k)] = float(v)
-        if "total" not in out:
-            out["total"] = float(sum(v for kk, v in out.items() if kk != "total"))
-        return out
+    def _runtime_meta(self, raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        meta = dict(raw or {})
+        meta["status"] = "ok"
+        meta["layout_rev"] = int(self._state.eval.layout_rev)
+        return meta
 
-    def _refresh_base_cost_snapshot(self, *, reset_terminal: bool) -> Dict[str, float]:
-        base = self._normalize_cost_breakdown(self._reward.score_dict(self._state, weighted=True))
-        cs = self._state.cost
-        cs["base"] = base
+    def _refresh_base_eval_snapshot(self, *, reset_terminal: bool) -> Dict[str, float]:
+        base_raw, base_meta = self._reward.score_dict(
+            self._state,
+            weighted=False,
+            return_meta=True,
+        )
+        eval_state = self._state.eval
+        base_snapshot: Dict[str, Dict[str, Any]] = {}
+        for name, comp in self._reward.components.items():
+            if comp is None:
+                continue
+            name_s = str(name)
+            raw = float(base_raw.get(name, 0.0))
+            w = float(self._reward.weights.get(name, 1.0))
+            base_snapshot[name_s] = {
+                "raw_cost": raw,
+                "weight": w,
+                "meta": self._runtime_meta(base_meta.get(name_s, {})),
+            }
+        eval_state.set_base_snapshot(base_snapshot)
         if bool(reset_terminal):
-            cs["terminal"] = {"delta": {}, "total": 0.0}
-            cs["finalized"] = False
-            terminal_total = 0.0
-        else:
-            terminal = dict(cs.get("terminal", {}) or {})
-            terminal_delta = dict(terminal.get("delta", {}) or {})
-            terminal["delta"] = terminal_delta
-            terminal_total = float(terminal.get("total", 0.0))
-            cs["terminal"] = terminal
-        cs["final"] = {"total": float(base["total"]) + float(terminal_total)}
-        return base
+            eval_state.clear_terminal()
+        finalized = (not bool(reset_terminal)) and bool(eval_state.objective.get("finalized", False))
+        eval_state.recompute_objective(finalized=finalized)
+        return {str(k): float(v) for k, v in base_raw.items()}
 
-    def _finalize_terminal_snapshot(self, *, failed: bool) -> float:
-        cs = self._state.cost
-        if bool(cs.get("finalized", False)):
-            terminal = dict(cs.get("terminal", {}) or {})
-            return float(terminal.get("total", 0.0))
+    def _finalize_terminal_eval_snapshot(self, *, failed: bool) -> float:
+        eval_state = self._state.eval
+        if bool(eval_state.objective.get("finalized", False)):
+            return float(eval_state.objective.get("terminal_total", 0.0))
 
-        base_weighted = self._normalize_cost_breakdown(self._reward.score_dict(self._state, weighted=True))
-        base_unweighted = self._normalize_cost_breakdown(self._reward.score_dict(self._state, weighted=False))
-        delta = self._terminal.delta_dict(
+        base_unweighted, base_meta = self._reward.score_dict(
+            state=self._state,
+            weighted=False,
+            return_meta=True,
+        )
+        base_snapshot: Dict[str, Dict[str, Any]] = {}
+        for name, comp in self._reward.components.items():
+            if comp is None:
+                continue
+            name_s = str(name)
+            base_snapshot[name_s] = {
+                "raw_cost": float(base_unweighted.get(name, 0.0)),
+                "weight": float(self._reward.weights.get(name, 1.0)),
+                "meta": self._runtime_meta(base_meta.get(name_s, {})),
+            }
+        eval_state.set_base_snapshot(base_snapshot)
+
+        delta_raw, delta_meta = self._terminal.delta_dict(
             state=self._state,
             maps=self.get_maps(),
             reward_composer=self._reward,
             failed=bool(failed),
             base_scores_unweighted=base_unweighted,
+            return_meta=True,
         )
-        delta_norm = {str(k): float(v) for k, v in delta.items()}
-        delta_total = float(sum(delta_norm.values()))
+        terminal_snapshot: Dict[str, Dict[str, Any]] = {}
+        for name, delta in delta_raw.items():
+            name_s = str(name)
+            terminal_snapshot[name_s] = {
+                "delta_cost": float(delta),
+                "meta": self._runtime_meta(delta_meta.get(name_s, {})),
+            }
+        eval_state.set_terminal_snapshot(terminal_snapshot)
+        eval_state.recompute_objective(finalized=True)
+        return float(eval_state.objective.get("terminal_total", 0.0))
 
-        cs["base"] = base_weighted
-        cs["terminal"] = {"delta": delta_norm, "total": delta_total}
-        cs["final"] = {"total": float(base_weighted["total"]) + delta_total}
-        cs["finalized"] = True
-        return delta_total
+    def merge_reward_metadata(
+        self,
+        *,
+        component: str,
+        patch: Dict[str, Any],
+        phase: str = "base",
+    ) -> None:
+        phase_key = str(phase)
+        payload = self._runtime_meta(dict(patch or {}))
+        self._state.eval.merge_component_meta(
+            name=str(component),
+            patch=payload,
+            phase=phase_key,
+        )
 
     def cost(self) -> float:
         """Current objective value cached in state runtime."""
-        final = self._state.cost.get("final", {}) if isinstance(self._state.cost, dict) else {}
-        if "total" not in final:
-            self._refresh_base_cost_snapshot(reset_terminal=not bool(self._state.cost.get("finalized", False)))
-            final = self._state.cost.get("final", {})
-        return float(final.get("total", 0.0))
+        obj = self._state.eval.objective
+        if "cost_total" not in obj:
+            self._refresh_base_eval_snapshot(
+                reset_terminal=not bool(self._state.eval.objective.get("finalized", False)),
+            )
+            obj = self._state.eval.objective
+        return float(obj.get("cost_total", 0.0))
 
     def failure_penalty(self) -> float:
         """Terminal-failure reward adjustment (negative)."""
-        delta = self._finalize_terminal_snapshot(failed=True)
+        delta = self._finalize_terminal_eval_snapshot(failed=True)
         return -float(delta) / float(self.reward_scale)
 
     def reorder_remaining(self, ordered_remaining: List[str | int]) -> None:
@@ -666,13 +527,14 @@ class FactoryLayoutEnv(gym.Env):
 
     def _end_episode(self, *, reason: str, failed: bool) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         """Finalize terminal reward once and return unified step-like outputs."""
-        terminal_delta = self._finalize_terminal_snapshot(failed=bool(failed))
+        terminal_delta = self._finalize_terminal_eval_snapshot(failed=bool(failed))
         reward = -float(terminal_delta) / float(self.reward_scale)
         terminated = not bool(failed)
         truncated = bool(failed)
         info: Dict[str, Any] = {"reason": reason}
-        base_cost = float(self._state.cost.get("base", {}).get("total", 0.0))
-        terminal_total = float(self._state.cost.get("terminal", {}).get("total", 0.0))
+        obj = self._state.eval.objective
+        base_cost = float(obj.get("base_total", 0.0))
+        terminal_total = float(obj.get("terminal_total", 0.0))
         final_cost = float(self.cost())
         if bool(failed):
             logger.warning(
@@ -723,8 +585,7 @@ class FactoryLayoutEnv(gym.Env):
         delta_cost = float(self._delta_cost_from_placements([placement])[0].item())
 
         self._state.step(apply=True, placement=placement)
-        self._update_flow_port_pairs(updated_gid=gid)
-        self._refresh_base_cost_snapshot(reset_terminal=True)
+        self._refresh_base_eval_snapshot(reset_terminal=True)
 
         reward = float(self._reward.to_reward(delta_cost))
         terminated = len(self._state.remaining) == 0
@@ -825,9 +686,9 @@ class FactoryLayoutEnv(gym.Env):
                     warnings.warn(f"{msg} — skipping", stacklevel=2)
                     continue
                 self._apply_resolved_placement(placement)
-        self._refresh_base_cost_snapshot(reset_terminal=True)
+        self._refresh_base_eval_snapshot(reset_terminal=True)
         if len(self._state.remaining) == 0 and len(self._state.placed) > 0:
-            self._finalize_terminal_snapshot(failed=False)
+            self._finalize_terminal_eval_snapshot(failed=False)
         return {}, {}
 
 
@@ -926,7 +787,7 @@ if __name__ == "__main__":
     print("env_demo")
     print(f" device={dev}  init_ms={init_ms:.2f}  reset_ms={reset_ms:.2f}")
     print(f" placed={sorted(env.get_state().placed)}  remaining={env.get_state().remaining}")
-    print(f" flow_port_pairs after reset: {env.get_state().flow_port_pairs}")
+    print(f" flow_edges after reset: {env.get_state().eval.edge_metadata(phase='base')}")
 
     # --- step: C 배치 ---
     t2 = time.perf_counter()
@@ -937,7 +798,7 @@ if __name__ == "__main__":
     step_ms = (time.perf_counter() - t2) * 1000.0
 
     print(f" step_ms={step_ms:.2f}  reason={info['reason']}  reward={reward:.4f}  terminated={terminated}")
-    print(f" flow_port_pairs after step:  {env.get_state().flow_port_pairs}")
+    print(f" flow_edges after step:  {env.get_state().eval.edge_metadata(phase='base')}")
     print(f" cost={env.cost():.4f}")
     print(f" obs_keys={list(obs.keys())}")
 

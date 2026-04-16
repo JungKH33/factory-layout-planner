@@ -8,6 +8,24 @@ from typing import Any, Dict, List, Optional
 from group_placement.envs.env_loader import LoadedEnv
 
 
+def _json_safe(v: Any) -> Any:
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    if isinstance(v, dict):
+        return {str(k): _json_safe(vv) for k, vv in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    if isinstance(v, set):
+        return [_json_safe(x) for x in sorted(v, key=lambda x: str(x))]
+    item = getattr(v, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:
+            pass
+    return str(v)
+
+
 def export_group_placement(loaded: LoadedEnv) -> Dict[str, Any]:
     """Build the group-placement interchange dict (grid + placements + registries).
 
@@ -70,6 +88,12 @@ def export_group_placement(loaded: LoadedEnv) -> Dict[str, Any]:
         },
         "placed_order": [str(g) for g in state.placed_nodes()],
         "placements": placements_out,
+        "eval": _json_safe({
+            "layout_rev": int(state.eval.layout_rev),
+            "objective": dict(state.eval.objective),
+            "base_components": dict(state.eval.base_components),
+            "terminal_components": dict(state.eval.terminal_components),
+        }),
         "facilities": dict(loaded.facilities_raw),
         "layouts": dict(loaded.layouts_raw),
     }

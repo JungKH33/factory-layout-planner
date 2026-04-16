@@ -1,26 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
-
-
-FlowPortPair = Tuple[Tuple[float, float], Tuple[float, float]]
-FlowPortPairs = Dict[Tuple[str | int, str | int], List[FlowPortPair]]
 
 
 class FlowGraph:
     """Runtime flow helper state.
 
     - `_group_flow` is shared/static input.
-    - `flow_port_pairs` and score/delta tensor caches are runtime fields.
+    - score/delta tensor caches are runtime fields.
     """
 
     def __init__(self, group_flow: Dict[str | int, Dict[str | int, float]], *, device: torch.device) -> None:
         self._group_flow = group_flow
         self._device = torch.device(device)
-        self.flow_port_pairs: FlowPortPairs = {}
-        self._flow_port_pairs_nodes_key: Tuple[str | int, ...] = tuple()
         self._io_nodes_key: Tuple[str | int, ...] = tuple()
         self._row_by_gid: Dict[str | int, int] = {}
         self.placed_entries = torch.empty((0, 1, 2), dtype=torch.float32, device=self._device)
@@ -37,8 +31,6 @@ class FlowGraph:
         out = object.__new__(FlowGraph)
         out._group_flow = self._group_flow
         out._device = self._device
-        out.flow_port_pairs = dict(self.flow_port_pairs)
-        out._flow_port_pairs_nodes_key = tuple(self._flow_port_pairs_nodes_key)
         out._io_nodes_key = tuple(self._io_nodes_key)
         out._row_by_gid = dict(self._row_by_gid)
         out.placed_entries = self.placed_entries.clone()
@@ -56,9 +48,6 @@ class FlowGraph:
         """In-place restore of runtime flow fields."""
         if not isinstance(src, FlowGraph):
             raise TypeError(f"src must be FlowGraph, got {type(src).__name__}")
-        self.flow_port_pairs.clear()
-        self.flow_port_pairs.update(src.flow_port_pairs)
-        self._flow_port_pairs_nodes_key = tuple(src._flow_port_pairs_nodes_key)
         self._io_nodes_key = tuple(src._io_nodes_key)
         self._row_by_gid = dict(src._row_by_gid)
         src_entries = src.placed_entries.to(device=self._device, dtype=torch.float32)
@@ -99,25 +88,7 @@ class FlowGraph:
         # Keep them so append paths can reuse previous tensors incrementally.
         return
 
-    def clear_flow_port_pairs(self) -> None:
-        self.flow_port_pairs = {}
-        self._flow_port_pairs_nodes_key = tuple()
-
-    def set_flow_port_pairs(
-        self,
-        pairs: FlowPortPairs,
-        *,
-        nodes: Optional[List[str | int]] = None,
-    ) -> None:
-        self.flow_port_pairs = dict(pairs)
-        self._flow_port_pairs_nodes_key = tuple(nodes) if nodes is not None else tuple()
-
-    @property
-    def flow_port_pairs_nodes_key(self) -> Tuple[str | int, ...]:
-        return self._flow_port_pairs_nodes_key
-
     def reset_runtime(self) -> None:
-        self.clear_flow_port_pairs()
         self._io_nodes_key = tuple()
         self._row_by_gid = {}
         self.placed_entries = torch.empty((0, 1, 2), dtype=torch.float32, device=self._device)

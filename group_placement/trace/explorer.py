@@ -611,23 +611,13 @@ class Explorer:
 
             # affected flow edges
             affected: list[FlowDelta] = []
-            flow_pairs = state.flow.flow_port_pairs
-            group_flow = self.engine.group_flow
-            for (src, dst), pairs in flow_pairs.items():
-                if src != gid and dst != gid:
+            gid_key = str(gid)
+            flow_edges = state.eval.edge_metadata(phase="base")
+            for (src, dst), edge in flow_edges.items():
+                if src != gid_key and dst != gid_key:
                     continue
-                weight = 0.0
-                if src in group_flow and dst in group_flow[src]:
-                    weight = float(group_flow[src][dst])
-                elif dst in group_flow and src in group_flow[dst]:
-                    weight = float(group_flow[dst][src])
-                if weight <= 0 and not pairs:
-                    continue
-                total_dist = 0.0
-                for (ex, en) in pairs:
-                    total_dist += abs(ex[0] - en[0]) + abs(ex[1] - en[1])
-                if pairs:
-                    total_dist /= len(pairs)
+                weight = float(edge.get("weight", 0.0))
+                total_dist = float(edge.get("distance", 0.0))
                 affected.append(FlowDelta(
                     src=str(src), dst=str(dst),
                     weight=weight, distance=total_dist,

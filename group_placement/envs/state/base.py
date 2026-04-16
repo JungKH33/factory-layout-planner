@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 import torch
 
-
+from .eval import EvalState
 from .flow import FlowGraph
 from .maps import GridMaps
 
@@ -29,7 +29,7 @@ class EnvState:
         "device",
         "maps",
         "flow",
-        "cost",
+        "eval",
     )
 
     placements: Dict[str | int, object]
@@ -40,34 +40,8 @@ class EnvState:
     device: torch.device
     maps: GridMaps
     flow: FlowGraph
-    cost: Dict[str, Any]
+    eval: EvalState
     _state_sig: Tuple[int, int, Tuple[str, ...]]
-
-    @staticmethod
-    def empty_cost_dict() -> Dict[str, Any]:
-        return {
-            "base": {"total": 0.0},
-            "terminal": {"delta": {}, "total": 0.0},
-            "final": {"total": 0.0},
-            "finalized": False,
-        }
-
-    @staticmethod
-    def _clone_cost_dict(src: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        if not isinstance(src, dict):
-            return EnvState.empty_cost_dict()
-        base = dict(src.get("base", {}) or {})
-        terminal = dict(src.get("terminal", {}) or {})
-        terminal_delta = dict(terminal.get("delta", {}) or {})
-        terminal["delta"] = terminal_delta
-        final = dict(src.get("final", {}) or {})
-        finalized = bool(src.get("finalized", False))
-        return {
-            "base": base,
-            "terminal": terminal,
-            "final": final,
-            "finalized": finalized,
-        }
 
     @staticmethod
     def _make_state_sig(*, grid_height: int, grid_width: int, gids: List[str | int]) -> Tuple[int, int, Tuple[str, ...]]:
@@ -82,6 +56,7 @@ class EnvState:
         group_specs: Dict[str | int, object],
         flow: FlowGraph,
         device: torch.device,
+        reward_scale: float = 100.0,
     ) -> "EnvState":
         dev = torch.device(device)
         maps.bind_group_specs(group_specs)
@@ -97,7 +72,7 @@ class EnvState:
             device=dev,
             maps=maps,
             flow=flow,
-            cost=cls.empty_cost_dict(),
+            eval=EvalState.empty(reward_scale=float(reward_scale)),
             _state_sig=cls._make_state_sig(grid_height=h, grid_width=w, gids=list(group_specs.keys())),
         )
 
@@ -118,7 +93,7 @@ class EnvState:
             device=self.device,
             maps=self.maps.copy(),
             flow=self.flow.copy(),
-            cost=self._clone_cost_dict(self.cost),
+            eval=self.eval.copy(),
             _state_sig=self._state_sig,
         )
 
@@ -140,7 +115,7 @@ class EnvState:
         self.placed_nodes_order[:] = list(src.placed_nodes_order)
         self.maps.restore(src.maps)
         self.flow.restore(src.flow)
-        self.cost = self._clone_cost_dict(getattr(src, "cost", None))
+        self.eval.restore(src.eval)
 
     def reset_runtime(self, *, remaining: List[str | int]) -> None:
         self.placements = {}
@@ -150,7 +125,7 @@ class EnvState:
         self.placed_nodes_order = []
         self.maps.reset_runtime()
         self.flow.reset_runtime()
-        self.cost = self.empty_cost_dict()
+        self.eval.reset_runtime()
 
     def set_remaining(self, remaining: List[str | int]) -> None:
         self.remaining = list(remaining)
@@ -201,6 +176,7 @@ class EnvState:
             placement=placement,
             nodes=self.placed_nodes_order,
         )
+        self.eval.begin_layout_revision()
 
     def step(
         self,
@@ -228,25 +204,6 @@ class EnvState:
 
     def build_delta_flow_weights_for(self, gid: Optional[str | int]) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.flow.build_delta_flow_weights(gid, self.placed_nodes_order)
-
-    def clear_flow_port_pairs(self) -> None:
-        self.flow.clear_flow_port_pairs()
-
-    def set_flow_port_pairs(
-        self,
-        pairs: Dict[Tuple[str | int, str | int], list],
-        *,
-        nodes: Optional[List[str | int]] = None,
-    ) -> None:
-        self.flow.set_flow_port_pairs(pairs, nodes=nodes)
-
-    @property
-    def flow_port_pairs(self) -> Dict[Tuple[str | int, str | int], list]:
-        return self.flow.flow_port_pairs
-
-    @property
-    def flow_port_pairs_nodes_key(self) -> Tuple[str | int, ...]:
-        return self.flow.flow_port_pairs_nodes_key
 
     def placeable(
         self,

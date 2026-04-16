@@ -73,11 +73,12 @@ class Session:
         engine = self.explorer.engine
         adapter = self.explorer.adapter
         node = self.explorer.current()
+        state = engine.get_state()
 
         # Placed facilities — include port info from GroupPlacement
         placed = []
-        for gid in engine.get_state().placed:
-            p = engine.get_state().placements[gid]
+        for gid in state.placed:
+            p = state.placements[gid]
             entries = [PortInfo(x=float(pt[0]), y=float(pt[1]))
                        for pt in getattr(p, "entry_points", [])]
             exits = [PortInfo(x=float(pt[0]), y=float(pt[1]))
@@ -144,7 +145,7 @@ class Session:
                     q_value=qv,
                 ))
 
-        current_gid = engine.get_state().remaining[0] if engine.get_state().remaining else None
+        current_gid = state.remaining[0] if state.remaining else None
 
         def _zone_rect_from_dict(a: dict, *, id_value: str | None = None) -> ZoneRect | None:
             if "rect" not in a:
@@ -198,18 +199,19 @@ class Session:
 
         # Extract flow edges with positions
         flow_edges = []
-        for src, targets in engine.group_flow.items():
-            for dst, weight in targets.items():
-                edge = FlowEdge(src=str(src), dst=str(dst), weight=float(weight))
-                if src in engine.get_state().placed:
-                    p_src = engine.get_state().placements[src]
-                    edge.src_x = float(getattr(p_src, "x_center"))
-                    edge.src_y = float(getattr(p_src, "y_center"))
-                if dst in engine.get_state().placed:
-                    p_dst = engine.get_state().placements[dst]
-                    edge.dst_x = float(getattr(p_dst, "x_center"))
-                    edge.dst_y = float(getattr(p_dst, "y_center"))
-                flow_edges.append(edge)
+        edge_meta = state.eval.edge_metadata(phase="base")
+        edge_pairs = state.eval.edge_port_pairs(phase="base")
+        for edge_key, meta in edge_meta.items():
+            src, dst = edge_key
+            edge = FlowEdge(src=str(src), dst=str(dst), weight=float(meta.get("weight", 0.0)))
+            pairs = edge_pairs.get(edge_key, [])
+            if pairs:
+                (sx, sy), (dx, dy) = pairs[0]
+                edge.src_x = float(sx)
+                edge.src_y = float(sy)
+                edge.dst_x = float(dx)
+                edge.dst_y = float(dy)
+            flow_edges.append(edge)
 
         # Physical context from the parent node (the node that performed the step to reach here)
         last_physical_info = None
@@ -236,14 +238,14 @@ class Session:
             grid_width=int(engine.grid_width),
             grid_height=int(engine.grid_height),
             placed=placed,
-            remaining=[str(g) for g in engine.get_state().remaining],
+            remaining=[str(g) for g in state.remaining],
             current_gid=str(current_gid) if current_gid else None,
             candidates=candidates,
             value=float(value),
             cost=float(engine.cost()),
-            step=len(engine.get_state().placed),
+            step=len(state.placed),
             history_length=len(self.explorer.tree.nodes),
-            terminated=node.terminal or len(engine.get_state().remaining) == 0,
+            terminated=node.terminal or len(state.remaining) == 0,
             can_undo=self.can_undo(),
             can_redo=self.can_redo(),
             forbidden=forbidden_out,

@@ -526,8 +526,10 @@ class TerminalRewardComposer:
         reward_composer: "RewardComposer",
         failed: bool,
         base_scores_unweighted: Optional[Mapping[str, object]] = None,
-    ) -> Dict[str, float]:
+        return_meta: bool = False,
+    ):
         out: Dict[str, float] = {}
+        meta_out: Dict[str, Dict[str, object]] = {}
         if bool(failed):
             for name, comp in self.components.items():
                 fn = getattr(comp, "penalty_cost", None)
@@ -535,6 +537,9 @@ class TerminalRewardComposer:
                     continue
                 tw = float(self.weights.get(name, 1.0))
                 out[name] = tw * float(fn(state=state))
+                meta_out[str(name)] = {"failed": True}
+            if return_meta:
+                return out, meta_out
             return out
 
         unweighted = (
@@ -557,6 +562,9 @@ class TerminalRewardComposer:
             rw = float(reward_composer.weights.get(base_key, 1.0))
             tw = float(self.weights.get(name, 1.0))
             out[name] = tw * rw * (term_score - base_score)
+            meta_out[str(name)] = {"failed": False, "base_key": str(base_key)}
+        if return_meta:
+            return out, meta_out
         return out
 
     def delta_total(
@@ -575,4 +583,6 @@ class TerminalRewardComposer:
             failed=bool(failed),
             base_scores_unweighted=base_scores_unweighted,
         )
+        if isinstance(delta, tuple):
+            delta = delta[0]
         return float(sum(float(v) for v in delta.values()))

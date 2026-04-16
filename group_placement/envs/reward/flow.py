@@ -226,6 +226,7 @@ class FlowReward:
         exit_k: Optional[torch.Tensor] = None,
         entry_k: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
+        return_meta: bool = False,
     ):
         """Compute absolute flow score for the placed state (tensor-only).
 
@@ -238,9 +239,17 @@ class FlowReward:
         placed_ex = self._to_port_tensor(placed_exits, name="placed_exits", allow_2d=True)
         zero = torch.tensor(0.0, dtype=torch.float32, device=placed_entries.device)
         if placed_en.shape[0] == 0:
-            return (zero, None, None) if return_argmin else zero
+            if return_argmin:
+                return zero, None, None
+            if return_meta:
+                return zero, {"edges": {}, "edge_key_kind": "row_index"}
+            return zero
         if placed_en.shape[1] == 0 or placed_ex.shape[1] == 0:
-            return (zero, None, None) if return_argmin else zero
+            if return_argmin:
+                return zero, None, None
+            if return_meta:
+                return zero, {"edges": {}, "edge_key_kind": "row_index"}
+            return zero
         per_src, c_idx, p_idx = self._reduce_distance(
             candidate_ports=placed_ex,
             candidate_mask=placed_exits_mask,
@@ -251,7 +260,38 @@ class FlowReward:
             t_k=entry_k,
         )
         total = per_src.sum()
-        return (total, c_idx, p_idx) if return_argmin else total
+        if return_argmin:
+            return total, c_idx, p_idx
+        if not return_meta:
+            return total
+        meta: Dict[str, object] = {"edges": {}, "edge_key_kind": "row_index"}
+        if c_idx is not None and p_idx is not None:
+            for i in range(int(c_idx.shape[0])):
+                for j in range(int(c_idx.shape[1])):
+                    w_ij = float(flow_w[i, j].item()) if flow_w.dim() == 2 else float(flow_w[j].item())
+                    if w_ij <= 0.0:
+                        continue
+                    ci = int(c_idx[i, j].item())
+                    pj = int(p_idx[i, j].item())
+                    ex = (
+                        float(placed_ex[i, ci, 0].item()),
+                        float(placed_ex[i, ci, 1].item()),
+                    )
+                    en = (
+                        float(placed_en[j, pj, 0].item()),
+                        float(placed_en[j, pj, 1].item()),
+                    )
+                    k = f"{i}->{j}"
+                    meta["edges"][k] = {
+                        "weight": w_ij,
+                        "distance": abs(ex[0] - en[0]) + abs(ex[1] - en[1]),
+                        "models": {
+                            "estimated": {
+                                "port_pairs": [[list(ex), list(en)]],
+                            }
+                        },
+                    }
+        return total, meta
 
     def delta(
         self,
@@ -271,6 +311,7 @@ class FlowReward:
         t_entry_k: Optional[torch.Tensor] = None,
         t_exit_k: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
+        return_meta: bool = False,
     ):
         """Compute incremental flow cost for M candidate placements.
 
@@ -301,9 +342,12 @@ class FlowReward:
         has_out = bool(out_idx.any().item())
         has_in = bool(in_idx.any().item())
         if not (has_out or has_in):
+            zero = torch.zeros((m,), dtype=torch.float32, device=device)
             if return_argmin:
-                return torch.zeros((m,), dtype=torch.float32, device=device), None, None
-            return torch.zeros((m,), dtype=torch.float32, device=device)
+                return zero, None, None
+            if return_meta:
+                return zero, {"candidate_count": int(m), "edges": {}}
+            return zero
 
         out_term = torch.zeros((m,), dtype=torch.float32, device=device)
         in_term = torch.zeros((m,), dtype=torch.float32, device=device)
@@ -340,9 +384,16 @@ class FlowReward:
             )
             if return_argmin:
                 in_am = (ic_idx, ip_idx, in_idx)
+        delta = out_term + in_term
         if return_argmin:
-            return out_term + in_term, out_am, in_am
-        return out_term + in_term
+            return delta, out_am, in_am
+        if not return_meta:
+            return delta
+        return delta, {
+            "candidate_count": int(m),
+            "has_out": bool(has_out),
+            "has_in": bool(has_in),
+        }
 
 
 @dataclass
@@ -472,7 +523,8 @@ class FlowCollisionReward:
         route_blocked: Optional[torch.Tensor],
         exit_k: Optional[torch.Tensor] = None,
         entry_k: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_meta: bool = False,
+    ):
         if route_blocked is None:
             return FlowReward().score(
                 placed_entries=placed_entries,
@@ -482,13 +534,20 @@ class FlowCollisionReward:
                 flow_w=flow_w,
                 exit_k=exit_k,
                 entry_k=entry_k,
+                return_meta=return_meta,
             )
         placed_en = FlowReward._to_port_tensor(placed_entries, name="placed_entries", allow_2d=True)
         placed_ex = FlowReward._to_port_tensor(placed_exits, name="placed_exits", allow_2d=True)
         if placed_en.shape[0] == 0:
-            return torch.tensor(0.0, dtype=torch.float32, device=placed_entries.device)
+            zero = torch.tensor(0.0, dtype=torch.float32, device=placed_entries.device)
+            if not return_meta:
+                return zero
+            return zero, {"edges": {}, "collision_weight": float(self.collision_weight)}
         if placed_en.shape[1] == 0 or placed_ex.shape[1] == 0:
-            return torch.tensor(0.0, dtype=torch.float32, device=placed_entries.device)
+            zero = torch.tensor(0.0, dtype=torch.float32, device=placed_entries.device)
+            if not return_meta:
+                return zero
+            return zero, {"edges": {}, "collision_weight": float(self.collision_weight)}
 
         blocked = route_blocked.to(dtype=torch.bool, device=placed_en.device)
         row_ps, col_ps = self._prefix(blocked)
@@ -504,7 +563,10 @@ class FlowCollisionReward:
             c_k=exit_k,
             t_k=entry_k,
         )
-        return per_src.sum()
+        total = per_src.sum()
+        if not return_meta:
+            return total
+        return total, {"collision_weight": float(self.collision_weight)}
 
     def delta(
         self,
@@ -524,7 +586,8 @@ class FlowCollisionReward:
         c_entry_k: int = 1,
         t_entry_k: Optional[torch.Tensor] = None,
         t_exit_k: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_meta: bool = False,
+    ):
         if route_blocked is None:
             return FlowReward().delta(
                 placed_entries=placed_entries,
@@ -541,6 +604,7 @@ class FlowCollisionReward:
                 c_entry_k=c_entry_k,
                 t_entry_k=t_entry_k,
                 t_exit_k=t_exit_k,
+                return_meta=return_meta,
             )
         cand_entries = FlowReward._to_port_tensor(candidate_entries, name="candidate_entries", allow_2d=True)
         cand_exits = FlowReward._to_port_tensor(candidate_exits, name="candidate_exits", allow_2d=True)
@@ -549,7 +613,10 @@ class FlowCollisionReward:
         m = int(cand_entries.shape[0])
         device = cand_entries.device
         if m == 0:
-            return torch.zeros((0,), dtype=torch.float32, device=device)
+            zero = torch.zeros((0,), dtype=torch.float32, device=device)
+            if not return_meta:
+                return zero
+            return zero, {"candidate_count": 0, "collision_weight": float(self.collision_weight)}
 
         w_out_t = w_out.view(-1)
         w_in_t = w_in.view(-1)
@@ -562,7 +629,10 @@ class FlowCollisionReward:
         has_out = bool(out_idx.any().item())
         has_in = bool(in_idx.any().item())
         if not (has_out or has_in):
-            return torch.zeros((m,), dtype=torch.float32, device=device)
+            zero = torch.zeros((m,), dtype=torch.float32, device=device)
+            if not return_meta:
+                return zero
+            return zero, {"candidate_count": int(m), "collision_weight": float(self.collision_weight)}
 
         blocked = route_blocked.to(dtype=torch.bool, device=device)
         row_ps, col_ps = self._prefix(blocked)
@@ -604,4 +674,10 @@ class FlowCollisionReward:
                 t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
             )
 
-        return out_term + in_term
+        delta = out_term + in_term
+        if not return_meta:
+            return delta
+        return delta, {
+            "candidate_count": int(m),
+            "collision_weight": float(self.collision_weight),
+        }
