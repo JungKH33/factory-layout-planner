@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import gymnasium as gym
 import torch
 
-from group_placement.envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv
 from ...base import BaseAdapter
 
 
@@ -140,7 +140,7 @@ class GreedyV2Adapter(BaseAdapter):
             n_rand = 0
         return int(n_high), int(n_near), int(n_coarse), int(n_rand)
 
-    def _wh_int(self, env: FactoryLayoutEnv, gid: GroupId, rotation: int) -> Tuple[int, int]:
+    def _wh_int(self, env: FactoryLayoutEnv, gid: str | int, rotation: int) -> Tuple[int, int]:
         g = env.group_specs[gid]
         w, h = g.rotated_size(int(rotation))
         return int(w), int(h)
@@ -162,19 +162,19 @@ class GreedyV2Adapter(BaseAdapter):
             return []
         return list(range(0, end + 1, int(step)))
 
-    def _pad_candidates(self, gid: GroupId, count: int) -> List[Tuple[GroupId, int, int, int]]:
+    def _pad_candidates(self, gid: str | int, count: int) -> List[Tuple[str | int, int, int, int]]:
         return [(gid, 0, 0, 0) for _ in range(count)]
 
     def _dedup_tagged(
         self,
-        candidates: List[Tuple[int, Tuple[GroupId, int, int, int]]],
+        candidates: List[Tuple[int, Tuple[str | int, int, int, int]]],
         q: float,
         group: object,
-    ) -> List[Tuple[int, Tuple[GroupId, int, int, int]]]:
+    ) -> List[Tuple[int, Tuple[str | int, int, int, int]]]:
         if q <= 0:
             return candidates
         seen = set()
-        unique: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
+        unique: List[Tuple[int, Tuple[str | int, int, int, int]]] = []
         for src, c in candidates:
             _, x_bl, y_bl, rotation = c
             w, h = group.rotated_size(int(rotation))
@@ -209,7 +209,7 @@ class GreedyV2Adapter(BaseAdapter):
             result[rotation_match] = vmap[yc, xc] & in_bounds
         return result
 
-    def _build_rotation_valid_map(self, env: FactoryLayoutEnv, *, gid: GroupId, rotation: int) -> torch.Tensor:
+    def _build_rotation_valid_map(self, env: FactoryLayoutEnv, *, gid: str | int, rotation: int) -> torch.Tensor:
         spec = env.group_specs[gid]
         state = env.get_state()
         rr = spec._resolve_rotation(rotation)
@@ -250,12 +250,12 @@ class GreedyV2Adapter(BaseAdapter):
         self,
         *,
         env: FactoryLayoutEnv,
-        gid: GroupId,
+        gid: str | int,
         rotation: int,
         valid_map: torch.Tensor,
         count: int,
         gen: torch.Generator,
-    ) -> List[Tuple[GroupId, int, int, int]]:
+    ) -> List[Tuple[str | int, int, int, int]]:
         if count <= 0:
             return []
         if not isinstance(valid_map, torch.Tensor) or valid_map.numel() == 0:
@@ -269,7 +269,7 @@ class GreedyV2Adapter(BaseAdapter):
         else:
             perm = torch.randperm(M, generator=gen, device=env.device)[: int(count)]
             pick = idx[perm]
-        out: List[Tuple[GroupId, int, int, int]] = []
+        out: List[Tuple[str | int, int, int, int]] = []
         for t in range(int(pick.shape[0])):
             y_bl = int(pick[t, 0].item())
             x_bl = int(pick[t, 1].item())
@@ -279,12 +279,12 @@ class GreedyV2Adapter(BaseAdapter):
     def _source_stratified(
         self,
         env: FactoryLayoutEnv,
-        gid: GroupId,
+        gid: str | int,
         count: int,
         *,
         valid_by_rotation: Dict[int, torch.Tensor],
         gen: torch.Generator,
-    ) -> List[Tuple[GroupId, int, int, int]]:
+    ) -> List[Tuple[str | int, int, int, int]]:
         if count <= 0 or not valid_by_rotation:
             return []
 
@@ -297,7 +297,7 @@ class GreedyV2Adapter(BaseAdapter):
 
         rots = list(valid_by_rotation.keys())
         per_rot = max(1, int(round(float(count) / float(max(1, len(rots))))))
-        results: List[Tuple[GroupId, int, int, int]] = []
+        results: List[Tuple[str | int, int, int, int]] = []
 
         for rot in rots:
             vm = valid_by_rotation[int(rot)]
@@ -350,9 +350,9 @@ class GreedyV2Adapter(BaseAdapter):
     def _score_sorted(
         self,
         env: FactoryLayoutEnv,
-        gid: GroupId,
-        pool: List[Tuple[GroupId, int, int, int]],
-    ) -> List[Tuple[GroupId, int, int, int]]:
+        gid: str | int,
+        pool: List[Tuple[str | int, int, int, int]],
+    ) -> List[Tuple[str | int, int, int, int]]:
         if not pool:
             return []
         spec = env.group_specs[gid]
@@ -367,7 +367,7 @@ class GreedyV2Adapter(BaseAdapter):
         order = sorted(range(len(pool)), key=lambda i: scores[i])
         return [pool[i] for i in order]
 
-    def _random_take(self, pool: List[Tuple[GroupId, int, int, int]], count: int) -> List[Tuple[GroupId, int, int, int]]:
+    def _random_take(self, pool: List[Tuple[str | int, int, int, int]], count: int) -> List[Tuple[str | int, int, int, int]]:
         if count <= 0 or not pool:
             return []
         if len(pool) <= count:
@@ -377,18 +377,18 @@ class GreedyV2Adapter(BaseAdapter):
     def _source_high(
         self,
         env: FactoryLayoutEnv,
-        gid: GroupId,
+        gid: str | int,
         count: int,
         *,
         valid_by_rotation: Dict[int, torch.Tensor],
         gen: torch.Generator,
-    ) -> List[Tuple[GroupId, int, int, int]]:
+    ) -> List[Tuple[str | int, int, int, int]]:
         # v2: "high" is generated from valid space directly (then later scored by _score_sorted).
         if count <= 0 or not valid_by_rotation:
             return []
         rots = list(valid_by_rotation.keys())
         per_rot = max(1, int(round(float(count) / float(max(1, len(rots))))))
-        out: List[Tuple[GroupId, int, int, int]] = []
+        out: List[Tuple[str | int, int, int, int]] = []
         for rot in rots:
             out.extend(self._sample_from_valid(env=env, gid=gid, rotation=int(rot), valid_map=valid_by_rotation[int(rot)], count=per_rot, gen=gen))
         return out[: int(count)]
@@ -396,14 +396,14 @@ class GreedyV2Adapter(BaseAdapter):
     def _source_near(
         self,
         env: FactoryLayoutEnv,
-        gid: GroupId,
+        gid: str | int,
         count: int,
         *,
         valid_by_rotation: Dict[int, torch.Tensor],
         wh_cache: Dict[int, Tuple[int, int]],
         gen: torch.Generator,
         radius: int,
-    ) -> List[Tuple[GroupId, int, int, int]]:
+    ) -> List[Tuple[str | int, int, int, int]]:
         # v2: generate near candidates by snapping around body-event points into nearby valid points.
         if count <= 0 or (not env.get_state().placed) or (not valid_by_rotation):
             return []
@@ -414,7 +414,7 @@ class GreedyV2Adapter(BaseAdapter):
         self._rng.shuffle(placed_ids)
         placed_ids = placed_ids[: max(1, per_rot * 8)]
 
-        out: List[Tuple[GroupId, int, int, int]] = []
+        out: List[Tuple[str | int, int, int, int]] = []
         for rot in rots:
             vm = valid_by_rotation[int(rot)]
             H, W = int(vm.shape[0]), int(vm.shape[1])
@@ -469,15 +469,15 @@ class GreedyV2Adapter(BaseAdapter):
     def _source_coarse(
         self,
         env: FactoryLayoutEnv,
-        gid: GroupId,
+        gid: str | int,
         count: int,
         *,
         valid_by_rotation: Dict[int, torch.Tensor],
-    ) -> List[Tuple[GroupId, int, int, int]]:
+    ) -> List[Tuple[str | int, int, int, int]]:
         if count <= 0 or (not valid_by_rotation):
             return []
         step = max(int(round(float(self.scan_step * 3))), 1)
-        out: List[Tuple[GroupId, int, int, int]] = []
+        out: List[Tuple[str | int, int, int, int]] = []
         # coarse is always rot=0 in the original, keep parity
         rot = 0 if 0 in valid_by_rotation else list(valid_by_rotation.keys())[0]
         vm = valid_by_rotation[int(rot)]
@@ -495,30 +495,30 @@ class GreedyV2Adapter(BaseAdapter):
     def _source_random(
         self,
         env: FactoryLayoutEnv,
-        gid: GroupId,
+        gid: str | int,
         count: int,
         *,
         valid_by_rotation: Dict[int, torch.Tensor],
         gen: torch.Generator,
-    ) -> List[Tuple[GroupId, int, int, int]]:
+    ) -> List[Tuple[str | int, int, int, int]]:
         if count <= 0 or (not valid_by_rotation):
             return []
         rots = list(valid_by_rotation.keys())
         per_rot = max(1, int(round(float(count) / float(max(1, len(rots))))))
-        out: List[Tuple[GroupId, int, int, int]] = []
+        out: List[Tuple[str | int, int, int, int]] = []
         for rot in rots:
             out.extend(self._sample_from_valid(env=env, gid=gid, rotation=int(rot), valid_map=valid_by_rotation[int(rot)], count=per_rot, gen=gen))
         return out[: int(count)]
 
     def _generate_initial(
-        self, env: FactoryLayoutEnv, gid: GroupId, quant_step: float
-    ) -> Tuple[List[Tuple[GroupId, int, int, int]], torch.Tensor]:
+        self, env: FactoryLayoutEnv, gid: str | int, quant_step: float
+    ) -> Tuple[List[Tuple[str | int, int, int, int]], torch.Tensor]:
         device = env.device
         total_k = self.k * self.oversample_factor
         n_strat_target = round(total_k * 0.9)
         n_rand = total_k - n_strat_target
 
-        raw_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
+        raw_tagged: List[Tuple[int, Tuple[str | int, int, int, int]]] = []
         group = env.group_specs[gid]
         rotations = (0, 90, 180, 270) if getattr(group, "rotatable", False) else (0,)
         wh_cache = {r: self._wh_int(env, gid, r) for r in rotations}
@@ -529,7 +529,7 @@ class GreedyV2Adapter(BaseAdapter):
         raw_tagged.extend((1, c) for c in self._source_random(env, gid, n_rand, valid_by_rotation=valid_by_rotation, gen=gen))
 
         unique_tagged = self._dedup_tagged(raw_tagged, quant_step, group)
-        valid_candidates: List[Tuple[GroupId, int, int, int]] = []
+        valid_candidates: List[Tuple[str | int, int, int, int]] = []
         if unique_tagged:
             xyrot = torch.tensor(
                 [[int(c[1]), int(c[2]), int(c[3])] for _, c in unique_tagged],
@@ -550,8 +550,8 @@ class GreedyV2Adapter(BaseAdapter):
         return final, mask
 
     def _generate(
-        self, env: FactoryLayoutEnv, next_group_id: GroupId
-    ) -> Tuple[List[Tuple[GroupId, int, int, int]], torch.Tensor]:
+        self, env: FactoryLayoutEnv, next_group_id: str | int
+    ) -> Tuple[List[Tuple[str | int, int, int, int]], torch.Tensor]:
         device = env.device
         q = self.quant_step if self.quant_step is not None else self.scan_step
 
@@ -566,7 +566,7 @@ class GreedyV2Adapter(BaseAdapter):
         gen = self._torch_gen(env=env)
         radius = max(1, int(round(q)))
 
-        raw_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
+        raw_tagged: List[Tuple[int, Tuple[str | int, int, int, int]]] = []
         raw_tagged.extend(
             (0, c)
             for c in self._source_high(env, next_group_id, n_high * self.oversample_factor, valid_by_rotation=valid_by_rotation, gen=gen)
@@ -587,7 +587,7 @@ class GreedyV2Adapter(BaseAdapter):
         raw_tagged.extend((3, c) for c in self._source_random(env, next_group_id, n_rand * self.oversample_factor, valid_by_rotation=valid_by_rotation, gen=gen))
 
         unique_tagged = self._dedup_tagged(raw_tagged, q, group)
-        valid_tagged: List[Tuple[int, Tuple[GroupId, int, int, int]]] = []
+        valid_tagged: List[Tuple[int, Tuple[str | int, int, int, int]]] = []
         if unique_tagged:
             xyrot = torch.tensor(
                 [[int(c[1]), int(c[2]), int(c[3])] for _, c in unique_tagged],
@@ -599,11 +599,11 @@ class GreedyV2Adapter(BaseAdapter):
                 if bool(placeable[i].item()):
                     valid_tagged.append(tagged)
 
-        pools: Dict[int, List[Tuple[GroupId, int, int, int]]] = {0: [], 1: [], 2: [], 3: []}
+        pools: Dict[int, List[Tuple[str | int, int, int, int]]] = {0: [], 1: [], 2: [], 3: []}
         for src, c in valid_tagged:
             pools[src].append(c)
 
-        final: List[Tuple[GroupId, int, int, int]] = []
+        final: List[Tuple[str | int, int, int, int]] = []
         final.extend(self._score_sorted(env, next_group_id, pools[0])[:n_high])
         final.extend(self._score_sorted(env, next_group_id, pools[1])[:n_near])
         final.extend(self._random_take(pools[2], n_coarse))
@@ -622,7 +622,6 @@ if __name__ == "__main__":
     import torch
 
     from group_placement.envs.action_space import ActionSpace
-    from group_placement.envs.action import EnvAction
     from group_placement.envs.env_loader import load_env
     from group_placement.envs.visualizer import plot_layout
 
@@ -649,7 +648,7 @@ if __name__ == "__main__":
 
     t1 = time.perf_counter()
     placement = adapter.resolve_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

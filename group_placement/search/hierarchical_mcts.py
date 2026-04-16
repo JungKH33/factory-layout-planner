@@ -393,13 +393,13 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                     placement = adapter.resolve_sub_action(
                         worker_action, worker_as, parent_idx=manager_action,
                     )
-                    _, reward, terminated, truncated, _info = engine.step_placement(
+                    _, reward, terminated, truncated, _info = engine.step(
                         placement,
                     )
-                except (IndexError, ValueError):
-                    reward = float(engine.failure_penalty())
-                    terminated = False
-                    truncated = True
+                except IndexError:
+                    _obs, reward, terminated, truncated, _info = engine.fail(reason="action_out_of_range")
+                except ValueError:
+                    _obs, reward, terminated, truncated, _info = engine.fail(reason="masked_action")
                 terminal = bool(terminated or truncated)
 
                 if terminal:

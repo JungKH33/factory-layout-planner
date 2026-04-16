@@ -12,7 +12,6 @@ import torch
 
 from group_placement.agents.placement.alphachip import AlphaChipAdapter
 from group_placement.agents.placement.greedy import GreedyAdapter
-from group_placement.envs.action import EnvAction
 from group_placement.envs.env import FactoryLayoutEnv
 from group_placement.envs.placement.static import StaticRectSpec
 from group_placement.envs.action_space import ActionSpace
@@ -54,10 +53,14 @@ def main():
         "placeable": {"dtype": "int", "op": "==", "default": 0, "areas": [{"shape_type": "rect", "rect": [30, 20, 120, 80], "value": 1}]},
     }
 
-    initial_placements = {
-        "A": EnvAction(group_id="A", x_center=90.0, y_center=20.0, variant_index=0),
-        "B": EnvAction(group_id="B", x_center=90.0, y_center=40.0, variant_index=0),
-    }
+    p_a = engine.resolve_center_placement(
+        group_id="A", x_center=90.0, y_center=20.0, variant_index=0,
+    )
+    p_b = engine.resolve_center_placement(
+        group_id="B", x_center=90.0, y_center=40.0, variant_index=0,
+    )
+    assert p_a is not None and p_b is not None
+    initial_placements = {"A": p_a, "B": p_b}
     remaining_order = ["C", "A", "B"]
 
     engine = FactoryLayoutEnv(

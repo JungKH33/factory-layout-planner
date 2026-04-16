@@ -6,7 +6,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 import torch
 
-from ..action import EnvAction, GroupId
+
 from .flow import FlowGraph
 from .maps import GridMaps
 
@@ -32,11 +32,11 @@ class EnvState:
         "cost",
     )
 
-    placements: Dict[GroupId, object]
-    placed: set[GroupId]
-    remaining: List[GroupId]
+    placements: Dict[str | int, object]
+    placed: set[str | int]
+    remaining: List[str | int]
     step_count: int
-    placed_nodes_order: List[GroupId]
+    placed_nodes_order: List[str | int]
     device: torch.device
     maps: GridMaps
     flow: FlowGraph
@@ -70,7 +70,7 @@ class EnvState:
         }
 
     @staticmethod
-    def _make_state_sig(*, grid_height: int, grid_width: int, gids: List[GroupId]) -> Tuple[int, int, Tuple[str, ...]]:
+    def _make_state_sig(*, grid_height: int, grid_width: int, gids: List[str | int]) -> Tuple[int, int, Tuple[str, ...]]:
         key = tuple(sorted(str(gid) for gid in gids))
         return int(grid_height), int(grid_width), key
 
@@ -79,7 +79,7 @@ class EnvState:
         cls,
         *,
         maps: GridMaps,
-        group_specs: Dict[GroupId, object],
+        group_specs: Dict[str | int, object],
         flow: FlowGraph,
         device: torch.device,
     ) -> "EnvState":
@@ -142,7 +142,7 @@ class EnvState:
         self.flow.restore(src.flow)
         self.cost = self._clone_cost_dict(getattr(src, "cost", None))
 
-    def reset_runtime(self, *, remaining: List[GroupId]) -> None:
+    def reset_runtime(self, *, remaining: List[str | int]) -> None:
         self.placements = {}
         self.placed = set()
         self.remaining = list(remaining)
@@ -152,7 +152,7 @@ class EnvState:
         self.flow.reset_runtime()
         self.cost = self.empty_cost_dict()
 
-    def set_remaining(self, remaining: List[GroupId]) -> None:
+    def set_remaining(self, remaining: List[str | int]) -> None:
         self.remaining = list(remaining)
 
     def place(self, *, placement: object) -> None:
@@ -217,16 +217,16 @@ class EnvState:
             placement=placement,
         )
 
-    def placed_nodes(self) -> List[GroupId]:
+    def placed_nodes(self) -> List[str | int]:
         return list(self.placed_nodes_order)
 
-    def io_tensors(self) -> Tuple[List[GroupId], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def io_tensors(self) -> Tuple[List[str | int], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.flow.io_tensors(self.placed_nodes_order)
 
     def build_flow_w(self) -> torch.Tensor:
         return self.flow.build_flow_w(self.placed_nodes_order)
 
-    def build_delta_flow_weights_for(self, gid: Optional[GroupId]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def build_delta_flow_weights_for(self, gid: Optional[str | int]) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.flow.build_delta_flow_weights(gid, self.placed_nodes_order)
 
     def clear_flow_port_pairs(self) -> None:
@@ -234,18 +234,18 @@ class EnvState:
 
     def set_flow_port_pairs(
         self,
-        pairs: Dict[Tuple[GroupId, GroupId], list],
+        pairs: Dict[Tuple[str | int, str | int], list],
         *,
-        nodes: Optional[List[GroupId]] = None,
+        nodes: Optional[List[str | int]] = None,
     ) -> None:
         self.flow.set_flow_port_pairs(pairs, nodes=nodes)
 
     @property
-    def flow_port_pairs(self) -> Dict[Tuple[GroupId, GroupId], list]:
+    def flow_port_pairs(self) -> Dict[Tuple[str | int, str | int], list]:
         return self.flow.flow_port_pairs
 
     @property
-    def flow_port_pairs_nodes_key(self) -> Tuple[GroupId, ...]:
+    def flow_port_pairs_nodes_key(self) -> Tuple[str | int, ...]:
         return self.flow.flow_port_pairs_nodes_key
 
     def placeable(
@@ -269,7 +269,7 @@ class EnvState:
     def placeable_batch(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
         body_mask: torch.Tensor,
@@ -290,7 +290,7 @@ class EnvState:
     def placeable_map(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         body_mask: torch.Tensor,
         clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],

@@ -8,7 +8,6 @@ import torch
 import torch.nn.functional as F
 
 if TYPE_CHECKING:
-    from ..action import GroupId
     from ..state.base import EnvState
 
 

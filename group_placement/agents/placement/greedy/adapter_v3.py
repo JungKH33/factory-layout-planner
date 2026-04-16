@@ -8,7 +8,7 @@ import gymnasium as gym
 import torch
 import torch.nn.functional as F
 
-from group_placement.envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv
 from ...base import BaseAdapter
 
 
@@ -56,7 +56,6 @@ class GreedyV3Adapter(BaseAdapter):
         if isinstance(self.action_costs, torch.Tensor):
             obs["action_costs"] = self.action_costs
         obs["reward_scale"] = float(self.engine.reward_scale)
-        obs["failure_penalty"] = float(self.engine.failure_penalty())
         return obs
 
     def create_mask(self) -> torch.Tensor:
@@ -175,7 +174,7 @@ class GreedyV3Adapter(BaseAdapter):
         return unique
 
     def _generate(
-        self, env: FactoryLayoutEnv, gid: GroupId
+        self, env: FactoryLayoutEnv, gid: str | int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Generate candidate center poses and validity mask.
 
@@ -230,7 +229,6 @@ if __name__ == "__main__":
     import torch
 
     from group_placement.envs.action_space import ActionSpace
-    from group_placement.envs.action import EnvAction
     from group_placement.envs.env_loader import load_env
     from group_placement.envs.visualizer import plot_layout
 
@@ -257,7 +255,7 @@ if __name__ == "__main__":
 
     t1 = time.perf_counter()
     placement = adapter.resolve_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

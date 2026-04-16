@@ -19,7 +19,6 @@ from .reward import (
 )
 from .placement.base import GroupSpec
 from .placement.static import StaticRectSpec
-from .action import GroupId, EnvAction
 from .state import EnvState, FlowGraph, GridMaps
 
 # GroupPlacement is defined in envs/placement/base.py and imported above.
@@ -45,8 +44,8 @@ class FactoryLayoutEnv(gym.Env):
         *,
         grid_width: int,
         grid_height: int,
-        group_specs: Dict[GroupId, GroupSpec],
-        group_flow: Optional[Dict[GroupId, Dict[GroupId, float]]] = None,
+        group_specs: Dict[str | int, GroupSpec],
+        group_flow: Optional[Dict[str | int, Dict[str | int, float]]] = None,
         # Forbidden zones:
         # - rect: {"shape_type": "rect", "rect": [x0, y0, x1, y1]}
         # - irregular: {"shape_type": "irregular", "polygon": [[x, y], ...]}
@@ -91,8 +90,8 @@ class FactoryLayoutEnv(gym.Env):
         # Engine static metadata (direct fields; no proxy properties).
         self.group_specs = group_specs_norm
         self.group_flow = group_flow_norm
-        self.node_ids: List[GroupId] = sorted(self.group_specs.keys(), key=lambda x: str(x))
-        self.gid_to_idx: Dict[GroupId, int] = {gid: i for i, gid in enumerate(self.node_ids)}
+        self.node_ids: List[str | int] = sorted(self.group_specs.keys(), key=lambda x: str(x))
+        self.gid_to_idx: Dict[str | int, int] = {gid: i for i, gid in enumerate(self.node_ids)}
 
         # Log env info
         if self.device.type == "cuda":
@@ -144,13 +143,13 @@ class FactoryLayoutEnv(gym.Env):
                     penalty_weight=float(self.penalty_weight),
                     group_areas=group_areas,
                 ),
-                "flow": TerminalFlowReward(
-                    group_specs=self.group_specs,
-                    unreachable_cost=float(terminal_flow_unreachable_cost),
-                    max_wave_iters=int(terminal_flow_max_wave_iters),
-                    batched_wavefront=bool(terminal_flow_batched_wavefront),
-                    include_clear_invalid=bool(terminal_flow_include_clearance),
-                ),
+                # "flow": TerminalFlowReward(
+                #     group_specs=self.group_specs,
+                #     unreachable_cost=float(terminal_flow_unreachable_cost),
+                #     max_wave_iters=int(terminal_flow_max_wave_iters),
+                #     batched_wavefront=bool(terminal_flow_batched_wavefront),
+                #     include_clear_invalid=bool(terminal_flow_include_clearance),
+                # ),
             }
         else:
             t_components = dict(terminal_reward_components)
@@ -171,9 +170,9 @@ class FactoryLayoutEnv(gym.Env):
         )
         self._refresh_base_cost_snapshot(reset_terminal=True)
 
-    def _normalize_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> Dict[GroupId, GroupSpec]:
+    def _normalize_group_specs(self, group_specs: Dict[str | int, GroupSpec]) -> Dict[str | int, GroupSpec]:
         """Normalize group specs onto env device and validate id/key consistency."""
-        out: Dict[GroupId, GroupSpec] = {}
+        out: Dict[str | int, GroupSpec] = {}
         for gid, s in dict(group_specs).items():
             if not isinstance(s, GroupSpec):
                 raise TypeError(f"group_specs[{gid!r}] must be GroupSpec, got {type(s).__name__}")
@@ -184,7 +183,7 @@ class FactoryLayoutEnv(gym.Env):
             out[gid] = s
         return out
 
-    def _group_spec(self, gid: GroupId) -> GroupSpec:
+    def _group_spec(self, gid: str | int) -> GroupSpec:
         geom = self.group_specs.get(gid, None)
         if geom is None:
             raise KeyError(f"unknown gid={gid!r}")
@@ -275,9 +274,9 @@ class FactoryLayoutEnv(gym.Env):
     def _try_update_flow_port_pairs_incremental(
         self,
         *,
-        updated_gid: GroupId,
+        updated_gid: str | int,
         flow_comp: FlowReward,
-        placed_nodes: List[GroupId],
+        placed_nodes: List[str | int],
         placed_entries: torch.Tensor,
         placed_exits: torch.Tensor,
         placed_entries_mask: torch.Tensor,
@@ -305,7 +304,7 @@ class FactoryLayoutEnv(gym.Env):
             )
 
         if is_append:
-            pairs: Dict[Tuple[GroupId, GroupId], list] = dict(self._state.flow_port_pairs)
+            pairs: Dict[Tuple[str | int, str | int], list] = dict(self._state.flow_port_pairs)
         else:
             pairs = {
                 key: value
@@ -370,7 +369,7 @@ class FactoryLayoutEnv(gym.Env):
 
         self._state.set_flow_port_pairs(pairs, nodes=placed_nodes)
 
-    def _update_flow_port_pairs(self, *, updated_gid: GroupId) -> None:
+    def _update_flow_port_pairs(self, *, updated_gid: str | int) -> None:
         """Update per-edge port pair cache for visualization.
 
         For span=1 ports: store the single argmin pair.
@@ -466,21 +465,37 @@ class FactoryLayoutEnv(gym.Env):
             min_y=min_y, max_y=max_y,
         ).to(dtype=torch.float32)
 
-    def _normalize_action(self, action: EnvAction) -> Tuple[GroupId, float, float]:
-        if not isinstance(action, EnvAction):
-            raise TypeError(f"expected EnvAction, got {type(action).__name__}")
-        gid_eff: GroupId = action.group_id
+    def _normalize_center_request(
+        self,
+        *,
+        group_id: str | int,
+        x_center: float,
+        y_center: float,
+    ) -> Tuple[str | int, float, float]:
+        gid_eff: str | int = group_id
         if gid_eff not in self.group_specs:
             raise KeyError(f"unknown gid={gid_eff!r}")
-        return gid_eff, float(action.x_center), float(action.y_center)
+        return gid_eff, float(x_center), float(y_center)
 
-    def resolve_action(self, action: EnvAction) -> Tuple[GroupId, 'GroupPlacement | None']:
-        """Resolve a center-based EnvAction to (gid, concrete placement or None).
+    def resolve_center_placement(
+        self,
+        *,
+        group_id: str | int,
+        x_center: float,
+        y_center: float,
+        variant_index: Optional[int] = None,
+        source_index: Optional[int] = None,
+    ) -> GroupPlacement | None:
+        """Resolve a center-based request to a concrete placement.
 
         Center→BL conversion happens here, per shape_key, so each shape gets
         the correct BL from the shared center coordinate.
         """
-        gid, x_center, y_center = self._normalize_action(action)
+        gid, x_center, y_center = self._normalize_center_request(
+            group_id=group_id,
+            x_center=x_center,
+            y_center=y_center,
+        )
         geom = self._group_spec(gid)
 
         def _check_placeable(xb, yb, body_mask, clearance_mask, clearance_origin, is_rectangular):
@@ -493,20 +508,20 @@ class FactoryLayoutEnv(gym.Env):
             )
 
         # Single variant — fast path
-        if action.variant_index is not None:
-            vi = geom._variants[action.variant_index]
+        if variant_index is not None:
+            vi = geom._variants[int(variant_index)]
             x_bl = int(round(x_center - float(vi.body_width) / 2.0))
             y_bl = int(round(y_center - float(vi.body_height) / 2.0))
             p = geom.resolve(
                 x_bl=x_bl, y_bl=y_bl,
-                variant_index=action.variant_index,
+                variant_index=int(variant_index),
                 is_placeable_fn=_check_placeable,
             )
-            return gid, p
+            return p
 
         # Multiple variants — determine candidates
-        if action.source_index is not None:
-            s, e = geom._source_ranges[action.source_index]
+        if source_index is not None:
+            s, e = geom._source_ranges[int(source_index)]
             candidates = list(range(s, e))
         else:
             candidates = list(range(len(geom._variants)))
@@ -540,12 +555,12 @@ class FactoryLayoutEnv(gym.Env):
                     placeable.append(p)
 
         if not placeable:
-            return gid, None
+            return None
         if len(placeable) == 1:
-            return gid, placeable[0]
+            return placeable[0]
         scores = self._delta_cost_from_placements(placeable)
         scores = scores.to(dtype=torch.float32, device=self.device).view(-1)
-        return gid, placeable[int(torch.argmin(scores).item())]
+        return placeable[int(torch.argmin(scores).item())]
 
     def _apply_resolved_placement(
         self,
@@ -628,7 +643,7 @@ class FactoryLayoutEnv(gym.Env):
         delta = self._finalize_terminal_snapshot(failed=True)
         return -float(delta) / float(self.reward_scale)
 
-    def reorder_remaining(self, ordered_remaining: List[GroupId]) -> None:
+    def reorder_remaining(self, ordered_remaining: List[str | int]) -> None:
         """Replace `remaining` order with a validated permutation of current remaining gids."""
         if not isinstance(ordered_remaining, list):
             raise TypeError("ordered_remaining must be a list")
@@ -649,26 +664,45 @@ class FactoryLayoutEnv(gym.Env):
     # Placement interchange: ``group_placement.envs.interchange`` (export_placement /
     # import_placement).
 
-    def _fail(self, reason: str) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
-        """실패 처리 통합 헬퍼."""
-        reward = self.failure_penalty()
+    def _end_episode(self, *, reason: str, failed: bool) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+        """Finalize terminal reward once and return unified step-like outputs."""
+        terminal_delta = self._finalize_terminal_snapshot(failed=bool(failed))
+        reward = -float(terminal_delta) / float(self.reward_scale)
+        terminated = not bool(failed)
+        truncated = bool(failed)
         info: Dict[str, Any] = {"reason": reason}
         base_cost = float(self._state.cost.get("base", {}).get("total", 0.0))
-        terminal_delta = float(self._state.cost.get("terminal", {}).get("total", 0.0))
+        terminal_total = float(self._state.cost.get("terminal", {}).get("total", 0.0))
         final_cost = float(self.cost())
-        logger.warning(
-            "fail: reason=%s remaining=%d cost=%.3f (base=%.3f + terminal=%.3f) reward=%.3f",
-            reason,
-            len(self._state.remaining),
-            final_cost,
-            base_cost,
-            terminal_delta,
-            reward,
-        )
+        if bool(failed):
+            logger.warning(
+                "fail: reason=%s remaining=%d cost=%.3f (base=%.3f + terminal=%.3f) reward=%.3f",
+                reason,
+                len(self._state.remaining),
+                final_cost,
+                base_cost,
+                terminal_total,
+                reward,
+            )
+        else:
+            logger.info(
+                "end: terminated=%s truncated=%s remaining=%d placed=%d step=%d cost=%.3f reason=%s reward=%.3f",
+                terminated,
+                truncated,
+                len(self._state.remaining),
+                len(self._state.placed),
+                self._state.step_count,
+                final_cost,
+                reason,
+                reward,
+            )
+        return {}, float(reward), bool(terminated), bool(truncated), info
 
-        return {}, float(reward), False, True, info
+    def fail(self, reason: str) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+        """Public failed-termination endpoint with step-compatible outputs."""
+        return self._end_episode(reason=reason, failed=True)
 
-    def step_placement(
+    def step(
         self,
         placement: GroupPlacement,
     ) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
@@ -679,12 +713,12 @@ class FactoryLayoutEnv(gym.Env):
             return {}, 0.0, True, False, {"reason": "done"}
         if gid not in self._state.remaining:
             self._state.step(apply=False)
-            return self._fail("gid_not_remaining")
+            return self._end_episode(reason="gid_not_remaining", failed=True)
 
         # Placeability validation — env never trusts external input
         if not self._state.placeable(placement=placement):
             self._state.step(apply=False)
-            return self._fail("not_placeable")
+            return self._end_episode(reason="not_placeable", failed=True)
 
         delta_cost = float(self._delta_cost_from_placements([placement])[0].item())
 
@@ -698,53 +732,23 @@ class FactoryLayoutEnv(gym.Env):
         info: Dict[str, Any] = {"reason": "placed"}
 
         if terminated:
-            terminal_delta = self._finalize_terminal_snapshot(failed=False)
-            reward += -float(terminal_delta) / float(self.reward_scale)
-        elif truncated:
-            terminal_delta = self._finalize_terminal_snapshot(failed=True)
-            reward += -float(terminal_delta) / float(self.reward_scale)
-
-        if terminated or truncated:
-            logger.info(
-                "end: terminated=%s truncated=%s remaining=%d placed=%d step=%d cost=%.3f reason=placed reward=%.3f",
-                terminated, truncated,
-                len(self._state.remaining), len(self._state.placed),
-                self._state.step_count, self.cost(), reward,
+            _obs, terminal_reward, terminated, truncated, info = self._end_episode(
+                reason="placed",
+                failed=False,
             )
+            reward += float(terminal_reward)
+            return _obs, float(reward), bool(terminated), bool(truncated), info
+        if truncated:
+            _obs, terminal_reward, terminated, truncated, info = self._end_episode(
+                reason="placed",
+                failed=True,
+            )
+            reward += float(terminal_reward)
+            return _obs, float(reward), bool(terminated), bool(truncated), info
 
-        return {}, float(reward), bool(terminated), bool(truncated), info
+        return {}, float(reward), False, False, info
 
-    def step_action(
-        self,
-        action: EnvAction,
-    ) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
-        """Place a single `EnvAction` — resolves variant then delegates to step_placement."""
-        if not self._state.remaining:
-            self._state.step(apply=False)
-            return {}, 0.0, True, False, {"reason": "done"}
-
-        try:
-            gid_eff, _x_center, _y_center = self._normalize_action(action)
-        except TypeError:
-            raise
-        except Exception:
-            self._state.step(apply=False)
-            return self._fail("invalid_action_payload")
-        if gid_eff not in self._state.remaining:
-            self._state.step(apply=False)
-            return self._fail("gid_not_remaining")
-
-        try:
-            _gid, placement = self.resolve_action(action)
-        except Exception:
-            placement = None
-        if placement is None:
-            self._state.step(apply=False)
-            return self._fail("not_placeable")
-
-        return self.step_placement(placement)
-
-    # ---- gym api ----
+    # ---- reset ----
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         super().reset(seed=seed)
         options = dict(options or {})
@@ -770,17 +774,17 @@ class FactoryLayoutEnv(gym.Env):
             remaining = list(base_remaining)
         self._state.reset_runtime(remaining=remaining)
 
-        # Apply initial placements via the same resolve_action path as step_action.
+        # Apply pre-resolved initial placements.
         initial_placements = options.get("initial_placements", None)
         placement_order = options.get("placement_order", None)
         strict_initial = bool(options.get("strict_initial_placements", False))
         if initial_placements is not None:
             if not isinstance(initial_placements, dict):
-                raise ValueError("reset(options): initial_placements must be a dict {gid: EnvAction}")
+                raise ValueError("reset(options): initial_placements must be a dict {gid: GroupPlacement}")
             if placement_order is not None:
                 if not isinstance(placement_order, list):
                     raise ValueError("reset(options): placement_order must be a list of group ids")
-                iter_gids: List[GroupId] = list(placement_order)
+                iter_gids: List[str | int] = list(placement_order)
                 seen_po: set = set()
                 for gid in iter_gids:
                     if gid not in initial_placements:
@@ -799,23 +803,22 @@ class FactoryLayoutEnv(gym.Env):
                 iter_gids = list(initial_placements.keys())
 
             for gid in iter_gids:
-                action = initial_placements[gid]
-                if not isinstance(action, EnvAction):
+                placement = initial_placements[gid]
+                if not isinstance(placement, GroupPlacement):
                     raise TypeError(
-                        f"reset(options): initial_placements[{gid!r}] must be EnvAction, "
-                        f"got {type(action).__name__}"
+                        f"reset(options): initial_placements[{gid!r}] must be GroupPlacement, "
+                        f"got {type(placement).__name__}"
                     )
-                if gid != action.group_id:
+                if gid != placement.group_id:
                     raise ValueError(
-                        f"reset(options): key {gid!r} does not match action.group_id={action.group_id!r}"
+                        f"reset(options): key {gid!r} does not match placement.group_id={placement.group_id!r}"
                     )
                 if gid in self._state.placed:
                     raise ValueError(f"reset(options): initial_placements contains duplicate gid: {gid!r}")
-                _gid, placement = self.resolve_action(action)
-                if placement is None:
+                if not self._state.placeable(placement=placement):
                     msg = (
                         f"reset(options): not placeable gid={gid!r} "
-                        f"x_center={action.x_center} y_center={action.y_center} vi={action.variant_index}"
+                        f"x_center={float(placement.x_center):.3f} y_center={float(placement.y_center):.3f}"
                     )
                     if strict_initial:
                         raise RuntimeError(msg)
@@ -826,12 +829,6 @@ class FactoryLayoutEnv(gym.Env):
         if len(self._state.remaining) == 0 and len(self._state.placed) > 0:
             self._finalize_terminal_snapshot(failed=False)
         return {}, {}
-
-    def step(self, action: EnvAction):
-        """Gym-compatible step proxy for engine-only usage."""
-        if not isinstance(action, EnvAction):
-            raise TypeError(f"FactoryLayoutEnv.step expects EnvAction, got {type(action).__name__}")
-        return self.step_action(action)
 
 
 if __name__ == "__main__":
@@ -918,10 +915,10 @@ if __name__ == "__main__":
 
     # --- reset: A·B 사전 배치, C만 step으로 배치 ---
     # forbidden [0,0,30,20] 밖 + constraint map 조건
-    initial_placements = {
-        "A": EnvAction(group_id="A", x_center=42.0, y_center=27.0, variant_index=0),
-        "B": EnvAction(group_id="B", x_center=62.5, y_center=29.5, variant_index=0),
-    }
+    p_a = env.resolve_center_placement(group_id="A", x_center=42.0, y_center=27.0, variant_index=0)
+    p_b = env.resolve_center_placement(group_id="B", x_center=62.5, y_center=29.5, variant_index=0)
+    assert p_a is not None and p_b is not None
+    initial_placements = {"A": p_a, "B": p_b}
     t1 = time.perf_counter()
     obs, _ = env.reset(options={"initial_placements": initial_placements})
     reset_ms = (time.perf_counter() - t1) * 1000.0
@@ -934,9 +931,9 @@ if __name__ == "__main__":
     # --- step: C 배치 ---
     t2 = time.perf_counter()
     # C: 18×12 at rotation=0 → center = (74 + 9, 22 + 6) = (83, 28)
-    obs2, reward, terminated, truncated, info = env.step_action(
-        EnvAction(group_id="C", x_center=83.0, y_center=28.0)
-    )
+    p_c = env.resolve_center_placement(group_id="C", x_center=83.0, y_center=28.0)
+    assert p_c is not None
+    obs2, reward, terminated, truncated, info = env.step(p_c)
     step_ms = (time.perf_counter() - t2) * 1000.0
 
     print(f" step_ms={step_ms:.2f}  reason={info['reason']}  reward={reward:.4f}  terminated={terminated}")

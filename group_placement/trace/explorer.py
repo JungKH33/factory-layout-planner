@@ -308,7 +308,7 @@ class Explorer:
 
         cost_before = float(self.engine.cost())
 
-        _obs, reward, terminated, truncated, info = self.engine.step_placement(placement)
+        _obs, reward, terminated, truncated, info = self.engine.step(placement)
 
         cost_after = float(self.engine.cost())
 
@@ -739,7 +739,7 @@ class Explorer:
             else:
                 placement = self.adapter.resolve_action(node.chosen_action, action_space)
 
-            self.engine.step_placement(placement)
+            self.engine.step(placement)
 
 
 # ---------------------------------------------------------------------------

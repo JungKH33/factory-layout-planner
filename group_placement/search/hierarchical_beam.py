@@ -162,9 +162,7 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                             worker_candidates = []
 
                         if not worker_candidates:
-                            reward = float(engine.failure_penalty())
-                            terminated = False
-                            truncated = True
+                            _obs, reward, terminated, truncated, _info = engine.fail(reason="no_valid_actions")
                             terminal = True
                             new_cum = float(beam.cum_reward) + float(reward)
                             root_manager_action = manager_action if beam.first_manager_action < 0 else int(beam.first_manager_action)
@@ -191,11 +189,11 @@ class HierarchicalBeamSearch(BaseHierarchicalSearch):
                                     worker_as,
                                     parent_idx=manager_action,
                                 )
-                                _, reward, terminated, truncated, _info = engine.step_placement(placement)
-                            except (IndexError, ValueError):
-                                reward = float(engine.failure_penalty())
-                                terminated = False
-                                truncated = True
+                                _, reward, terminated, truncated, _info = engine.step(placement)
+                            except IndexError:
+                                _obs, reward, terminated, truncated, _info = engine.fail(reason="action_out_of_range")
+                            except ValueError:
+                                _obs, reward, terminated, truncated, _info = engine.fail(reason="masked_action")
                             terminal = bool(terminated or truncated)
 
                             new_cum = float(beam.cum_reward) + float(reward)

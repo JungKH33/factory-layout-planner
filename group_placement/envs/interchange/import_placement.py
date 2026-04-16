@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Union
 
-from group_placement.envs.action import EnvAction, GroupId
 from group_placement.envs.env import FactoryLayoutEnv
 from group_placement.envs.env_loader import LoadedEnv, load_env
+from group_placement.envs.placement.base import GroupPlacement
 
 
 def load_group_placement(path: Union[str, Path]) -> Dict[str, Any]:
@@ -17,7 +17,7 @@ def load_group_placement(path: Union[str, Path]) -> Dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def _resolve_group_id(env: FactoryLayoutEnv, gid_s: str) -> GroupId:
+def _resolve_group_id(env: FactoryLayoutEnv, gid_s: str) -> str | int:
     for k in env.group_specs:
         if str(k) == gid_s:
             return k
@@ -100,8 +100,8 @@ def apply_interchange_to_loaded(
                 f"placed_order keys {set(order_s)!r} != placement gids {set(by_gid)!r}"
             )
 
-    initial: Dict[GroupId, EnvAction] = {}
-    order_ids: List[GroupId] = []
+    initial: Dict[str | int, GroupPlacement] = {}
+    order_ids: List[str | int] = []
 
     for gid_s in order_s:
         if gid_s not in by_gid:
@@ -119,12 +119,20 @@ def apply_interchange_to_loaded(
         x_bl, y_bl, _w, _h = _grid_cells_from_entry(entry, grid_size_mm=gsm_loaded)
         x_c = float(x_bl) + float(vi.body_width) / 2.0
         y_c = float(y_bl) + float(vi.body_height) / 2.0
-        initial[gid] = EnvAction(
+        placement = env.resolve_center_placement(
             group_id=gid,
             x_center=x_c,
             y_center=y_c,
             variant_index=variant_index,
         )
+        if placement is None:
+            if strict:
+                raise RuntimeError(
+                    "interchange placement resolve failed: "
+                    f"gid={gid_s!r} variant_index={variant_index} x_center={x_c} y_center={y_c}"
+                )
+            continue
+        initial[gid] = placement
         order_ids.append(gid)
 
     opts: Dict[str, Any] = {}

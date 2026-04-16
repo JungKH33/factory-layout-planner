@@ -9,7 +9,6 @@ from .area import AreaReward, GridOccupancyReward
 from .flow import FlowCollisionReward, FlowReward
 
 if TYPE_CHECKING:
-    from ..action import GroupId
     from ..action_space import ActionSpace
     from ..state.base import EnvState
 
@@ -25,7 +24,7 @@ class RewardComposer:
     components: Dict[str, object]
     weights: Dict[str, float]
     reward_scale: float = 100.0
-    group_specs: Optional[Dict["GroupId", object]] = None
+    group_specs: Optional[Dict["str | int", object]] = None
 
     def __post_init__(self) -> None:
         if float(self.reward_scale) <= 0.0:
@@ -206,7 +205,7 @@ class RewardComposer:
         self,
         state: "EnvState",
         *,
-        gid: Optional["GroupId"] = None,
+        gid: Optional["str | int"] = None,
         entry_points: Optional[torch.Tensor] = None,
         exit_points: Optional[torch.Tensor] = None,
         entry_mask: Optional[torch.Tensor] = None,
@@ -347,7 +346,7 @@ class RewardComposer:
         state: "EnvState",
         action_space: "ActionSpace",
         *,
-        gid: Optional["GroupId"] = None,
+        gid: Optional["str | int"] = None,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:

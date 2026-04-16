@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import gymnasium as gym
 import torch
 
-from group_placement.envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv
 
 from ...base import BaseAdapter
 
@@ -85,7 +85,7 @@ class AlphaChipAdapter(BaseAdapter):
         cell_h = int(math.ceil(self.grid_height / float(g)))
         return cell_w, cell_h
 
-    def _next_gid(self) -> Optional[GroupId]:
+    def _next_gid(self) -> Optional[str | int]:
         return self.current_gid()
 
     def create_mask(self) -> torch.Tensor:
@@ -192,7 +192,6 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     from group_placement.envs.action_space import ActionSpace
-    from group_placement.envs.action import EnvAction
     from group_placement.envs.env_loader import load_env
     from group_placement.envs.visualizer import plot_layout
 
@@ -318,7 +317,7 @@ if __name__ == "__main__":
 
     t1 = time.perf_counter()
     placement = adapter.resolve_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

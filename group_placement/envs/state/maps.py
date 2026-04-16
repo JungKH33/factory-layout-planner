@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..action import GroupId
 from ..placement.base import GroupSpec
 
 logger = logging.getLogger(__name__)
@@ -69,10 +68,10 @@ class GridMaps:
         self.bbox_max_y = 0.0
 
         # Static caches.
-        self._group_specs: Dict[GroupId, GroupSpec] = {}
-        self._zone_invalid_by_gid: Dict[GroupId, torch.Tensor] = {}
+        self._group_specs: Dict[str | int, GroupSpec] = {}
+        self._zone_invalid_by_gid: Dict[str | int, torch.Tensor] = {}
         self._static_invalid_ps: torch.Tensor = self._build_prefix(self._static_invalid)
-        self._zone_invalid_ps_by_gid: Dict[GroupId, torch.Tensor] = {}
+        self._zone_invalid_ps_by_gid: Dict[str | int, torch.Tensor] = {}
         self._mask_linear_offsets_cache: Dict[
             Tuple[int, int, int, int, int],
             Tuple[torch.Tensor, torch.Tensor],
@@ -306,7 +305,7 @@ class GridMaps:
         self._clear_invalid_ps = prefix[1]
 
     def _build_zone_invalid_cache(self) -> None:
-        zone_invalid_by_gid: Dict[GroupId, torch.Tensor] = {}
+        zone_invalid_by_gid: Dict[str | int, torch.Tensor] = {}
         for gid, spec in self._group_specs.items():
             z = torch.zeros((self._H, self._W), dtype=torch.bool, device=self._device)
             zone_values = dict(getattr(spec, "zone_values", {}) or {})
@@ -334,7 +333,7 @@ class GridMaps:
             for idx, gid in enumerate(gids)
         }
 
-    def _get_zone_invalid(self, gid: GroupId) -> torch.Tensor:
+    def _get_zone_invalid(self, gid: str | int) -> torch.Tensor:
         if gid not in self._group_specs:
             raise KeyError(f"unknown gid={gid!r}")
         z = self._zone_invalid_by_gid.get(gid, None)
@@ -345,7 +344,7 @@ class GridMaps:
             "call bind_group_specs()/_build_zone_invalid_cache() before placement checks"
         )
 
-    def _get_zone_invalid_ps(self, gid: GroupId) -> torch.Tensor:
+    def _get_zone_invalid_ps(self, gid: str | int) -> torch.Tensor:
         if gid not in self._group_specs:
             raise KeyError(f"unknown gid={gid!r}")
         z = self._zone_invalid_ps_by_gid.get(gid, None)
@@ -356,18 +355,18 @@ class GridMaps:
             "call bind_group_specs()/_build_zone_invalid_cache() before placement checks"
         )
 
-    def _select_map_backend(self, *, gid: GroupId) -> str:
+    def _select_map_backend(self, *, gid: str | int) -> str:
         spec_type = type(self._group_specs[gid])
         return self._backends[("map", spec_type)]
 
-    def _select_batch_backend(self, *, gid: GroupId) -> str:
+    def _select_batch_backend(self, *, gid: str | int) -> str:
         spec_type = type(self._group_specs[gid])
         return self._backends[("batch", spec_type)]
 
     def placeable(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: int,
         y_bl: int,
         body_mask: torch.Tensor,
@@ -401,7 +400,7 @@ class GridMaps:
     def _is_placeable_prefixsum(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: int,
         y_bl: int,
         body_mask: torch.Tensor,
@@ -482,7 +481,7 @@ class GridMaps:
     def _is_placeable_gather(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: int,
         y_bl: int,
         body_mask: torch.Tensor,
@@ -557,7 +556,7 @@ class GridMaps:
     def _is_placeable_map_conv(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         body_mask: torch.Tensor,
         clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
@@ -599,7 +598,7 @@ class GridMaps:
     def _is_placeable_map_prefixsum(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         body_mask: torch.Tensor,
         clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
@@ -654,7 +653,7 @@ class GridMaps:
     def _is_placeable_batch_prefixsum(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
         body_mask: torch.Tensor,
@@ -786,7 +785,7 @@ class GridMaps:
     def _is_placeable_batch_gather(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
         body_mask: torch.Tensor,
@@ -902,7 +901,7 @@ class GridMaps:
     def placeable_batch(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         x_bl: torch.Tensor,
         y_bl: torch.Tensor,
         body_mask: torch.Tensor,
@@ -935,7 +934,7 @@ class GridMaps:
     def placeable_map(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         body_mask: torch.Tensor,
         clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
@@ -985,7 +984,7 @@ class GridMaps:
         result[pad_bottom:pad_bottom + valid_h, pad_left:pad_left + valid_w] = valid_mask
         return result
 
-    def bind_group_specs(self, group_specs: Dict[GroupId, GroupSpec]) -> None:
+    def bind_group_specs(self, group_specs: Dict[str | int, GroupSpec]) -> None:
         self._group_specs = group_specs
         self._build_zone_invalid_cache()
         if self._backend_selection == "benchmark":
@@ -1009,9 +1008,9 @@ class GridMaps:
         "StaticIrregularSpec": {"map": ["conv"], "batch": ["gather"]},
     }
 
-    def _discover_spec_types(self) -> Dict[type, Tuple[GroupId, GroupSpec]]:
+    def _discover_spec_types(self) -> Dict[type, Tuple[str | int, GroupSpec]]:
         """Collect unique spec class types with a representative (gid, spec) each."""
-        found: Dict[type, Tuple[GroupId, GroupSpec]] = {}
+        found: Dict[type, Tuple[str | int, GroupSpec]] = {}
         for gid, spec in self._group_specs.items():
             st = type(spec)
             if st not in found:
@@ -1165,7 +1164,7 @@ class GridMaps:
     def _bench_map(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         body_mask: torch.Tensor,
         clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],
@@ -1201,7 +1200,7 @@ class GridMaps:
     def _bench_batch(
         self,
         *,
-        gid: GroupId,
+        gid: str | int,
         body_mask: torch.Tensor,
         clearance_mask: torch.Tensor,
         clearance_origin: Tuple[int, int],

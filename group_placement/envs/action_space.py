@@ -5,9 +5,6 @@ from typing import Optional
 
 import torch
 
-from .action import GroupId
-
-
 @dataclass(frozen=True)
 class ActionSpace:
     """Factory layout action space.
@@ -26,7 +23,7 @@ class ActionSpace:
     # -- core (required) --
     centers: torch.Tensor     # [N, 2] float32 (x_center, y_center)
     valid_mask: torch.Tensor  # bool [N]
-    group_id: Optional[GroupId] = None
+    group_id: Optional[str | int] = None
     variant_indices: Optional[torch.Tensor] = None  # int64 [N] — per-action variant index
 
     # -- geometric features (Optional, for reward) --

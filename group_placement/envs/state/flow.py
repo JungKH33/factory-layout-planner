@@ -4,10 +4,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
-from ..action import GroupId
 
 FlowPortPair = Tuple[Tuple[float, float], Tuple[float, float]]
-FlowPortPairs = Dict[Tuple[GroupId, GroupId], List[FlowPortPair]]
+FlowPortPairs = Dict[Tuple[str | int, str | int], List[FlowPortPair]]
 
 
 class FlowGraph:
@@ -17,22 +16,22 @@ class FlowGraph:
     - `flow_port_pairs` and score/delta tensor caches are runtime fields.
     """
 
-    def __init__(self, group_flow: Dict[GroupId, Dict[GroupId, float]], *, device: torch.device) -> None:
+    def __init__(self, group_flow: Dict[str | int, Dict[str | int, float]], *, device: torch.device) -> None:
         self._group_flow = group_flow
         self._device = torch.device(device)
         self.flow_port_pairs: FlowPortPairs = {}
-        self._flow_port_pairs_nodes_key: Tuple[GroupId, ...] = tuple()
-        self._io_nodes_key: Tuple[GroupId, ...] = tuple()
-        self._row_by_gid: Dict[GroupId, int] = {}
+        self._flow_port_pairs_nodes_key: Tuple[str | int, ...] = tuple()
+        self._io_nodes_key: Tuple[str | int, ...] = tuple()
+        self._row_by_gid: Dict[str | int, int] = {}
         self.placed_entries = torch.empty((0, 1, 2), dtype=torch.float32, device=self._device)
         self.placed_exits = torch.empty((0, 1, 2), dtype=torch.float32, device=self._device)
         self.placed_entries_mask = torch.zeros((0, 1), dtype=torch.bool, device=self._device)
         self.placed_exits_mask = torch.zeros((0, 1), dtype=torch.bool, device=self._device)
         self._flow_w_cache = torch.empty((0, 0), dtype=torch.float32, device=self._device)
-        self._flow_w_nodes_key: Tuple[GroupId, ...] = tuple()
+        self._flow_w_nodes_key: Tuple[str | int, ...] = tuple()
         self.delta_w_out = torch.empty((0,), dtype=torch.float32, device=self._device)
         self.delta_w_in = torch.empty((0,), dtype=torch.float32, device=self._device)
-        self._delta_key: Tuple[Optional[GroupId], Tuple[GroupId, ...]] = (None, tuple())
+        self._delta_key: Tuple[Optional[str | int], Tuple[str | int, ...]] = (None, tuple())
 
     def copy(self) -> "FlowGraph":
         out = object.__new__(FlowGraph)
@@ -108,13 +107,13 @@ class FlowGraph:
         self,
         pairs: FlowPortPairs,
         *,
-        nodes: Optional[List[GroupId]] = None,
+        nodes: Optional[List[str | int]] = None,
     ) -> None:
         self.flow_port_pairs = dict(pairs)
         self._flow_port_pairs_nodes_key = tuple(nodes) if nodes is not None else tuple()
 
     @property
-    def flow_port_pairs_nodes_key(self) -> Tuple[GroupId, ...]:
+    def flow_port_pairs_nodes_key(self) -> Tuple[str | int, ...]:
         return self._flow_port_pairs_nodes_key
 
     def reset_runtime(self) -> None:
@@ -169,7 +168,7 @@ class FlowGraph:
         self.placed_entries_mask = new_entries_mask
         self.placed_exits_mask = new_exits_mask
 
-    def _reindex_io_to_nodes(self, nodes: List[GroupId]) -> None:
+    def _reindex_io_to_nodes(self, nodes: List[str | int]) -> None:
         nodes_key = tuple(nodes)
         if nodes_key == self._io_nodes_key:
             return
@@ -195,7 +194,7 @@ class FlowGraph:
         self._row_by_gid = {gid: i for i, gid in enumerate(nodes_key)}
         self._io_nodes_key = nodes_key
 
-    def upsert_io(self, *, placement: object, nodes: List[GroupId]) -> None:
+    def upsert_io(self, *, placement: object, nodes: List[str | int]) -> None:
         gid = placement.group_id
         nodes_key = tuple(nodes)
         if gid not in nodes_key:
@@ -237,7 +236,7 @@ class FlowGraph:
             return
         self._reindex_io_to_nodes(list(nodes_key))
 
-    def io_tensors(self, nodes: List[GroupId]) -> Tuple[List[GroupId], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def io_tensors(self, nodes: List[str | int]) -> Tuple[List[str | int], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         self._reindex_io_to_nodes(nodes)
         return (
             list(nodes),
@@ -247,7 +246,7 @@ class FlowGraph:
             self.placed_exits_mask,
         )
 
-    def build_flow_w(self, nodes: List[GroupId]) -> torch.Tensor:
+    def build_flow_w(self, nodes: List[str | int]) -> torch.Tensor:
         nodes_key = tuple(nodes)
         if self._flow_w_nodes_key == nodes_key:
             return self._flow_w_cache
@@ -285,8 +284,8 @@ class FlowGraph:
 
     def build_delta_flow_weights(
         self,
-        current_gid: Optional[GroupId],
-        nodes: List[GroupId],
+        current_gid: Optional[str | int],
+        nodes: List[str | int],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         nodes_key = tuple(nodes)
         key = (current_gid, nodes_key)

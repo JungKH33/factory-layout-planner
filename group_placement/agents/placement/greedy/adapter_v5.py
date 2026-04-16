@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from group_placement.envs.action_space import ActionSpace
-from group_placement.envs.env import GroupId
 from group_placement.envs.placement.base import GroupPlacement
 from ...base import BaseAdapter
 
@@ -128,7 +127,7 @@ class GreedyV5Adapter(BaseAdapter):
 
     # ---- cell generation ----
 
-    def _generate_cells(self, gid: GroupId) -> List[CellData]:
+    def _generate_cells(self, gid: str | int) -> List[CellData]:
         """Build per-cell candidate data from center_map + per-variant scoring."""
         center_map = self._build_center_map(gid)
         H, W = center_map.shape
@@ -380,7 +379,7 @@ if __name__ == "__main__":
         costs = obs["action_costs"]
         best = int(torch.argmin(costs).item())
         placement = adapter.resolve_action(best, candidates)
-        _, reward, terminated, truncated, info = engine.step_placement(placement)
+        _, reward, terminated, truncated, info = engine.step(placement)
         total_reward += reward
         print(
             f"    step {step}: gid={placement.group_id}  cells={R}  "

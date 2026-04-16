@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from group_placement.envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv
 from ...base import BaseAdapter
 
 
@@ -122,7 +122,7 @@ class GreedyV4Adapter(BaseAdapter):
     # ---- candidate generation ----
 
     def _generate(
-        self, env: FactoryLayoutEnv, gid: GroupId
+        self, env: FactoryLayoutEnv, gid: str | int
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Generate per-cell top-N candidates with coarse-cell annotations."""
         device = env.device
@@ -283,7 +283,7 @@ class GreedyV4Adapter(BaseAdapter):
 
     def _apply_variant_expansion(
         self,
-        gid: GroupId,
+        gid: str | int,
         center_poses: torch.Tensor,
         center_mask: torch.Tensor,
         k: int,
@@ -388,7 +388,7 @@ if __name__ == "__main__":
 
     if valid > 0:
         placement = adapter.resolve_action(a, candidates)
-        _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
+        _obs_env2, _r, _term, _trunc, _info2 = engine.step(placement)
         obs2 = adapter.build_observation()
         candidates2 = adapter.build_action_space()
         valid2 = int(candidates2.valid_mask.sum().item())

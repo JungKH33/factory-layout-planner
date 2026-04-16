@@ -82,12 +82,12 @@ class AdapterGymEnv(gym.Env):
         try:
             placement = self.adapter.resolve_action(int(action), action_space)
         except (IndexError, ValueError):
-            reward = float(self.engine.failure_penalty())
+            _obs_fail, reward, terminated, truncated, info = self.engine.fail(reason="invalid_action")
             obs = self.adapter.build_observation()
             obs["action_mask"] = torch.zeros_like(action_space.valid_mask)
-            return obs, reward, False, True, {"reason": "invalid_action"}
+            return obs, float(reward), bool(terminated), bool(truncated), info
 
-        _, reward, terminated, truncated, info = self.engine.step_placement(placement)
+        _, reward, terminated, truncated, info = self.engine.step(placement)
         obs = self.adapter.build_observation()
 
         if not (terminated or truncated):

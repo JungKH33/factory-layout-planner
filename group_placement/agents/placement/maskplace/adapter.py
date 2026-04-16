@@ -7,7 +7,7 @@ import gymnasium as gym
 import torch
 import torch.nn.functional as F
 
-from group_placement.envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv
 
 from ...base import BaseAdapter
 from group_placement.envs.action_space import ActionSpace
@@ -54,17 +54,17 @@ class MaskPlaceAdapter(BaseAdapter):
         cell_h = int(math.ceil(self.grid_height / float(g)))
         return cell_w, cell_h
 
-    def _next_gid(self) -> Optional[GroupId]:
+    def _next_gid(self) -> Optional[str | int]:
         return self.current_gid()
 
-    def _gid_at(self, k: int) -> Optional[GroupId]:
+    def _gid_at(self, k: int) -> Optional[str | int]:
         if k < 0:
             return None
         if len(self.engine.get_state().remaining) <= k:
             return None
         return self.engine.get_state().remaining[k]
 
-    def _action_poses_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
+    def _action_poses_for_gid(self, *, gid: Optional[str | int]) -> torch.Tensor:
         """Return float32 [G*G,2] table mapping action index -> (x_center, y_center) center coordinates."""
         g = int(self.grid)
         if gid is None:
@@ -77,7 +77,7 @@ class MaskPlaceAdapter(BaseAdapter):
         cy = (ii * cell_h).to(torch.float32) + (cell_h / 2.0)
         return torch.stack([cx, cy], dim=-1).view(g * g, 2).to(dtype=torch.float32)
 
-    def _create_mask_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
+    def _create_mask_for_gid(self, *, gid: Optional[str | int]) -> torch.Tensor:
         """Return torch.BoolTensor[G*G] valid-action mask for a specific gid.
 
         Uses spec.placeable_batch which checks ALL rotation/mirror orientations
@@ -104,7 +104,7 @@ class MaskPlaceAdapter(BaseAdapter):
         )
         return ok
 
-    def _score_map_for_gid(self, *, gid: Optional[GroupId]) -> torch.Tensor:
+    def _score_map_for_gid(self, *, gid: Optional[str | int]) -> torch.Tensor:
         """Return score map [G,G] for a specific gid using batch delta_cost (lower is better)."""
         g = int(self.grid)
         if gid is None:
@@ -243,7 +243,6 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     from group_placement.envs.action_space import ActionSpace
-    from group_placement.envs.action import EnvAction
     from group_placement.envs.env_loader import load_env
     from group_placement.envs.visualizer import plot_layout
 
@@ -277,7 +276,7 @@ if __name__ == "__main__":
 
     t1 = time.perf_counter()
     placement = adapter.resolve_action(a, candidates)
-    _obs_env2, _r, _term, _trunc, _info2 = engine.step_placement(placement)
+    _obs_env2, _r, _term, _trunc, _info2 = engine.step(placement)
     obs2 = adapter.build_observation()
     candidates2 = adapter.build_action_space()
     dt_step_ms = (time.perf_counter() - t1) * 1000.0

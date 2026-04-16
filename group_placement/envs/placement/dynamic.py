@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Set, Tuple
 import torch
 import torch.nn.functional as F
 
-from ..action import GroupId
 from ..reward import FlowReward
 from .base import GroupSpec
 
@@ -64,7 +63,7 @@ class DynamicPlacement:
     x_bl: int
     y_bl: int
     rotation: int
-    group_id: Optional[GroupId] = None
+    group_id: Optional[str | int] = None
     placed_units: Set[GridXY] = field(default_factory=set)  # unit-anchor grid cells
     unit_rows: List[Dict[str, float]] = field(default_factory=list)
     total_capacity: int = 0

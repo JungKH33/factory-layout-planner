@@ -216,14 +216,16 @@ class BaseSearch(ABC):
     ):
         try:
             placement = adapter.resolve_action(int(action), action_space)
-            _, reward, terminated, truncated, info = engine.step_placement(
+            _, reward, terminated, truncated, info = engine.step(
                 placement,
             )
         except IndexError:
-            return float(engine.failure_penalty()), False, True, {"reason": "action_out_of_range"}
+            _obs, reward, terminated, truncated, info = engine.fail(reason="action_out_of_range")
+            return float(reward), bool(terminated), bool(truncated), info
         except ValueError as e:
             reason = "no_valid_actions" if str(e) == "no_valid_actions" else "masked_action"
-            return float(engine.failure_penalty()), False, True, {"reason": reason}
+            _obs, reward, terminated, truncated, info = engine.fail(reason=reason)
+            return float(reward), bool(terminated), bool(truncated), info
         return float(reward), bool(terminated), bool(truncated), info
 
     # ---- batched policy / value helpers ----

@@ -6,8 +6,6 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 
-from group_placement.envs.action import GroupId
-
 
 PORT_SPAN_ALL = -1
 
@@ -137,7 +135,7 @@ class GroupPlacement:
     non-default 필드를 추가하려면 parent에 default가 없어야 함).
     """
 
-    group_id: GroupId
+    group_id: str | int
     x_center: float
     y_center: float
     entry_points: List[Tuple[float, float]]

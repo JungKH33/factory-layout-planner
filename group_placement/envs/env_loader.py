@@ -3,17 +3,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
-from group_placement.envs.action import EnvAction
 from group_placement.envs.env import FactoryLayoutEnv
-from group_placement.envs.placement.base import GroupSpec
+from group_placement.envs.placement.base import GroupPlacement, GroupSpec
 from group_placement.envs.placement.static import StaticRectSpec, StaticIrregularSpec
 from group_placement.envs.reward import TerminalFlowReward, TerminalPenaltyReward
 
-GroupId = Union[int, str]
 RectI = Tuple[int, int, int, int]  # (x0, y0, x1, y1) half-open
 
 
@@ -33,8 +31,8 @@ class LoadedEnv:
     group_variant_layout_refs: Dict[str, List[Optional[str]]] = field(default_factory=dict)
 
 
-def _edges_to_adj(edges: List[List[Any]]) -> Dict[GroupId, Dict[GroupId, float]]:
-    adj: Dict[GroupId, Dict[GroupId, float]] = {}
+def _edges_to_adj(edges: List[List[Any]]) -> Dict[str | int, Dict[str | int, float]]:
+    adj: Dict[str | int, Dict[str | int, float]] = {}
     for e in edges:
         if len(e) != 3:
             raise ValueError(f"flow edge must be [src, dst, weight], got: {e}")
@@ -171,7 +169,7 @@ def load_env(
             out["id"] = area["id"]
         return out
 
-    group_specs: Dict[GroupId, GroupSpec] = {}
+    group_specs: Dict[str | int, GroupSpec] = {}
     for gid, g in groups_cfg.items():
         variants_raw = g.get("variants")
         group_type = str(g.get("type", "rect")).lower()
@@ -478,7 +476,7 @@ def load_env(
     reset_cfg = data.get("reset", {})
     reset_kwargs: Dict[str, Any] = {}
     if "initial_placements" in reset_cfg and reset_cfg["initial_placements"] is not None:
-        ip = {}
+        ip: Dict[str | int, GroupPlacement] = {}
         for gid, pose in reset_cfg["initial_placements"].items():
             if not (isinstance(pose, list) and len(pose) in (2, 3, 4)):
                 raise ValueError(
@@ -493,7 +491,19 @@ def load_env(
                 raise ValueError(f"initial_placements[{gid}]: x_center/y_center must be numbers, got: {pose}") from e
             vi = int(pose[2]) if len(pose) > 2 and pose[2] is not None else None
             si = int(pose[3]) if len(pose) > 3 and pose[3] is not None else None
-            ip[gid] = EnvAction(group_id=gid, x_center=x_center, y_center=y_center, variant_index=vi, source_index=si)
+            placement = env.resolve_center_placement(
+                group_id=gid,
+                x_center=x_center,
+                y_center=y_center,
+                variant_index=vi,
+                source_index=si,
+            )
+            if placement is None:
+                raise RuntimeError(
+                    "initial_placements resolve failed: "
+                    f"gid={gid!r} x_center={x_center} y_center={y_center} variant_index={vi} source_index={si}"
+                )
+            ip[gid] = placement
         reset_kwargs["initial_placements"] = ip
     if "remaining_order" in reset_cfg and reset_cfg["remaining_order"] is not None:
         reset_kwargs["remaining_order"] = list(reset_cfg["remaining_order"])

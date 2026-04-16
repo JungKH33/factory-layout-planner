@@ -197,7 +197,7 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                         worker_candidates = []
 
                     if not worker_candidates:
-                        reward = float(engine.failure_penalty())
+                        _obs, reward, terminated, truncated, _info = engine.fail(reason="no_valid_actions")
                         child_cum = float(node.cum_reward) + float(reward)
                         root_ma = manager_action if node.first_manager_action < 0 else int(node.first_manager_action)
                         root_wa = 0 if node.first_worker_action < 0 else int(node.first_worker_action)
@@ -222,11 +222,11 @@ class HierarchicalBestFirstSearch(BaseHierarchicalSearch):
                                 worker_as,
                                 parent_idx=manager_action,
                             )
-                            _, reward, terminated, truncated, _info = engine.step_placement(placement)
-                        except (IndexError, ValueError):
-                            reward = float(engine.failure_penalty())
-                            terminated = False
-                            truncated = True
+                            _, reward, terminated, truncated, _info = engine.step(placement)
+                        except IndexError:
+                            _obs, reward, terminated, truncated, _info = engine.fail(reason="action_out_of_range")
+                        except ValueError:
+                            _obs, reward, terminated, truncated, _info = engine.fail(reason="masked_action")
 
                         terminal = bool(terminated or truncated)
                         child_depth = int(node.depth) + 1

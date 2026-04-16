@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import torch
 
-from group_placement.envs.action import GroupId
 from group_placement.envs.action_space import ActionSpace
 from group_placement.envs.env import FactoryLayoutEnv
 from group_placement.envs.placement.base import GroupPlacement
@@ -73,7 +72,7 @@ class BaseAdapter(ABC):
     Adapter responsibilities:
     - Build policy observation fields from engine state
     - Generate action-space mask/table from current engine state
-    - Decode discrete `action` index to `EnvAction` using a given `ActionSpace`
+    - Decode discrete `action` index to `GroupPlacement` using a given `ActionSpace`
     """
 
     metadata = {"render_modes": []}
@@ -159,7 +158,7 @@ class BaseAdapter(ABC):
             raise ValueError(f"selected action is masked: index={a}")
         return a
 
-    def current_gid(self) -> Optional[GroupId]:
+    def current_gid(self) -> Optional[str | int]:
         eng = self.engine
         if not eng.get_state().remaining:
             return None
@@ -184,7 +183,7 @@ class BaseAdapter(ABC):
 
     def _centers_to_bl(
         self,
-        gid: GroupId,
+        gid: str | int,
         centers: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """[N, 2] centers → ([N, V] x_bl, [N, V] y_bl).  Fully vectorised."""
@@ -195,7 +194,7 @@ class BaseAdapter(ABC):
         y_bl = torch.round(centers[:, 1:2] - bh.unsqueeze(0) / 2.0).to(torch.long)  # [N, V]
         return x_bl, y_bl
 
-    def _build_center_map(self, gid: GroupId) -> torch.Tensor:
+    def _build_center_map(self, gid: str | int) -> torch.Tensor:
         """BL placeable maps shifted to center coords (union over shapes).
 
         Moved from ``StaticSpec.placeable_center_map``.
@@ -223,7 +222,7 @@ class BaseAdapter(ABC):
 
     def _score_poses(
         self,
-        gid: GroupId,
+        gid: str | int,
         poses: torch.Tensor,
         *,
         per_variant: bool = False,

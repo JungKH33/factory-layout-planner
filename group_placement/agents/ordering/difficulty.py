@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from group_placement.envs.env import FactoryLayoutEnv, GroupId
+from group_placement.envs.env import FactoryLayoutEnv
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class DifficultyOrderingAgent:
 
         total_area = int(env.grid_width) * int(env.grid_height)
         static_only = env.get_maps().static_invalid
-        ordering: list[tuple[float, float, GroupId]] = []
+        ordering: list[tuple[float, float]] = []
         for gid in env.get_state().remaining:
             spec = env.group_specs[gid]
             inv = static_only | env.get_maps().zone_for_geom(spec)
