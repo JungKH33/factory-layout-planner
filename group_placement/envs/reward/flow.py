@@ -101,7 +101,8 @@ class FlowReward:
         valid: torch.Tensor,
         c_k: Optional[torch.Tensor] = None,
         t_k: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return_detail: bool = False,
+    ):
         """Reduce [M,T,C,P] to [M,T] using per-facility k-port averaging.
 
         - ``k=1``: min reduction (closest port)
@@ -124,15 +125,21 @@ class FlowReward:
         # Always compute min over P for argmin indices
         masked_inf = cost.masked_fill(~valid, float("inf"))
         min_p = masked_inf.min(dim=3)  # values [M,T,C], indices [M,T,C]
+        c_valid = valid.any(dim=3)  # [M,T,C]
 
         # --- P-dim reduction (target ports) ---
         # k=1 → min, k>1 → average over top-k closest valid ports (clamped to
         # the actual valid count, so "use all" is expressed as any k >= max ports).
         t_all_one = t_k_t is None or bool((t_k_t == 1).all().item())
+        selected_p_mask = torch.zeros_like(valid) if bool(return_detail) else None
         if t_all_one:
             reduced_p = min_p.values
+            if selected_p_mask is not None:
+                selected_p_mask.scatter_(3, min_p.indices.unsqueeze(3), True)
+                selected_p_mask &= c_valid.unsqueeze(3)
         else:
-            sorted_p = masked_inf.sort(dim=3).values  # inf values sort to tail
+            sorted_p_raw = masked_inf.sort(dim=3)
+            sorted_p = sorted_p_raw.values  # inf values sort to tail
             cumsum_p = sorted_p.cumsum(dim=3)
             count_p = valid.sum(dim=3).to(dtype=torch.int32)  # [M,T,C]
             p_has = count_p > 0
@@ -145,18 +152,27 @@ class FlowReward:
             sum_p = cumsum_p.gather(3, gather_idx).squeeze(3)
             avg_p = sum_p / eff_p_safe.to(dtype=torch.float32)
             reduced_p = torch.where(p_has, avg_p, torch.zeros_like(avg_p))
+            if selected_p_mask is not None:
+                sorted_p_idx = sorted_p_raw.indices
+                p_rank = torch.arange(int(cost.shape[3]), dtype=torch.int32, device=device).view(1, 1, 1, -1)
+                sorted_take = (p_rank < eff_p_safe.unsqueeze(3)) & p_has.unsqueeze(3)
+                selected_p_mask.scatter_(3, sorted_p_idx, sorted_take)
+                selected_p_mask &= c_valid.unsqueeze(3)
 
-        # C-dim validity after P reduction
-        c_valid = valid.any(dim=3)  # [M,T,C]
         reduced_p_inf = reduced_p.masked_fill(~c_valid, float("inf"))
         min_c = reduced_p_inf.min(dim=2)  # values [M,T], indices [M,T]
 
         # --- C-dim reduction (candidate ports) ---
         c_all_one = c_k_t is None or bool((c_k_t == 1).all().item())
+        selected_c_mask = torch.zeros_like(c_valid) if bool(return_detail) else None
         if c_all_one:
             result = torch.where(has_valid, min_c.values, torch.zeros_like(min_c.values))
+            if selected_c_mask is not None:
+                selected_c_mask.scatter_(2, min_c.indices.unsqueeze(2), True)
+                selected_c_mask &= has_valid.unsqueeze(2)
         else:
-            sorted_c = reduced_p_inf.sort(dim=2).values  # inf values sort to tail
+            sorted_c_raw = reduced_p_inf.sort(dim=2)
+            sorted_c = sorted_c_raw.values  # inf values sort to tail
             cumsum_c = sorted_c.cumsum(dim=2)
             count_c = c_valid.sum(dim=2).to(dtype=torch.int32)  # [M,T]
             c_has = count_c > 0
@@ -167,9 +183,20 @@ class FlowReward:
             sum_c = cumsum_c.gather(2, gather_idx).squeeze(2)
             avg_c = sum_c / eff_c_safe.to(dtype=torch.float32)
             result = torch.where(has_valid, avg_c, torch.zeros_like(avg_c))
+            if selected_c_mask is not None:
+                sorted_c_idx = sorted_c_raw.indices
+                c_rank = torch.arange(int(cost.shape[2]), dtype=torch.int32, device=device).view(1, 1, -1)
+                sorted_take = (c_rank < eff_c_safe.unsqueeze(2)) & c_has.unsqueeze(2)
+                selected_c_mask.scatter_(2, sorted_c_idx, sorted_take)
+                selected_c_mask &= c_valid
 
         c_idx = min_c.indices
         p_idx = min_p.indices.gather(2, c_idx.unsqueeze(2)).squeeze(2)
+        if return_detail:
+            return result, c_idx, p_idx, {
+                "selected_c_mask": selected_c_mask if selected_c_mask is not None else torch.zeros_like(c_valid),
+                "selected_p_mask": selected_p_mask if selected_p_mask is not None else torch.zeros_like(valid),
+            }
         return result, c_idx, p_idx
 
     def _reduce_distance(
@@ -182,19 +209,54 @@ class FlowReward:
         target_weight: torch.Tensor,            # [T] or [M,T]
         c_k: Optional[torch.Tensor] = None, # [M] int (1|min, -1|all, k>1 top-k)
         t_k: Optional[torch.Tensor] = None, # [T] int (1|min, -1|all, k>1 top-k)
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        return_edge_distance: bool = False,
+        return_selection: bool = False,
+    ):
         """Returns ([M], c_idx [M,T], p_idx [M,T]).
 
         c_idx / p_idx are None when result is a zero early-exit (no candidates / targets).
         """
         m = int(candidate_ports.shape[0])
         if m == 0:
-            return torch.zeros((0,), dtype=torch.float32, device=candidate_ports.device), None, None
+            zero = torch.zeros((0,), dtype=torch.float32, device=candidate_ports.device)
+            empty_detail = {
+                "selected_c_mask": torch.zeros((0, 0, int(candidate_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
+                "selected_p_mask": torch.zeros((0, 0, int(candidate_ports.shape[1]), int(target_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
+            }
+            if return_edge_distance:
+                if return_selection:
+                    return zero, None, None, torch.zeros((0, 0), dtype=torch.float32, device=candidate_ports.device), empty_detail
+                return zero, None, None, torch.zeros((0, 0), dtype=torch.float32, device=candidate_ports.device)
+            if return_selection:
+                return zero, None, None, empty_detail
+            return zero, None, None
         t = int(target_ports.shape[0])
         if t == 0 or int(target_weight.numel()) == 0:
-            return torch.zeros((m,), dtype=torch.float32, device=candidate_ports.device), None, None
+            zero = torch.zeros((m,), dtype=torch.float32, device=candidate_ports.device)
+            empty_detail = {
+                "selected_c_mask": torch.zeros((m, t, int(candidate_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
+                "selected_p_mask": torch.zeros((m, t, int(candidate_ports.shape[1]), int(target_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
+            }
+            if return_edge_distance:
+                if return_selection:
+                    return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device), empty_detail
+                return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device)
+            if return_selection:
+                return zero, None, None, empty_detail
+            return zero, None, None
         if int(candidate_ports.shape[1]) == 0 or int(target_ports.shape[1]) == 0:
-            return torch.zeros((m,), dtype=torch.float32, device=candidate_ports.device), None, None
+            zero = torch.zeros((m,), dtype=torch.float32, device=candidate_ports.device)
+            empty_detail = {
+                "selected_c_mask": torch.zeros((m, t, int(candidate_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
+                "selected_p_mask": torch.zeros((m, t, int(candidate_ports.shape[1]), int(target_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
+            }
+            if return_edge_distance:
+                if return_selection:
+                    return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device), empty_detail
+                return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device)
+            if return_selection:
+                return zero, None, None, empty_detail
+            return zero, None, None
 
         weight_mt = self._as_weight_matrix(
             target_weight,
@@ -212,8 +274,21 @@ class FlowReward:
         c_k_t = self._normalize_k_tensor(c_k, n=m, name="c_k", device=candidate_ports.device)
         t_k_t = self._normalize_k_tensor(t_k, n=t, name="t_k", device=candidate_ports.device)
         valid = cand_mask[:, None, :, None] & tgt_mask[None, :, None, :]  # [M,T,C,P]
-        dist_reduced, c_idx, p_idx = self._masked_pair_reduce(dist, valid, c_k_t, t_k_t)
-        return (dist_reduced * weight_mt).sum(dim=1), c_idx, p_idx
+        if return_selection:
+            dist_reduced, c_idx, p_idx, detail = self._masked_pair_reduce(
+                dist, valid, c_k_t, t_k_t, return_detail=True,
+            )
+        else:
+            dist_reduced, c_idx, p_idx = self._masked_pair_reduce(dist, valid, c_k_t, t_k_t)
+            detail = None
+        out = (dist_reduced * weight_mt).sum(dim=1)
+        if return_edge_distance:
+            if return_selection:
+                return out, c_idx, p_idx, dist_reduced, detail
+            return out, c_idx, p_idx, dist_reduced
+        if return_selection:
+            return out, c_idx, p_idx, detail
+        return out, c_idx, p_idx
 
     def score(
         self,
@@ -250,15 +325,45 @@ class FlowReward:
             if return_meta:
                 return zero, {"edges": {}, "edge_key_kind": "row_index"}
             return zero
-        per_src, c_idx, p_idx = self._reduce_distance(
-            candidate_ports=placed_ex,
-            candidate_mask=placed_exits_mask,
-            target_ports=placed_en,
-            target_mask=placed_entries_mask,
-            target_weight=flow_w,
-            c_k=exit_k,
-            t_k=entry_k,
-        )
+        if return_meta:
+            need_selection = (exit_k is not None) or (entry_k is not None)
+            if need_selection:
+                per_src, c_idx, p_idx, edge_dist, detail = self._reduce_distance(
+                    candidate_ports=placed_ex,
+                    candidate_mask=placed_exits_mask,
+                    target_ports=placed_en,
+                    target_mask=placed_entries_mask,
+                    target_weight=flow_w,
+                    c_k=exit_k,
+                    t_k=entry_k,
+                    return_edge_distance=True,
+                    return_selection=True,
+                )
+            else:
+                per_src, c_idx, p_idx, edge_dist = self._reduce_distance(
+                    candidate_ports=placed_ex,
+                    candidate_mask=placed_exits_mask,
+                    target_ports=placed_en,
+                    target_mask=placed_entries_mask,
+                    target_weight=flow_w,
+                    c_k=exit_k,
+                    t_k=entry_k,
+                    return_edge_distance=True,
+                    return_selection=False,
+                )
+                detail = None
+        else:
+            per_src, c_idx, p_idx = self._reduce_distance(
+                candidate_ports=placed_ex,
+                candidate_mask=placed_exits_mask,
+                target_ports=placed_en,
+                target_mask=placed_entries_mask,
+                target_weight=flow_w,
+                c_k=exit_k,
+                t_k=entry_k,
+            )
+            edge_dist = None
+            detail = None
         total = per_src.sum()
         if return_argmin:
             return total, c_idx, p_idx
@@ -266,28 +371,55 @@ class FlowReward:
             return total
         meta: Dict[str, object] = {"edges": {}, "edge_key_kind": "row_index"}
         if c_idx is not None and p_idx is not None:
+            selected_c_mask = detail["selected_c_mask"] if isinstance(detail, dict) else None
+            selected_p_mask = detail["selected_p_mask"] if isinstance(detail, dict) else None
+            c_valid = self._port_mask(placed_ex, placed_exits_mask, name="placed_exits_mask")
+            t_valid = self._port_mask(placed_en, placed_entries_mask, name="placed_entries_mask")
             for i in range(int(c_idx.shape[0])):
                 for j in range(int(c_idx.shape[1])):
                     w_ij = float(flow_w[i, j].item()) if flow_w.dim() == 2 else float(flow_w[j].item())
                     if w_ij <= 0.0:
                         continue
-                    ci = int(c_idx[i, j].item())
-                    pj = int(p_idx[i, j].item())
-                    ex = (
-                        float(placed_ex[i, ci, 0].item()),
-                        float(placed_ex[i, ci, 1].item()),
-                    )
-                    en = (
-                        float(placed_en[j, pj, 0].item()),
-                        float(placed_en[j, pj, 1].item()),
-                    )
+                    pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+                    if selected_c_mask is not None and selected_p_mask is not None:
+                        sel_c = torch.where(selected_c_mask[i, j])[0]
+                        for ci_t in sel_c:
+                            ci = int(ci_t.item())
+                            sel_p = torch.where(selected_p_mask[i, j, ci])[0]
+                            for pj_t in sel_p:
+                                pj = int(pj_t.item())
+                                if not (bool(c_valid[i, ci].item()) and bool(t_valid[j, pj].item())):
+                                    continue
+                                ex = (
+                                    float(placed_ex[i, ci, 0].item()),
+                                    float(placed_ex[i, ci, 1].item()),
+                                )
+                                en = (
+                                    float(placed_en[j, pj, 0].item()),
+                                    float(placed_en[j, pj, 1].item()),
+                                )
+                                pairs.append((ex, en))
+                    if not pairs:
+                        ci = int(c_idx[i, j].item())
+                        pj = int(p_idx[i, j].item())
+                        if bool(c_valid[i, ci].item()) and bool(t_valid[j, pj].item()):
+                            ex = (
+                                float(placed_ex[i, ci, 0].item()),
+                                float(placed_ex[i, ci, 1].item()),
+                            )
+                            en = (
+                                float(placed_en[j, pj, 0].item()),
+                                float(placed_en[j, pj, 1].item()),
+                            )
+                            pairs = [(ex, en)]
                     k = f"{i}->{j}"
                     meta["edges"][k] = {
                         "weight": w_ij,
-                        "distance": abs(ex[0] - en[0]) + abs(ex[1] - en[1]),
+                        "distance": float(edge_dist[i, j].item()) if edge_dist is not None else 0.0,
+                        "pair_count": int(len(pairs)),
                         "models": {
                             "estimated": {
-                                "port_pairs": [[list(ex), list(en)]],
+                                "port_pairs": [[list(ex), list(en)] for ex, en in pairs],
                             }
                         },
                     }

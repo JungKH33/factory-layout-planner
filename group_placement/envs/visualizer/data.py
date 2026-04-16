@@ -254,11 +254,15 @@ def extract_layout_data(
         for edge_key, pairs in flow_pairs.items():
             edge = flow_edges.get(edge_key, {})
             weight = float(edge.get("weight", 0.0))
+            pair_count = int(edge.get("pair_count", len(pairs))) if len(pairs) > 0 else 0
+            if pair_count <= 0:
+                pair_count = len(pairs) if len(pairs) > 0 else 1
+            pair_weight = weight / float(pair_count)
             for (sx, sy), (dx, dy) in pairs:
                 flow_arrows.append(FlowArrow(
                     src_xy=(float(sx), float(sy)),
                     dst_xy=(float(dx), float(dy)),
-                    weight=weight,
+                    weight=pair_weight,
                 ))
 
         # Ports
