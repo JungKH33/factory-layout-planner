@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -209,8 +209,7 @@ class FlowReward:
         target_weight: torch.Tensor,            # [T] or [M,T]
         c_k: Optional[torch.Tensor] = None, # [M] int (1|min, -1|all, k>1 top-k)
         t_k: Optional[torch.Tensor] = None, # [T] int (1|min, -1|all, k>1 top-k)
-        return_edge_distance: bool = False,
-        return_selection: bool = False,
+        return_detail: bool = False,
     ):
         """Returns ([M], c_idx [M,T], p_idx [M,T]).
 
@@ -219,43 +218,31 @@ class FlowReward:
         m = int(candidate_ports.shape[0])
         if m == 0:
             zero = torch.zeros((0,), dtype=torch.float32, device=candidate_ports.device)
-            empty_detail = {
-                "selected_c_mask": torch.zeros((0, 0, int(candidate_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
-                "selected_p_mask": torch.zeros((0, 0, int(candidate_ports.shape[1]), int(target_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
-            }
-            if return_edge_distance:
-                if return_selection:
-                    return zero, None, None, torch.zeros((0, 0), dtype=torch.float32, device=candidate_ports.device), empty_detail
-                return zero, None, None, torch.zeros((0, 0), dtype=torch.float32, device=candidate_ports.device)
-            if return_selection:
-                return zero, None, None, empty_detail
+            if return_detail:
+                return zero, None, None, {
+                    "edge_distance": torch.zeros((0, 0), dtype=torch.float32, device=candidate_ports.device),
+                    "selected_c_mask": None,
+                    "selected_p_mask": None,
+                }
             return zero, None, None
         t = int(target_ports.shape[0])
         if t == 0 or int(target_weight.numel()) == 0:
             zero = torch.zeros((m,), dtype=torch.float32, device=candidate_ports.device)
-            empty_detail = {
-                "selected_c_mask": torch.zeros((m, t, int(candidate_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
-                "selected_p_mask": torch.zeros((m, t, int(candidate_ports.shape[1]), int(target_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
-            }
-            if return_edge_distance:
-                if return_selection:
-                    return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device), empty_detail
-                return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device)
-            if return_selection:
-                return zero, None, None, empty_detail
+            if return_detail:
+                return zero, None, None, {
+                    "edge_distance": torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device),
+                    "selected_c_mask": None,
+                    "selected_p_mask": None,
+                }
             return zero, None, None
         if int(candidate_ports.shape[1]) == 0 or int(target_ports.shape[1]) == 0:
             zero = torch.zeros((m,), dtype=torch.float32, device=candidate_ports.device)
-            empty_detail = {
-                "selected_c_mask": torch.zeros((m, t, int(candidate_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
-                "selected_p_mask": torch.zeros((m, t, int(candidate_ports.shape[1]), int(target_ports.shape[1])), dtype=torch.bool, device=candidate_ports.device),
-            }
-            if return_edge_distance:
-                if return_selection:
-                    return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device), empty_detail
-                return zero, None, None, torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device)
-            if return_selection:
-                return zero, None, None, empty_detail
+            if return_detail:
+                return zero, None, None, {
+                    "edge_distance": torch.zeros((m, t), dtype=torch.float32, device=candidate_ports.device),
+                    "selected_c_mask": None,
+                    "selected_p_mask": None,
+                }
             return zero, None, None
 
         weight_mt = self._as_weight_matrix(
@@ -273,20 +260,21 @@ class FlowReward:
         tgt_mask = self._port_mask(target_ports, target_mask, name="target_mask")
         c_k_t = self._normalize_k_tensor(c_k, n=m, name="c_k", device=candidate_ports.device)
         t_k_t = self._normalize_k_tensor(t_k, n=t, name="t_k", device=candidate_ports.device)
+        need_selection = (c_k_t is not None) or (t_k_t is not None)
         valid = cand_mask[:, None, :, None] & tgt_mask[None, :, None, :]  # [M,T,C,P]
-        if return_selection:
+        if return_detail and need_selection:
             dist_reduced, c_idx, p_idx, detail = self._masked_pair_reduce(
                 dist, valid, c_k_t, t_k_t, return_detail=True,
             )
         else:
             dist_reduced, c_idx, p_idx = self._masked_pair_reduce(dist, valid, c_k_t, t_k_t)
-            detail = None
+            detail = {
+                "selected_c_mask": None,
+                "selected_p_mask": None,
+            }
         out = (dist_reduced * weight_mt).sum(dim=1)
-        if return_edge_distance:
-            if return_selection:
-                return out, c_idx, p_idx, dist_reduced, detail
-            return out, c_idx, p_idx, dist_reduced
-        if return_selection:
+        if return_detail:
+            detail["edge_distance"] = dist_reduced
             return out, c_idx, p_idx, detail
         return out, c_idx, p_idx
 
@@ -326,32 +314,16 @@ class FlowReward:
                 return zero, {"edges": {}, "edge_key_kind": "row_index"}
             return zero
         if return_meta:
-            need_selection = (exit_k is not None) or (entry_k is not None)
-            if need_selection:
-                per_src, c_idx, p_idx, edge_dist, detail = self._reduce_distance(
-                    candidate_ports=placed_ex,
-                    candidate_mask=placed_exits_mask,
-                    target_ports=placed_en,
-                    target_mask=placed_entries_mask,
-                    target_weight=flow_w,
-                    c_k=exit_k,
-                    t_k=entry_k,
-                    return_edge_distance=True,
-                    return_selection=True,
-                )
-            else:
-                per_src, c_idx, p_idx, edge_dist = self._reduce_distance(
-                    candidate_ports=placed_ex,
-                    candidate_mask=placed_exits_mask,
-                    target_ports=placed_en,
-                    target_mask=placed_entries_mask,
-                    target_weight=flow_w,
-                    c_k=exit_k,
-                    t_k=entry_k,
-                    return_edge_distance=True,
-                    return_selection=False,
-                )
-                detail = None
+            per_src, c_idx, p_idx, detail = self._reduce_distance(
+                candidate_ports=placed_ex,
+                candidate_mask=placed_exits_mask,
+                target_ports=placed_en,
+                target_mask=placed_entries_mask,
+                target_weight=flow_w,
+                c_k=exit_k,
+                t_k=entry_k,
+                return_detail=True,
+            )
         else:
             per_src, c_idx, p_idx = self._reduce_distance(
                 candidate_ports=placed_ex,
@@ -362,8 +334,7 @@ class FlowReward:
                 c_k=exit_k,
                 t_k=entry_k,
             )
-            edge_dist = None
-            detail = None
+            detail = {}
         total = per_src.sum()
         if return_argmin:
             return total, c_idx, p_idx
@@ -371,25 +342,92 @@ class FlowReward:
             return total
         meta: Dict[str, object] = {"edges": {}, "edge_key_kind": "row_index"}
         if c_idx is not None and p_idx is not None:
-            selected_c_mask = detail["selected_c_mask"] if isinstance(detail, dict) else None
-            selected_p_mask = detail["selected_p_mask"] if isinstance(detail, dict) else None
+            selected_c_mask = detail.get("selected_c_mask", None) if isinstance(detail, dict) else None
+            selected_p_mask = detail.get("selected_p_mask", None) if isinstance(detail, dict) else None
+            edge_dist = detail.get("edge_distance", None) if isinstance(detail, dict) else None
             c_valid = self._port_mask(placed_ex, placed_exits_mask, name="placed_exits_mask")
             t_valid = self._port_mask(placed_en, placed_entries_mask, name="placed_entries_mask")
-            for i in range(int(c_idx.shape[0])):
-                for j in range(int(c_idx.shape[1])):
-                    w_ij = float(flow_w[i, j].item()) if flow_w.dim() == 2 else float(flow_w[j].item())
-                    if w_ij <= 0.0:
-                        continue
-                    pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
-                    if selected_c_mask is not None and selected_p_mask is not None:
-                        sel_c = torch.where(selected_c_mask[i, j])[0]
-                        for ci_t in sel_c:
-                            ci = int(ci_t.item())
-                            sel_p = torch.where(selected_p_mask[i, j, ci])[0]
-                            for pj_t in sel_p:
-                                pj = int(pj_t.item())
-                                if not (bool(c_valid[i, ci].item()) and bool(t_valid[j, pj].item())):
-                                    continue
+            if flow_w.dim() == 2:
+                active_ij = torch.nonzero(flow_w > 0, as_tuple=False)
+                active_w = flow_w[active_ij[:, 0], active_ij[:, 1]] if int(active_ij.numel()) > 0 else flow_w.new_zeros((0,))
+            else:
+                active_j = torch.nonzero(flow_w > 0, as_tuple=False).view(-1)
+                if int(active_j.numel()) == 0:
+                    active_ij = torch.zeros((0, 2), dtype=torch.long, device=flow_w.device)
+                    active_w = flow_w.new_zeros((0,))
+                else:
+                    src_idx = torch.arange(int(c_idx.shape[0]), dtype=torch.long, device=flow_w.device)
+                    src_grid = src_idx[:, None].expand(-1, int(active_j.numel())).reshape(-1)
+                    dst_grid = active_j[None, :].expand(int(src_idx.numel()), -1).reshape(-1)
+                    active_ij = torch.stack((src_grid, dst_grid), dim=1)
+                    active_w = flow_w[active_ij[:, 1]]
+
+            n_active = int(active_ij.shape[0])
+            if n_active > 0:
+                active_i = active_ij[:, 0]
+                active_j = active_ij[:, 1]
+                active_dist = edge_dist[active_i, active_j] if edge_dist is not None else None
+
+                # span=1 fast-path: gather selected (ci,pj) for active edges in a batch.
+                if selected_c_mask is None or selected_p_mask is None:
+                    active_ci = c_idx[active_i, active_j]
+                    active_pj = p_idx[active_i, active_j]
+                    active_pair_valid = c_valid[active_i, active_ci] & t_valid[active_j, active_pj]
+                    active_ex = placed_ex[active_i, active_ci]
+                    active_en = placed_en[active_j, active_pj]
+                    for row in range(n_active):
+                        i = int(active_i[row].item())
+                        j = int(active_j[row].item())
+                        pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+                        if bool(active_pair_valid[row].item()):
+                            ex = (
+                                float(active_ex[row, 0].item()),
+                                float(active_ex[row, 1].item()),
+                            )
+                            en = (
+                                float(active_en[row, 0].item()),
+                                float(active_en[row, 1].item()),
+                            )
+                            pairs = [(ex, en)]
+                        k = f"{i}->{j}"
+                        meta["edges"][k] = {
+                            "weight": float(active_w[row].item()),
+                            "distance": float(active_dist[row].item()) if active_dist is not None else 0.0,
+                            "pair_count": int(len(pairs)),
+                            "models": {
+                                "estimated": {
+                                    "port_pairs": [[list(ex), list(en)] for ex, en in pairs],
+                                }
+                            },
+                        }
+                else:
+                    # span>1 path: avoid nested python loops by extracting selected (ci,pj)
+                    # pairs via a single nonzero per active edge.
+                    for row in range(n_active):
+                        i = int(active_i[row].item())
+                        j = int(active_j[row].item())
+                        pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+                        pair_mask = (
+                            selected_p_mask[i, j]
+                            & selected_c_mask[i, j].unsqueeze(1)
+                            & c_valid[i].unsqueeze(1)
+                            & t_valid[j].unsqueeze(0)
+                        )
+                        pair_idx = torch.nonzero(pair_mask, as_tuple=False)
+                        if int(pair_idx.shape[0]) > 0:
+                            ci_idx = pair_idx[:, 0]
+                            pj_idx = pair_idx[:, 1]
+                            ex_xy = placed_ex[i, ci_idx]
+                            en_xy = placed_en[j, pj_idx]
+                            for k_idx in range(int(pair_idx.shape[0])):
+                                pairs.append((
+                                    (float(ex_xy[k_idx, 0].item()), float(ex_xy[k_idx, 1].item())),
+                                    (float(en_xy[k_idx, 0].item()), float(en_xy[k_idx, 1].item())),
+                                ))
+                        if not pairs:
+                            ci = int(c_idx[i, j].item())
+                            pj = int(p_idx[i, j].item())
+                            if bool(c_valid[i, ci].item()) and bool(t_valid[j, pj].item()):
                                 ex = (
                                     float(placed_ex[i, ci, 0].item()),
                                     float(placed_ex[i, ci, 1].item()),
@@ -398,31 +436,18 @@ class FlowReward:
                                     float(placed_en[j, pj, 0].item()),
                                     float(placed_en[j, pj, 1].item()),
                                 )
-                                pairs.append((ex, en))
-                    if not pairs:
-                        ci = int(c_idx[i, j].item())
-                        pj = int(p_idx[i, j].item())
-                        if bool(c_valid[i, ci].item()) and bool(t_valid[j, pj].item()):
-                            ex = (
-                                float(placed_ex[i, ci, 0].item()),
-                                float(placed_ex[i, ci, 1].item()),
-                            )
-                            en = (
-                                float(placed_en[j, pj, 0].item()),
-                                float(placed_en[j, pj, 1].item()),
-                            )
-                            pairs = [(ex, en)]
-                    k = f"{i}->{j}"
-                    meta["edges"][k] = {
-                        "weight": w_ij,
-                        "distance": float(edge_dist[i, j].item()) if edge_dist is not None else 0.0,
-                        "pair_count": int(len(pairs)),
-                        "models": {
-                            "estimated": {
-                                "port_pairs": [[list(ex), list(en)] for ex, en in pairs],
-                            }
-                        },
-                    }
+                                pairs = [(ex, en)]
+                        k = f"{i}->{j}"
+                        meta["edges"][k] = {
+                            "weight": float(active_w[row].item()),
+                            "distance": float(active_dist[row].item()) if active_dist is not None else 0.0,
+                            "pair_count": int(len(pairs)),
+                            "models": {
+                                "estimated": {
+                                    "port_pairs": [[list(ex), list(en)] for ex, en in pairs],
+                                }
+                            },
+                        }
         return total, meta
 
     def delta(
@@ -444,6 +469,9 @@ class FlowReward:
         t_exit_k: Optional[torch.Tensor] = None,
         return_argmin: bool = False,
         return_meta: bool = False,
+        placed_node_ids: Optional[Sequence[str | int]] = None,
+        candidate_gid: Optional[str | int] = None,
+        previous_metadata: Optional[Dict[str, Any]] = None,
     ):
         """Compute incremental flow cost for M candidate placements.
 
@@ -486,34 +514,63 @@ class FlowReward:
         out_am = None
         in_am = None
 
+        out_detail: Optional[Dict[str, torch.Tensor]] = None
+        in_detail: Optional[Dict[str, torch.Tensor]] = None
+        out_full_idx = torch.nonzero(out_idx, as_tuple=False).view(-1)
+        in_full_idx = torch.nonzero(in_idx, as_tuple=False).view(-1)
+
         if has_out:
             out_entries = placed_en[out_idx]
             out_entries_mask = placed_entries_mask[out_idx] if placed_entries_mask is not None else None
             out_w = w_out_t[out_idx]
-            out_term, oc_idx, op_idx = self._reduce_distance(
-                candidate_ports=cand_exits,
-                candidate_mask=candidate_exits_mask,
-                target_ports=out_entries,
-                target_mask=out_entries_mask,
-                target_weight=out_w,
-                c_k=self._select_k_tensor(c_exit_k, m, device),
-                t_k=t_entry_k[out_idx] if t_entry_k is not None else None,
-            )
+            if return_meta:
+                out_term, oc_idx, op_idx, out_detail = self._reduce_distance(
+                    candidate_ports=cand_exits,
+                    candidate_mask=candidate_exits_mask,
+                    target_ports=out_entries,
+                    target_mask=out_entries_mask,
+                    target_weight=out_w,
+                    c_k=self._select_k_tensor(c_exit_k, m, device),
+                    t_k=t_entry_k[out_idx] if t_entry_k is not None else None,
+                    return_detail=True,
+                )
+            else:
+                out_term, oc_idx, op_idx = self._reduce_distance(
+                    candidate_ports=cand_exits,
+                    candidate_mask=candidate_exits_mask,
+                    target_ports=out_entries,
+                    target_mask=out_entries_mask,
+                    target_weight=out_w,
+                    c_k=self._select_k_tensor(c_exit_k, m, device),
+                    t_k=t_entry_k[out_idx] if t_entry_k is not None else None,
+                )
             if return_argmin:
                 out_am = (oc_idx, op_idx, out_idx)
         if has_in:
             in_exits = placed_ex[in_idx]
             in_exits_mask = placed_exits_mask[in_idx] if placed_exits_mask is not None else None
             in_w = w_in_t[in_idx]
-            in_term, ic_idx, ip_idx = self._reduce_distance(
-                candidate_ports=cand_entries,
-                candidate_mask=candidate_entries_mask,
-                target_ports=in_exits,
-                target_mask=in_exits_mask,
-                target_weight=in_w,
-                c_k=self._select_k_tensor(c_entry_k, m, device),
-                t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
-            )
+            if return_meta:
+                in_term, ic_idx, ip_idx, in_detail = self._reduce_distance(
+                    candidate_ports=cand_entries,
+                    candidate_mask=candidate_entries_mask,
+                    target_ports=in_exits,
+                    target_mask=in_exits_mask,
+                    target_weight=in_w,
+                    c_k=self._select_k_tensor(c_entry_k, m, device),
+                    t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
+                    return_detail=True,
+                )
+            else:
+                in_term, ic_idx, ip_idx = self._reduce_distance(
+                    candidate_ports=cand_entries,
+                    candidate_mask=candidate_entries_mask,
+                    target_ports=in_exits,
+                    target_mask=in_exits_mask,
+                    target_weight=in_w,
+                    c_k=self._select_k_tensor(c_entry_k, m, device),
+                    t_k=t_exit_k[in_idx] if t_exit_k is not None else None,
+                )
             if return_argmin:
                 in_am = (ic_idx, ip_idx, in_idx)
         delta = out_term + in_term
@@ -521,11 +578,133 @@ class FlowReward:
             return delta, out_am, in_am
         if not return_meta:
             return delta
-        return delta, {
+
+        if int(m) != 1:
+            raise ValueError("FlowReward.delta(return_meta=True) supports only single-candidate input")
+        if placed_node_ids is None or candidate_gid is None:
+            raise ValueError("FlowReward.delta(return_meta=True) requires placed_node_ids and candidate_gid")
+
+        if int(len(placed_node_ids)) != int(placed_en.shape[0]):
+            raise ValueError(
+                f"placed_node_ids length {len(placed_node_ids)} does not match placed tensor rows {int(placed_en.shape[0])}"
+            )
+
+        edge_meta: Dict[str, Dict[str, object]] = {}
+        candidate_entry_valid = self._port_mask(cand_entries, candidate_entries_mask, name="candidate_entries_mask")[0]
+        candidate_exit_valid = self._port_mask(cand_exits, candidate_exits_mask, name="candidate_exits_mask")[0]
+        placed_entry_valid = self._port_mask(placed_en, placed_entries_mask, name="placed_entries_mask")
+        placed_exit_valid = self._port_mask(placed_ex, placed_exits_mask, name="placed_exits_mask")
+
+        def _build_pair_indices(
+            *,
+            candidate_valid_row: torch.Tensor,
+            target_valid_row: torch.Tensor,
+            chosen_c_idx: int,
+            chosen_p_idx: int,
+            selected_c_mask_row: Optional[torch.Tensor],
+            selected_p_mask_row: Optional[torch.Tensor],
+        ) -> List[Tuple[int, int]]:
+            if selected_c_mask_row is None or selected_p_mask_row is None:
+                if bool(candidate_valid_row[chosen_c_idx].item()) and bool(target_valid_row[chosen_p_idx].item()):
+                    return [(int(chosen_c_idx), int(chosen_p_idx))]
+                return []
+            pair_mask = (
+                selected_p_mask_row
+                & selected_c_mask_row.unsqueeze(1)
+                & candidate_valid_row.unsqueeze(1)
+                & target_valid_row.unsqueeze(0)
+            )
+            pair_idx = torch.nonzero(pair_mask, as_tuple=False)
+            if int(pair_idx.shape[0]) > 0:
+                out: List[Tuple[int, int]] = []
+                for i in range(int(pair_idx.shape[0])):
+                    out.append((int(pair_idx[i, 0].item()), int(pair_idx[i, 1].item())))
+                return out
+            if bool(candidate_valid_row[chosen_c_idx].item()) and bool(target_valid_row[chosen_p_idx].item()):
+                return [(int(chosen_c_idx), int(chosen_p_idx))]
+            return []
+
+        candidate_gid_s = str(candidate_gid)
+        if has_out and out_detail is not None and oc_idx is not None and op_idx is not None:
+            selected_c_mask = out_detail.get("selected_c_mask", None)
+            selected_p_mask = out_detail.get("selected_p_mask", None)
+            edge_distance = out_detail.get("edge_distance", None)
+            out_weight = w_out_t[out_idx]
+            for local_t in range(int(out_full_idx.shape[0])):
+                full_j = int(out_full_idx[local_t].item())
+                dst_gid_s = str(placed_node_ids[full_j])
+                key = f"{candidate_gid_s}->{dst_gid_s}"
+                chosen_c = int(oc_idx[0, local_t].item())
+                chosen_p = int(op_idx[0, local_t].item())
+                raw_pairs = _build_pair_indices(
+                    candidate_valid_row=candidate_exit_valid,
+                    target_valid_row=placed_entry_valid[full_j],
+                    chosen_c_idx=chosen_c,
+                    chosen_p_idx=chosen_p,
+                    selected_c_mask_row=selected_c_mask[0, local_t] if selected_c_mask is not None else None,
+                    selected_p_mask_row=selected_p_mask[0, local_t] if selected_p_mask is not None else None,
+                )
+                pair_indices = [
+                    [int(src_idx), int(dst_idx)]
+                    for src_idx, dst_idx in raw_pairs
+                ]
+                edge_meta[key] = {
+                    "weight": float(out_weight[local_t].item()),
+                    "distance": float(edge_distance[0, local_t].item()) if edge_distance is not None else 0.0,
+                    "pair_count": int(len(raw_pairs)),
+                    "models": {
+                        "estimated": {
+                            "pair_indices": pair_indices,
+                        }
+                    },
+                }
+
+        if has_in and in_detail is not None and ic_idx is not None and ip_idx is not None:
+            selected_c_mask = in_detail.get("selected_c_mask", None)
+            selected_p_mask = in_detail.get("selected_p_mask", None)
+            edge_distance = in_detail.get("edge_distance", None)
+            in_weight = w_in_t[in_idx]
+            for local_t in range(int(in_full_idx.shape[0])):
+                full_i = int(in_full_idx[local_t].item())
+                src_gid_s = str(placed_node_ids[full_i])
+                key = f"{src_gid_s}->{candidate_gid_s}"
+                chosen_c = int(ic_idx[0, local_t].item())
+                chosen_p = int(ip_idx[0, local_t].item())
+                raw_pairs = _build_pair_indices(
+                    candidate_valid_row=candidate_entry_valid,
+                    target_valid_row=placed_exit_valid[full_i],
+                    chosen_c_idx=chosen_c,
+                    chosen_p_idx=chosen_p,
+                    selected_c_mask_row=selected_c_mask[0, local_t] if selected_c_mask is not None else None,
+                    selected_p_mask_row=selected_p_mask[0, local_t] if selected_p_mask is not None else None,
+                )
+                # In this branch, raw pair=(candidate_entry_idx, placed_exit_idx).
+                # Normalize to edge direction: src(exit)->dst(entry) => (placed_exit_idx, candidate_entry_idx).
+                pair_indices = [
+                    [int(src_idx), int(dst_idx)]
+                    for dst_idx, src_idx in raw_pairs
+                ]
+                edge_meta[key] = {
+                    "weight": float(in_weight[local_t].item()),
+                    "distance": float(edge_distance[0, local_t].item()) if edge_distance is not None else 0.0,
+                    "pair_count": int(len(raw_pairs)),
+                    "models": {
+                        "estimated": {
+                            "pair_indices": pair_indices,
+                        }
+                    },
+                }
+
+        metadata: Dict[str, object] = {
+            "edge_key_kind": "gid",
+            "edges": edge_meta,
             "candidate_count": int(m),
             "has_out": bool(has_out),
             "has_in": bool(has_in),
         }
+        if isinstance(previous_metadata, dict):
+            metadata["previous_edge_count"] = int(len(dict(previous_metadata.get("edges", {}) or {})))
+        return delta, metadata
 
 
 @dataclass

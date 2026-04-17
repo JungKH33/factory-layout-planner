@@ -91,8 +91,8 @@ def export_group_placement(loaded: LoadedEnv) -> Dict[str, Any]:
         "eval": _json_safe({
             "layout_rev": int(state.eval.layout_rev),
             "objective": dict(state.eval.objective),
-            "base_components": dict(state.eval.base_components),
-            "terminal_components": dict(state.eval.terminal_components),
+            "base_rewards": dict(state.eval.base_rewards),
+            "terminal_rewards": dict(state.eval.terminal_rewards),
         }),
         "facilities": dict(loaded.facilities_raw),
         "layouts": dict(loaded.layouts_raw),

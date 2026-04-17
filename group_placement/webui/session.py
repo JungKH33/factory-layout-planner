@@ -18,6 +18,7 @@ from group_placement.agents.ordering import DifficultyOrderingAgent
 from group_placement.search.mcts import MCTSConfig, MCTSSearch
 from group_placement.search.beam import BeamConfig, BeamSearch
 
+from group_placement.envs.visualizer.data import extract_flow_edges_and_pairs
 from group_placement.trace.explorer import Explorer
 
 from group_placement.webui.schemas import (
@@ -199,8 +200,7 @@ class Session:
 
         # Extract flow edges with positions
         flow_edges = []
-        edge_meta = state.eval.edge_metadata(phase="base")
-        edge_pairs = state.eval.edge_port_pairs(phase="base")
+        edge_meta, edge_pairs = extract_flow_edges_and_pairs(state.eval, phase="base")
         for edge_key, meta in edge_meta.items():
             src, dst = edge_key
             edge = FlowEdge(src=str(src), dst=str(dst), weight=float(meta.get("weight", 0.0)))

@@ -40,9 +40,6 @@ class StaticVariant(GroupVariant):
     cost_key: tuple = ()
 
 
-# Backwards-compat alias (will be removed)
-
-
 # ---------------------------------------------------------------------------
 # Placement result dataclasses
 # ---------------------------------------------------------------------------

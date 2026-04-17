@@ -61,11 +61,6 @@ class GridMaps:
         # Runtime fields.
         self.occ_invalid = torch.zeros((self._H, self._W), dtype=torch.bool, device=self._device)
         self.clear_invalid = torch.zeros((self._H, self._W), dtype=torch.bool, device=self._device)
-        self.has_bbox = False
-        self.bbox_min_x = 0.0
-        self.bbox_max_x = 0.0
-        self.bbox_min_y = 0.0
-        self.bbox_max_y = 0.0
 
         # Static caches.
         self._group_specs: Dict[str | int, GroupSpec] = {}
@@ -1248,11 +1243,6 @@ class GridMaps:
 
         out.occ_invalid = self.occ_invalid.clone()
         out.clear_invalid = self.clear_invalid.clone()
-        out.has_bbox = bool(self.has_bbox)
-        out.bbox_min_x = float(self.bbox_min_x)
-        out.bbox_max_x = float(self.bbox_max_x)
-        out.bbox_min_y = float(self.bbox_min_y)
-        out.bbox_max_y = float(self.bbox_max_y)
 
         out._static_invalid = self._static_invalid
         out._zone_constraints = self._zone_constraints
@@ -1289,22 +1279,12 @@ class GridMaps:
             )
         self.occ_invalid.copy_(src.occ_invalid.to(device=self._device, dtype=torch.bool))
         self.clear_invalid.copy_(src.clear_invalid.to(device=self._device, dtype=torch.bool))
-        self.has_bbox = bool(src.has_bbox)
-        self.bbox_min_x = float(src.bbox_min_x)
-        self.bbox_max_x = float(src.bbox_max_x)
-        self.bbox_min_y = float(src.bbox_min_y)
-        self.bbox_max_y = float(src.bbox_max_y)
         self._occ_invalid_ps = src._occ_invalid_ps
         self._clear_invalid_ps = src._clear_invalid_ps
 
     def reset_runtime(self) -> None:
         self.occ_invalid.zero_()
         self.clear_invalid.zero_()
-        self.has_bbox = False
-        self.bbox_min_x = 0.0
-        self.bbox_max_x = 0.0
-        self.bbox_min_y = 0.0
-        self.bbox_max_y = 0.0
         self._rebuild_runtime_prefix_cache()
 
     def _paint_mask(
@@ -1341,10 +1321,6 @@ class GridMaps:
     def paint_placement(
         self,
         *,
-        bbox_min_x: float,
-        bbox_max_x: float,
-        bbox_min_y: float,
-        bbox_max_y: float,
         x_bl: int,
         y_bl: int,
         body_mask: torch.Tensor,
@@ -1352,22 +1328,6 @@ class GridMaps:
         clearance_origin: Tuple[int, int],
         is_rectangular: bool,
     ) -> None:
-        min_x = float(bbox_min_x)
-        min_y = float(bbox_min_y)
-        max_x = float(bbox_max_x)
-        max_y = float(bbox_max_y)
-        if not self.has_bbox:
-            self.has_bbox = True
-            self.bbox_min_x = float(min_x)
-            self.bbox_max_x = float(max_x)
-            self.bbox_min_y = float(min_y)
-            self.bbox_max_y = float(max_y)
-        else:
-            self.bbox_min_x = min(float(self.bbox_min_x), float(min_x))
-            self.bbox_max_x = max(float(self.bbox_max_x), float(max_x))
-            self.bbox_min_y = min(float(self.bbox_min_y), float(min_y))
-            self.bbox_max_y = max(float(self.bbox_max_y), float(max_y))
-
         self._paint_mask(
             dst=self.occ_invalid,
             mask=body_mask,
@@ -1383,16 +1343,6 @@ class GridMaps:
             is_rectangular=is_rectangular,
         )
         self._rebuild_runtime_prefix_cache()
-
-    def placed_bbox(self) -> Tuple[float, float, float, float]:
-        if not self.has_bbox:
-            return 0.0, 0.0, 0.0, 0.0
-        return (
-            float(self.bbox_min_x),
-            float(self.bbox_max_x),
-            float(self.bbox_min_y),
-            float(self.bbox_max_y),
-        )
 
     @staticmethod
     def _build_static_invalid(

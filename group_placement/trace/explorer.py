@@ -15,6 +15,7 @@ from group_placement.agents.base import Agent, BaseAdapter, OrderingAgent
 from group_placement.envs.action_space import ActionSpace
 from group_placement.envs.env import FactoryLayoutEnv
 from group_placement.envs.placement.base import GroupPlacement
+from group_placement.envs.visualizer.data import extract_flow_edges_and_pairs
 from group_placement.search.base import BaseSearch, BaseHierarchicalSearch
 
 from group_placement.trace.schema import (
@@ -612,7 +613,7 @@ class Explorer:
             # affected flow edges
             affected: list[FlowDelta] = []
             gid_key = str(gid)
-            flow_edges = state.eval.edge_metadata(phase="base")
+            flow_edges, _ = extract_flow_edges_and_pairs(state.eval, phase="base")
             for (src, dst), edge in flow_edges.items():
                 if src != gid_key and dst != gid_key:
                     continue

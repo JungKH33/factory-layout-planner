@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple, Type
 
 import torch
 
@@ -117,13 +117,13 @@ class RewardComposer:
             return str(raw_key[0]), str(raw_key[1])
         return None
 
-    def _normalize_component_meta(
+    def _normalize_metadata(
         self,
         *,
-        comp_meta: Dict[str, Any],
+        metadata: Dict[str, Any],
         placed_nodes: list,
     ) -> Dict[str, Any]:
-        meta = dict(comp_meta or {})
+        meta = dict(metadata or {})
         raw_edges = meta.get("edges", None)
         if not isinstance(raw_edges, dict):
             return meta
@@ -148,6 +148,27 @@ class RewardComposer:
         meta["edge_key_kind"] = "gid"
         meta["edges"] = edges
         return meta
+
+    @staticmethod
+    def _placed_bbox_from_state(state: "EnvState", placed_nodes: list) -> tuple[float, float, float, float]:
+        if len(placed_nodes) == 0:
+            return 0.0, 0.0, 0.0, 0.0
+        min_x = float("inf")
+        max_x = float("-inf")
+        min_y = float("inf")
+        max_y = float("-inf")
+        placements = state.placements
+        for gid in placed_nodes:
+            p = placements.get(gid, None)
+            if p is None:
+                continue
+            min_x = min(min_x, float(getattr(p, "min_x")))
+            max_x = max(max_x, float(getattr(p, "max_x")))
+            min_y = min(min_y, float(getattr(p, "min_y")))
+            max_y = max(max_y, float(getattr(p, "max_y")))
+        if min_x == float("inf"):
+            return 0.0, 0.0, 0.0, 0.0
+        return float(min_x), float(max_x), float(min_y), float(max_y)
 
     def _score_component(
         self,
@@ -223,7 +244,7 @@ class RewardComposer:
             placed_exits_mask,
         ) = state.io_tensors()
         placed_count = len(placed_nodes)
-        cur_min_x, cur_max_x, cur_min_y, cur_max_y = state.placed_bbox()
+        cur_min_x, cur_max_x, cur_min_y, cur_max_y = self._placed_bbox_from_state(state, placed_nodes)
         flow_w = state.build_flow_w()
         exit_k, entry_k = self._port_span_tensors(placed_nodes, placed_entries.device)
 
@@ -255,8 +276,8 @@ class RewardComposer:
                 if not (isinstance(val_raw, tuple) and len(val_raw) == 2):
                     raise TypeError(f"{type(comp).__name__}.score(return_meta=True) must return (score, meta)")
                 val_t, comp_meta = val_raw
-                meta_out[str(name)] = self._normalize_component_meta(
-                    comp_meta=dict(comp_meta or {}),
+                meta_out[str(name)] = self._normalize_metadata(
+                    metadata=dict(comp_meta or {}),
                     placed_nodes=placed_nodes,
                 )
             else:
@@ -319,7 +340,6 @@ class RewardComposer:
         max_y: Optional[torch.Tensor] = None,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-        return_meta: bool = False,
     ):
         """Compute incremental cost from keyword feature tensors.
 
@@ -334,7 +354,7 @@ class RewardComposer:
             placed_exits_mask,
         ) = state.io_tensors()
         placed_count = len(placed_nodes)
-        cur_min_x, cur_max_x, cur_min_y, cur_max_y = state.placed_bbox()
+        cur_min_x, cur_max_x, cur_min_y, cur_max_y = self._placed_bbox_from_state(state, placed_nodes)
         if gid is None:
             raise ValueError("RewardComposer.delta_batch requires explicit gid")
         w_out, w_in = state.build_delta_flow_weights_for(gid)
@@ -348,7 +368,6 @@ class RewardComposer:
                 break
 
         total = torch.zeros((m,), dtype=torch.float32, device=device)
-        meta_out: Dict[str, Dict[str, Any]] = {}
         has_flow_like = any(
             isinstance(comp, (FlowReward, FlowCollisionReward))
             for comp in self.components.values()
@@ -385,7 +404,7 @@ class RewardComposer:
                 continue
             w = float(self.weights.get(name, 1.0))
             if isinstance(comp, FlowReward):
-                delta_raw = comp.delta(
+                delta_t = comp.delta(
                     placed_entries=placed_entries,
                     placed_exits=placed_exits,
                     placed_entries_mask=placed_entries_mask,
@@ -400,19 +419,11 @@ class RewardComposer:
                     c_entry_k=c_entry_k,
                     t_entry_k=t_entry_k,
                     t_exit_k=t_exit_k,
-                    return_meta=return_meta,
                 )
-                if return_meta:
-                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
-                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
-                    delta_t, comp_meta = delta_raw
-                    meta_out[str(name)] = dict(comp_meta or {})
-                else:
-                    delta_t = delta_raw
                 total = total + w * delta_t
                 continue
             if isinstance(comp, FlowCollisionReward):
-                delta_raw = comp.delta(
+                delta_t = comp.delta(
                     placed_entries=placed_entries,
                     placed_exits=placed_exits,
                     placed_entries_mask=placed_entries_mask,
@@ -428,19 +439,11 @@ class RewardComposer:
                     c_entry_k=c_entry_k,
                     t_entry_k=t_entry_k,
                     t_exit_k=t_exit_k,
-                    return_meta=return_meta,
                 )
-                if return_meta:
-                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
-                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
-                    delta_t, comp_meta = delta_raw
-                    meta_out[str(name)] = dict(comp_meta or {})
-                else:
-                    delta_t = delta_raw
                 total = total + w * delta_t
                 continue
             if isinstance(comp, AreaReward):
-                delta_raw = comp.delta(
+                delta_t = comp.delta(
                     placed_count=placed_count,
                     cur_min_x=cur_min_x,
                     cur_max_x=cur_max_x,
@@ -450,39 +453,229 @@ class RewardComposer:
                     candidate_max_x=max_x,
                     candidate_min_y=min_y,
                     candidate_max_y=max_y,
-                    return_meta=return_meta,
                 )
-                if return_meta:
-                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
-                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
-                    delta_t, comp_meta = delta_raw
-                    meta_out[str(name)] = dict(comp_meta or {})
-                else:
-                    delta_t = delta_raw
                 total = total + w * delta_t
                 continue
             if isinstance(comp, GridOccupancyReward):
-                delta_raw = comp.delta(
+                delta_t = comp.delta(
                     placed_cell_occupied=placed_cell_occupied,
                     candidate_min_x=min_x,
                     candidate_max_x=max_x,
                     candidate_min_y=min_y,
                     candidate_max_y=max_y,
-                    return_meta=return_meta,
                 )
-                if return_meta:
-                    if not (isinstance(delta_raw, tuple) and len(delta_raw) == 2):
-                        raise TypeError(f"{type(comp).__name__}.delta(return_meta=True) must return (delta, meta)")
-                    delta_t, comp_meta = delta_raw
-                    meta_out[str(name)] = dict(comp_meta or {})
-                else:
-                    delta_t = delta_raw
                 total = total + w * delta_t
                 continue
             raise TypeError(f"unsupported reward component type: {type(comp).__name__}")
-        if return_meta:
-            return total, meta_out
         return total
+
+    @staticmethod
+    def _get_previous_metadata(
+        *,
+        base_rewards: Mapping[str, Mapping[str, Any]],
+        reward_name: str,
+    ) -> Dict[str, Any]:
+        record = base_rewards.get(reward_name, None)
+        if not isinstance(record, Mapping):
+            return {}
+        metadata = record.get("metadata", None)
+        if not isinstance(metadata, Mapping):
+            return {}
+        return dict(metadata)
+
+    @staticmethod
+    def _area_bbox_from_meta(meta: Mapping[str, Any]) -> tuple[float, float, float, float]:
+        raw_bbox = meta.get("bbox", None)
+        if not isinstance(raw_bbox, Mapping):
+            raise ValueError("AreaReward step delta requires previous meta.bbox")
+        keys = ("min_x", "max_x", "min_y", "max_y")
+        if any(k not in raw_bbox for k in keys):
+            raise ValueError("AreaReward step delta requires bbox keys: min_x/max_x/min_y/max_y")
+        return (
+            float(raw_bbox["min_x"]),
+            float(raw_bbox["max_x"]),
+            float(raw_bbox["min_y"]),
+            float(raw_bbox["max_y"]),
+        )
+
+    def delta_single(
+        self,
+        state: "EnvState",
+        *,
+        gid: "str | int",
+        entry_points: Optional[torch.Tensor],
+        exit_points: Optional[torch.Tensor],
+        entry_mask: Optional[torch.Tensor],
+        exit_mask: Optional[torch.Tensor],
+        min_x: Optional[torch.Tensor],
+        max_x: Optional[torch.Tensor],
+        min_y: Optional[torch.Tensor],
+        max_y: Optional[torch.Tensor],
+        base_rewards: Mapping[str, Mapping[str, Any]],
+        route_blocked: Optional[torch.Tensor] = None,
+        placed_cell_occupied: Optional[torch.Tensor] = None,
+    ) -> tuple[float, Dict[str, float], Dict[str, Dict[str, Any]]]:
+        (
+            placed_nodes,
+            placed_entries,
+            placed_exits,
+            placed_entries_mask,
+            placed_exits_mask,
+        ) = state.io_tensors()
+        placed_count = len(placed_nodes)
+        w_out, w_in = state.build_delta_flow_weights_for(gid)
+
+        m = 0
+        device = placed_entries.device
+        for t in (entry_points, exit_points, min_x, max_x, min_y, max_y):
+            if t is not None:
+                m = int(t.shape[0])
+                device = t.device
+                break
+        if m != 1:
+            raise ValueError(f"delta_single requires single candidate tensors, got M={m}")
+
+        t_exit_k, t_entry_k = self._port_span_tensors(placed_nodes, device)
+        c_exit_k = 1
+        c_entry_k = 1
+        if self.group_specs is not None:
+            c_spec = self.group_specs.get(gid)
+            if c_spec is not None:
+                c_exit_k = int(getattr(c_spec, "exit_port_span", 1))
+                c_entry_k = int(getattr(c_spec, "entry_port_span", 1))
+
+        reward_delta_by_name: Dict[str, float] = {}
+        metadata_by_reward: Dict[str, Dict[str, Any]] = {}
+        weighted_total = 0.0
+        for name, component in self.components.items():
+            if component is None:
+                continue
+            name_s = str(name)
+            weight = float(self.weights.get(name, self.weights.get(name_s, 1.0)))
+            previous_metadata = self._get_previous_metadata(
+                base_rewards=base_rewards,
+                reward_name=name_s,
+            )
+            if isinstance(component, FlowReward):
+                entry_points_t = _require(entry_points, "entry_points")
+                exit_points_t = _require(exit_points, "exit_points")
+                raw_delta = component.delta(
+                    placed_entries=placed_entries,
+                    placed_exits=placed_exits,
+                    placed_entries_mask=placed_entries_mask,
+                    placed_exits_mask=placed_exits_mask,
+                    w_out=w_out,
+                    w_in=w_in,
+                    candidate_entries=entry_points_t,
+                    candidate_exits=exit_points_t,
+                    candidate_entries_mask=entry_mask,
+                    candidate_exits_mask=exit_mask,
+                    c_exit_k=c_exit_k,
+                    c_entry_k=c_entry_k,
+                    t_entry_k=t_entry_k,
+                    t_exit_k=t_exit_k,
+                    return_meta=True,
+                    placed_node_ids=placed_nodes,
+                    candidate_gid=gid,
+                    previous_metadata=previous_metadata,
+                )
+                if not (isinstance(raw_delta, tuple) and len(raw_delta) == 2):
+                    raise TypeError(f"{type(component).__name__}.delta(return_meta=True) must return (delta, meta)")
+                delta_tensor, metadata = raw_delta
+                delta_value = float(delta_tensor.view(-1)[0].item())
+                reward_delta_by_name[name_s] = delta_value
+                metadata_by_reward[name_s] = dict(metadata or {})
+                weighted_total += weight * delta_value
+                continue
+            if isinstance(component, FlowCollisionReward):
+                entry_points_t = _require(entry_points, "entry_points")
+                exit_points_t = _require(exit_points, "exit_points")
+                raw_delta = component.delta(
+                    placed_entries=placed_entries,
+                    placed_exits=placed_exits,
+                    placed_entries_mask=placed_entries_mask,
+                    placed_exits_mask=placed_exits_mask,
+                    w_out=w_out,
+                    w_in=w_in,
+                    candidate_entries=entry_points_t,
+                    candidate_exits=exit_points_t,
+                    candidate_entries_mask=entry_mask,
+                    candidate_exits_mask=exit_mask,
+                    route_blocked=route_blocked,
+                    c_exit_k=c_exit_k,
+                    c_entry_k=c_entry_k,
+                    t_entry_k=t_entry_k,
+                    t_exit_k=t_exit_k,
+                    return_meta=True,
+                )
+                if not (isinstance(raw_delta, tuple) and len(raw_delta) == 2):
+                    raise TypeError(f"{type(component).__name__}.delta(return_meta=True) must return (delta, meta)")
+                delta_tensor, metadata = raw_delta
+                delta_value = float(delta_tensor.view(-1)[0].item())
+                reward_delta_by_name[name_s] = delta_value
+                metadata_by_reward[name_s] = dict(metadata or {})
+                weighted_total += weight * delta_value
+                continue
+            if isinstance(component, AreaReward):
+                min_x_t = _require(min_x, "min_x")
+                max_x_t = _require(max_x, "max_x")
+                min_y_t = _require(min_y, "min_y")
+                max_y_t = _require(max_y, "max_y")
+                cand_min_x = float(min_x_t.view(-1)[0].item())
+                cand_max_x = float(max_x_t.view(-1)[0].item())
+                cand_min_y = float(min_y_t.view(-1)[0].item())
+                cand_max_y = float(max_y_t.view(-1)[0].item())
+                if placed_count == 0:
+                    cur_min_x = cand_min_x
+                    cur_max_x = cand_max_x
+                    cur_min_y = cand_min_y
+                    cur_max_y = cand_max_y
+                    delta_value = 0.5 * ((cand_max_x - cand_min_x) + (cand_max_y - cand_min_y))
+                else:
+                    cur_min_x, cur_max_x, cur_min_y, cur_max_y = self._area_bbox_from_meta(previous_metadata)
+                    new_min_x = min(cur_min_x, cand_min_x)
+                    new_max_x = max(cur_max_x, cand_max_x)
+                    new_min_y = min(cur_min_y, cand_min_y)
+                    new_max_y = max(cur_max_y, cand_max_y)
+                    cur_hpwl = 0.5 * ((cur_max_x - cur_min_x) + (cur_max_y - cur_min_y))
+                    new_hpwl = 0.5 * ((new_max_x - new_min_x) + (new_max_y - new_min_y))
+                    delta_value = float(new_hpwl - cur_hpwl)
+                    cur_min_x, cur_max_x, cur_min_y, cur_max_y = new_min_x, new_max_x, new_min_y, new_max_y
+                reward_delta_by_name[name_s] = float(delta_value)
+                metadata_by_reward[name_s] = {
+                    "placed_count": int(placed_count + 1),
+                    "bbox": {
+                        "min_x": float(cur_min_x),
+                        "max_x": float(cur_max_x),
+                        "min_y": float(cur_min_y),
+                        "max_y": float(cur_max_y),
+                    },
+                }
+                weighted_total += weight * float(delta_value)
+                continue
+            if isinstance(component, GridOccupancyReward):
+                min_x_t = _require(min_x, "min_x")
+                max_x_t = _require(max_x, "max_x")
+                min_y_t = _require(min_y, "min_y")
+                max_y_t = _require(max_y, "max_y")
+                raw_delta = component.delta(
+                    placed_cell_occupied=placed_cell_occupied,
+                    candidate_min_x=min_x_t,
+                    candidate_max_x=max_x_t,
+                    candidate_min_y=min_y_t,
+                    candidate_max_y=max_y_t,
+                    return_meta=True,
+                )
+                if not (isinstance(raw_delta, tuple) and len(raw_delta) == 2):
+                    raise TypeError(f"{type(component).__name__}.delta(return_meta=True) must return (delta, meta)")
+                delta_tensor, metadata = raw_delta
+                delta_value = float(delta_tensor.view(-1)[0].item())
+                reward_delta_by_name[name_s] = delta_value
+                metadata_by_reward[name_s] = dict(metadata or {})
+                weighted_total += weight * delta_value
+                continue
+            raise TypeError(f"unsupported reward component type: {type(component).__name__}")
+        return float(weighted_total), reward_delta_by_name, metadata_by_reward
 
     def delta(
         self,
@@ -498,6 +691,8 @@ class RewardComposer:
 
         Delegates to ``delta_batch`` using ActionSpace fields.
         """
+        if return_meta:
+            raise ValueError("RewardComposer.delta(return_meta=True) is not supported; use delta_single()")
         return self.delta_batch(
             state,
             gid=gid,
@@ -511,5 +706,4 @@ class RewardComposer:
             max_y=action_space.max_y,
             route_blocked=route_blocked,
             placed_cell_occupied=placed_cell_occupied,
-            return_meta=return_meta,
         )

@@ -161,10 +161,6 @@ class EnvState:
                 "and is_rectangular for map painting"
             )
         self.maps.paint_placement(
-            bbox_min_x=float(min_x),
-            bbox_max_x=float(max_x),
-            bbox_min_y=float(min_y),
-            bbox_max_y=float(max_y),
             x_bl=int(x0),
             y_bl=int(y0),
             body_mask=body_mask,
@@ -176,7 +172,7 @@ class EnvState:
             placement=placement,
             nodes=self.placed_nodes_order,
         )
-        self.eval.begin_layout_revision()
+        self.eval.start_revision()
 
     def step(
         self,
@@ -260,6 +256,3 @@ class EnvState:
             clearance_origin=clearance_origin,
             is_rectangular=is_rectangular,
         )
-
-    def placed_bbox(self) -> Tuple[float, float, float, float]:
-        return self.maps.placed_bbox()

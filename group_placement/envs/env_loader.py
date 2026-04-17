@@ -417,8 +417,8 @@ def load_env(
             "exclusive": exclusive,
         }
 
-    terminal_components: Optional[Dict[str, object]] = None
-    terminal_weights: Optional[Dict[str, float]] = None
+    terminal_reward_components: Optional[Dict[str, object]] = None
+    terminal_reward_weights: Optional[Dict[str, float]] = None
     terminal_cfg = env_cfg.get("terminal_reward", None)
     if isinstance(terminal_cfg, dict):
         comp_names = terminal_cfg.get("components", None)
@@ -426,16 +426,16 @@ def load_env(
             if not isinstance(comp_names, list):
                 raise ValueError("env.terminal_reward.components must be a list")
             group_areas = {gid: float(spec.body_area) for gid, spec in group_specs.items()}
-            terminal_components = {}
+            terminal_reward_components = {}
             for name_raw in comp_names:
                 name = str(name_raw).strip().lower()
                 if name == "penalty":
-                    terminal_components["penalty"] = TerminalPenaltyReward(
+                    terminal_reward_components["penalty"] = TerminalPenaltyReward(
                         penalty_weight=float(env_cfg.get("penalty_weight", 50000.0)),
                         group_areas=group_areas,
                     )
                 elif name == "flow":
-                    terminal_components["flow"] = TerminalFlowReward(
+                    terminal_reward_components["flow"] = TerminalFlowReward(
                         group_specs=group_specs,
                         unreachable_cost=float(env_cfg.get("terminal_flow_unreachable_cost", 1e6)),
                         max_wave_iters=int(env_cfg.get("terminal_flow_max_wave_iters", 0)),
@@ -452,7 +452,7 @@ def load_env(
         if weights_raw is not None:
             if not isinstance(weights_raw, dict):
                 raise ValueError("env.terminal_reward.weights must be an object")
-            terminal_weights = {str(k): float(v) for k, v in weights_raw.items()}
+            terminal_reward_weights = {str(k): float(v) for k, v in weights_raw.items()}
 
     env = FactoryLayoutEnv(
         grid_width=grid_w,
@@ -464,8 +464,8 @@ def load_env(
         device=device,
         reward_scale=float(env_cfg.get("reward_scale", 100.0)),
         penalty_weight=float(env_cfg.get("penalty_weight", 50000.0)),
-        terminal_reward_components=terminal_components,
-        terminal_reward_weights=terminal_weights,
+        terminal_reward_components=terminal_reward_components,
+        terminal_reward_weights=terminal_reward_weights,
         terminal_flow_unreachable_cost=float(env_cfg.get("terminal_flow_unreachable_cost", 1e6)),
         terminal_flow_max_wave_iters=int(env_cfg.get("terminal_flow_max_wave_iters", 0)),
         terminal_flow_batched_wavefront=bool(env_cfg.get("terminal_flow_batched_wavefront", True)),

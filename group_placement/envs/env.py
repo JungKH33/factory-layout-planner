@@ -169,7 +169,7 @@ class FactoryLayoutEnv(gym.Env):
             weights=t_weights,
             reward_scale=float(self.reward_scale),
         )
-        self._refresh_base_eval_snapshot(reset_terminal=True)
+        self._reset_base_eval(reset_terminal=True)
 
     def _normalize_group_specs(self, group_specs: Dict[str | int, GroupSpec]) -> Dict[str | int, GroupSpec]:
         """Normalize group specs onto env device and validate id/key consistency."""
@@ -203,10 +203,11 @@ class FactoryLayoutEnv(gym.Env):
         if not isinstance(state, EnvState):
             raise TypeError(f"state must be EnvState, got {type(state).__name__}")
         self._state.restore(state)
-        if bool(self._state.eval.objective.get("finalized", False)):
-            self._refresh_base_eval_snapshot(reset_terminal=False)
-        else:
-            self._refresh_base_eval_snapshot(reset_terminal=True)
+        objective = self._state.eval.objective
+        if "cost_total" not in objective:
+            self._state.eval.recompute_objective(
+                finalized=bool(objective.get("finalized", False)),
+            )
 
     def _as_long_tensor(self, v: object, *, name: str) -> torch.Tensor:
         """Coerce scalar/tensor values to integer tensor [N] with integer-value validation."""
@@ -227,29 +228,21 @@ class FactoryLayoutEnv(gym.Env):
         """Public access to the RewardComposer for direct delta_batch calls."""
         return self._reward
 
-    def _delta_cost_from_placements(
+    def _placement_features_from_placements(
         self,
         placements: List[GroupPlacement],
-    ) -> torch.Tensor:
-        """Score already-resolved placements via reward delta.
-
-        Reads center/geometry directly from GroupPlacement.
-        """
+    ) -> tuple[str | int, Dict[str, Optional[torch.Tensor]]]:
+        """Build reward feature tensors for pre-resolved placements."""
         M = len(placements)
         if M == 0:
-            return torch.zeros((0,), dtype=torch.float32, device=self.device)
+            raise ValueError("placements must not be empty")
         gid = placements[0].group_id
         for p in placements[1:]:
             if p.group_id != gid:
                 raise ValueError(
-                    "all placements passed to _delta_cost_from_placements() "
+                    "all placements passed to _placement_features_from_placements() "
                     "must share the same group_id"
                 )
-
-        poses = torch.tensor(
-            [[p.x_center, p.y_center] for p in placements],
-            dtype=torch.float32, device=self.device,
-        )
 
         # Build entry_points/exit_points tensors from placement geometry
         max_ent = max((len(p.entry_points) for p in placements), default=0)
@@ -279,14 +272,57 @@ class FactoryLayoutEnv(gym.Env):
         max_x = torch.tensor([p.max_x for p in placements], dtype=torch.float32, device=self.device)
         min_y = torch.tensor([p.min_y for p in placements], dtype=torch.float32, device=self.device)
         max_y = torch.tensor([p.max_y for p in placements], dtype=torch.float32, device=self.device)
+        features: Dict[str, Optional[torch.Tensor]] = {
+            "entry_points": entry_points,
+            "exit_points": exit_points,
+            "entry_mask": entry_mask,
+            "exit_mask": exit_mask,
+            "min_x": min_x,
+            "max_x": max_x,
+            "min_y": min_y,
+            "max_y": max_y,
+        }
+        return gid, features
 
+    def _delta_cost_from_placements(
+        self,
+        placements: List[GroupPlacement],
+    ) -> torch.Tensor:
+        """Score already-resolved placements via reward delta."""
+        if len(placements) == 0:
+            return torch.zeros((0,), dtype=torch.float32, device=self.device)
+        gid, features = self._placement_features_from_placements(placements)
         return self._reward.delta_batch(
-            self._state, gid=gid,
-            entry_points=entry_points, exit_points=exit_points,
-            entry_mask=entry_mask, exit_mask=exit_mask,
-            min_x=min_x, max_x=max_x,
-            min_y=min_y, max_y=max_y,
+            self._state,
+            gid=gid,
+            entry_points=features["entry_points"],
+            exit_points=features["exit_points"],
+            entry_mask=features["entry_mask"],
+            exit_mask=features["exit_mask"],
+            min_x=features["min_x"],
+            max_x=features["max_x"],
+            min_y=features["min_y"],
+            max_y=features["max_y"],
         ).to(dtype=torch.float32)
+
+    def _delta_single_for_placement(
+        self,
+        placement: GroupPlacement,
+    ) -> tuple[float, Dict[str, float], Dict[str, Dict[str, Any]]]:
+        gid, features = self._placement_features_from_placements([placement])
+        return self._reward.delta_single(
+            self._state,
+            gid=gid,
+            entry_points=features["entry_points"],
+            exit_points=features["exit_points"],
+            entry_mask=features["entry_mask"],
+            exit_mask=features["exit_mask"],
+            min_x=features["min_x"],
+            max_x=features["max_x"],
+            min_y=features["min_y"],
+            max_y=features["max_y"],
+            base_rewards=self._state.eval.base_rewards,
+        )
 
     def _normalize_center_request(
         self,
@@ -389,8 +425,12 @@ class FactoryLayoutEnv(gym.Env):
         self,
         placement: GroupPlacement,
     ) -> None:
+        _total_delta, reward_delta_by_name, metadata_by_reward = self._delta_single_for_placement(placement)
         self._state.place(placement=placement)
-        self._refresh_base_eval_snapshot(reset_terminal=True)
+        self._apply_base_delta(
+            reward_delta_by_name=reward_delta_by_name,
+            metadata_by_reward=metadata_by_reward,
+        )
 
     def apply_dynamic_placement(self, placement: object) -> None:
         """Apply a pre-resolved dynamic placement object (DynamicPlacement-compatible)."""
@@ -401,59 +441,51 @@ class FactoryLayoutEnv(gym.Env):
 
     # ---- objective ----
 
-    def _runtime_meta(self, raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        meta = dict(raw or {})
-        meta["status"] = "ok"
-        meta["layout_rev"] = int(self._state.eval.layout_rev)
-        return meta
+    def _runtime_metadata(self, raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        out = dict(raw or {})
+        out["status"] = "ok"
+        out["layout_rev"] = self._state.eval.layout_rev
+        return out
 
-    def _refresh_base_eval_snapshot(self, *, reset_terminal: bool) -> Dict[str, float]:
-        base_raw, base_meta = self._reward.score_dict(
-            self._state,
-            weighted=False,
-            return_meta=True,
-        )
+    def _reset_base_eval(self, *, reset_terminal: bool) -> None:
         eval_state = self._state.eval
         base_snapshot: Dict[str, Dict[str, Any]] = {}
-        for name, comp in self._reward.components.items():
-            if comp is None:
-                continue
+        for name in self._reward.components.keys():
             name_s = str(name)
-            raw = float(base_raw.get(name, 0.0))
-            w = float(self._reward.weights.get(name, 1.0))
+            w = float(self._reward.weights.get(name, self._reward.weights.get(name_s, 1.0)))
             base_snapshot[name_s] = {
-                "raw_cost": raw,
+                "raw_cost": 0.0,
                 "weight": w,
-                "meta": self._runtime_meta(base_meta.get(name_s, {})),
+                "metadata": self._runtime_metadata({}),
             }
         eval_state.set_base_snapshot(base_snapshot)
         if bool(reset_terminal):
             eval_state.clear_terminal()
-        finalized = (not bool(reset_terminal)) and bool(eval_state.objective.get("finalized", False))
-        eval_state.recompute_objective(finalized=finalized)
-        return {str(k): float(v) for k, v in base_raw.items()}
 
-    def _finalize_terminal_eval_snapshot(self, *, failed: bool) -> float:
+    def _apply_base_delta(
+        self,
+        *,
+        reward_delta_by_name: Dict[str, float],
+        metadata_by_reward: Dict[str, Dict[str, Any]],
+    ) -> None:
+        runtime_metadata_by_reward = {
+            str(name): self._runtime_metadata(dict(metadata or {}))
+            for name, metadata in dict(metadata_by_reward or {}).items()
+        }
+        self._state.eval.record_base_delta(
+            reward_delta_by_name={str(k): float(v) for k, v in reward_delta_by_name.items()},
+            metadata_by_reward=runtime_metadata_by_reward,
+        )
+
+    def _finalize_terminal_eval(self, *, failed: bool) -> float:
         eval_state = self._state.eval
         if bool(eval_state.objective.get("finalized", False)):
             return float(eval_state.objective.get("terminal_total", 0.0))
-
-        base_unweighted, base_meta = self._reward.score_dict(
-            state=self._state,
-            weighted=False,
-            return_meta=True,
-        )
-        base_snapshot: Dict[str, Dict[str, Any]] = {}
-        for name, comp in self._reward.components.items():
-            if comp is None:
-                continue
-            name_s = str(name)
-            base_snapshot[name_s] = {
-                "raw_cost": float(base_unweighted.get(name, 0.0)),
-                "weight": float(self._reward.weights.get(name, 1.0)),
-                "meta": self._runtime_meta(base_meta.get(name_s, {})),
-            }
-        eval_state.set_base_snapshot(base_snapshot)
+        base_unweighted = {
+            str(name): float(rec.get("raw_cost", 0.0))
+            for name, rec in eval_state.base_rewards.items()
+            if isinstance(rec, dict)
+        }
 
         delta_raw, delta_meta = self._terminal.delta_dict(
             state=self._state,
@@ -468,41 +500,49 @@ class FactoryLayoutEnv(gym.Env):
             name_s = str(name)
             terminal_snapshot[name_s] = {
                 "delta_cost": float(delta),
-                "meta": self._runtime_meta(delta_meta.get(name_s, {})),
+                "metadata": self._runtime_metadata(delta_meta.get(name_s, {})),
             }
         eval_state.set_terminal_snapshot(terminal_snapshot)
         eval_state.recompute_objective(finalized=True)
         return float(eval_state.objective.get("terminal_total", 0.0))
 
-    def merge_reward_metadata(
+    def record_reward_meta(
         self,
         *,
-        component: str,
-        patch: Dict[str, Any],
+        reward_name: str,
+        metadata: Dict[str, Any],
         phase: str = "base",
     ) -> None:
         phase_key = str(phase)
-        payload = self._runtime_meta(dict(patch or {}))
-        self._state.eval.merge_component_meta(
-            name=str(component),
-            patch=payload,
+        runtime_metadata = self._runtime_metadata(dict(metadata or {}))
+        self._state.eval.merge_metadata(
+            name=str(reward_name),
+            metadata=runtime_metadata,
             phase=phase_key,
         )
 
     def cost(self) -> float:
-        """Current objective value cached in state runtime."""
+        """Current objective value cached in state runtime.
+
+        Non-finalized states return base_total only — terminal rewards
+        are excluded until the episode actually ends.
+        """
         obj = self._state.eval.objective
         if "cost_total" not in obj:
-            self._refresh_base_eval_snapshot(
-                reset_terminal=not bool(self._state.eval.objective.get("finalized", False)),
+            self._state.eval.recompute_objective(
+                finalized=bool(obj.get("finalized", False)),
             )
             obj = self._state.eval.objective
+        if not bool(obj.get("finalized", False)):
+            return float(obj.get("base_total", 0.0))
         return float(obj.get("cost_total", 0.0))
 
     def failure_penalty(self) -> float:
-        """Terminal-failure reward adjustment (negative)."""
-        delta = self._finalize_terminal_eval_snapshot(failed=True)
-        return -float(delta) / float(self.reward_scale)
+        """Estimated penalty if episode fails now (read-only, no state mutation)."""
+        for comp in self._terminal.components.values():
+            if isinstance(comp, TerminalPenaltyReward):
+                return comp.penalty_cost(state=self._state) / float(self.reward_scale)
+        return 0.0
 
     def reorder_remaining(self, ordered_remaining: List[str | int]) -> None:
         """Replace `remaining` order with a validated permutation of current remaining gids."""
@@ -527,7 +567,7 @@ class FactoryLayoutEnv(gym.Env):
 
     def _end_episode(self, *, reason: str, failed: bool) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         """Finalize terminal reward once and return unified step-like outputs."""
-        terminal_delta = self._finalize_terminal_eval_snapshot(failed=bool(failed))
+        terminal_delta = self._finalize_terminal_eval(failed=bool(failed))
         reward = -float(terminal_delta) / float(self.reward_scale)
         terminated = not bool(failed)
         truncated = bool(failed)
@@ -582,10 +622,13 @@ class FactoryLayoutEnv(gym.Env):
             self._state.step(apply=False)
             return self._end_episode(reason="not_placeable", failed=True)
 
-        delta_cost = float(self._delta_cost_from_placements([placement])[0].item())
+        delta_cost, reward_delta_by_name, metadata_by_reward = self._delta_single_for_placement(placement)
 
         self._state.step(apply=True, placement=placement)
-        self._refresh_base_eval_snapshot(reset_terminal=True)
+        self._apply_base_delta(
+            reward_delta_by_name=reward_delta_by_name,
+            metadata_by_reward=metadata_by_reward,
+        )
 
         reward = float(self._reward.to_reward(delta_cost))
         terminated = len(self._state.remaining) == 0
@@ -634,6 +677,7 @@ class FactoryLayoutEnv(gym.Env):
         else:
             remaining = list(base_remaining)
         self._state.reset_runtime(remaining=remaining)
+        self._reset_base_eval(reset_terminal=True)
 
         # Apply pre-resolved initial placements.
         initial_placements = options.get("initial_placements", None)
@@ -686,9 +730,8 @@ class FactoryLayoutEnv(gym.Env):
                     warnings.warn(f"{msg} — skipping", stacklevel=2)
                     continue
                 self._apply_resolved_placement(placement)
-        self._refresh_base_eval_snapshot(reset_terminal=True)
         if len(self._state.remaining) == 0 and len(self._state.placed) > 0:
-            self._finalize_terminal_eval_snapshot(failed=False)
+            self._finalize_terminal_eval(failed=False)
         return {}, {}
 
 
@@ -787,7 +830,7 @@ if __name__ == "__main__":
     print("env_demo")
     print(f" device={dev}  init_ms={init_ms:.2f}  reset_ms={reset_ms:.2f}")
     print(f" placed={sorted(env.get_state().placed)}  remaining={env.get_state().remaining}")
-    print(f" flow_edges after reset: {env.get_state().eval.edge_metadata(phase='base')}")
+    print(f" objective after reset: {env.get_state().eval.objective}")
 
     # --- step: C 배치 ---
     t2 = time.perf_counter()
@@ -798,7 +841,7 @@ if __name__ == "__main__":
     step_ms = (time.perf_counter() - t2) * 1000.0
 
     print(f" step_ms={step_ms:.2f}  reason={info['reason']}  reward={reward:.4f}  terminated={terminated}")
-    print(f" flow_edges after step:  {env.get_state().eval.edge_metadata(phase='base')}")
+    print(f" objective after step:  {env.get_state().eval.objective}")
     print(f" cost={env.cost():.4f}")
     print(f" obs_keys={list(obs.keys())}")
 
