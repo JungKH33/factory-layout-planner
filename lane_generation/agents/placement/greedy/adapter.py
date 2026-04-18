@@ -76,7 +76,7 @@ class DirectRouteAdapter(BaseAdapter):
             return [], []
 
         src_gid, dst_gid, _ = state.flow_pair(flow_idx)
-        allow_mask = state.allow_mask() if state.forbid_opposite(flow_idx) else None
+        allow_mask = state.combined_mask(flow_idx)
 
         def build_path(src_xy):
             return state.pathfind(

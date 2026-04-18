@@ -73,6 +73,7 @@ def _route_to_dict(route: LaneRoute, state) -> Dict[str, Any]:
         "src_gid": str(spec.src_gid),
         "dst_gid": str(spec.dst_gid),
         "weight": float(spec.weight),
+        "lane_width": float(spec.lane_width),
         "success": True,
         "edges": edge_list,
         "cells": cells,
@@ -82,6 +83,10 @@ def _route_to_dict(route: LaneRoute, state) -> Dict[str, Any]:
     }
     if lane_slots is not None:
         out["lane_slots"] = lane_slots
+    if spec.reverse_allow is not None:
+        out["reverse_allow"] = bool(spec.reverse_allow)
+    if spec.merge_allow is not None:
+        out["merge_allow"] = bool(spec.merge_allow)
     return out
 
 
@@ -92,6 +97,7 @@ def _failed_flow_dict(state, flow_index: int) -> Dict[str, Any]:
         "src_gid": str(spec.src_gid),
         "dst_gid": str(spec.dst_gid),
         "weight": float(spec.weight),
+        "lane_width": float(spec.lane_width),
         "success": False,
         "edges": [],
         "cells": [],

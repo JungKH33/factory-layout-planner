@@ -95,11 +95,16 @@ class BaseAdapter(ABC):
                 edge_mask[i, :n] = True
             path_len[i] = float(n)
 
-        valid = edge_mask.any(dim=1)
+        # Stash lane_width for the active flow so allocator and apply_edges agree
+        state._current_lane_width = float(state.flow_specs[int(flow_idx)].lane_width)
+
         planned_slot_idx = state.preview_lane_slots_batch(
             candidate_edge_idx=edge_idx,
             candidate_edge_mask=edge_mask,
         )
+        # Candidates where any active edge is infeasible (slot=-1) are invalid
+        feasible = ((planned_slot_idx >= 0) | ~edge_mask).all(dim=1)
+        valid = edge_mask.any(dim=1) & feasible
 
         costs = self.env.reward_composer.delta_batch(
             state,

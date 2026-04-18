@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import torch
 
@@ -94,7 +94,20 @@ def load_lane_env(
     routing_config: Optional[RoutingConfig] = None,
     reward_scale: float = 100.0,
     penalty_weight: float = 50000.0,
+    flow_lane_widths: Optional[Dict[Tuple[str, str], float]] = None,
+    flow_reverse_allow: Optional[Dict[Tuple[str, str], bool]] = None,
+    flow_merge_allow: Optional[Dict[Tuple[str, str], bool]] = None,
 ) -> LoadedLaneEnv:
+    """Load a lane-generation environment.
+
+    ``flow_lane_widths`` maps ``(src_gid, dst_gid)`` → physical lane width in
+    grid-cell units (default 1.0 when not specified).  Lane widths must be in
+    ``(0, 1]``; values > 1.0 are reserved for future multi-cell lane support.
+
+    ``flow_reverse_allow`` / ``flow_merge_allow`` map
+    ``(src_gid, dst_gid)`` → per-flow override.  ``None`` (absent) falls back
+    to the global ``RoutingConfig`` default.
+    """
     dev = torch.device(device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")))
     payload = _load_group_placement(group_placement)
 
@@ -104,6 +117,9 @@ def load_lane_env(
     _restore_group_env_with_group_placement(loaded_group.env, payload, grid_size_mm=grid_size_mm)
 
     gstate = loaded_group.env.get_state()
+    _widths: Dict[Tuple[str, str], float] = flow_lane_widths or {}
+    _rev: Dict[Tuple[str, str], bool] = flow_reverse_allow or {}
+    _mrg: Dict[Tuple[str, str], bool] = flow_merge_allow or {}
     flow_specs: List[LaneFlowSpec] = []
     for src_gid, dsts in loaded_group.env.group_flow.items():
         src_p = gstate.placements.get(src_gid, None)
@@ -115,6 +131,10 @@ def load_lane_env(
             if dst_p is None:
                 continue
             dst_ports = tuple(_ports_from_placement(dst_p, kind="entry_points"))
+            key = (str(src_gid), str(dst_gid))
+            lw = float(_widths.get(key, 1.0))
+            ra = _rev.get(key)
+            ma = _mrg.get(key)
             flow_specs.append(
                 LaneFlowSpec(
                     src_gid=str(src_gid),
@@ -122,6 +142,9 @@ def load_lane_env(
                     weight=float(w),
                     src_ports=src_ports,
                     dst_ports=dst_ports,
+                    reverse_allow=ra,
+                    merge_allow=ma,
+                    lane_width=lw,
                 )
             )
 

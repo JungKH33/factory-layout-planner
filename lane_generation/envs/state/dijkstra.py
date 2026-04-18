@@ -25,7 +25,7 @@ def _route_graph_search(
 
     ``allow_np[y, x, d]`` (optional) gates outgoing direction ``d`` from
     cell ``(x, y)``: when False the relax is skipped, enforcing
-    forbid_opposite at search time.
+    reverse-direction constraints at search time.
     """
     h, w = int(free_np.shape[0]), int(free_np.shape[1])
     sx, sy = int(src_xy[0]), int(src_xy[1])

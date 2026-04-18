@@ -245,7 +245,7 @@ def backtrace_shortest_path(
 
 
 # ---------------------------------------------------------------------------
-# Wavefront-specific helpers (forbid_opposite)
+# Wavefront-specific helpers (reverse-direction constraint)
 # ---------------------------------------------------------------------------
 
 

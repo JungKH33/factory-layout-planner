@@ -50,7 +50,7 @@ class HananAdapter(BaseAdapter):
             return [], []
 
         src_gid, dst_gid, _ = state.flow_pair(flow_idx)
-        allow_mask = state.allow_mask() if state.forbid_opposite(flow_idx) else None
+        allow_mask = state.combined_mask(flow_idx)
         hanan_points = self._build_hanan_points(state=state, src_ports=src_ports, dst_ports=dst_ports)
         if len(hanan_points) == 0:
             return [], []

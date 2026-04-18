@@ -35,7 +35,9 @@ class LaneFlowSpec:
     weight: float
     src_ports: Tuple[Tuple[int, int], ...]
     dst_ports: Tuple[Tuple[int, int], ...]
-    forbid_opposite: bool = False
+    reverse_allow: Optional[bool] = None
+    merge_allow: Optional[bool] = None
+    lane_width: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class RoutingConfig:
     benchmark_max_flows_per_method: int = 6
     merge_allow: bool = True
     reverse_allow: bool = True
+    capacity_epsilon: float = 1e-9
 
 
 # ----------------------------------------------------------------------
@@ -241,6 +244,7 @@ class LaneState:
     routed_mask: torch.Tensor
     route_lane_slots_by_flow: Dict[int, Tuple[int, ...]]
     runtime_max_lane_slot: int
+    edge_width_accum: torch.Tensor
 
     # Pathfinding algorithm configuration.
     _algorithm: str = "wavefront"
@@ -249,6 +253,9 @@ class LaneState:
     _max_path_steps: int = 0
     _route_merge_allow: bool = True
     _route_reverse_allow: bool = True
+    _route_capacity_epsilon: float = 1e-9
+    _current_lane_width: float = 1.0
+    _allocator: Optional[Any] = None  # LaneSlotAllocator (set by configure_routing)
 
     # Static/shared caches.
     _static_port_cells_by_gid: Optional[Dict[str, torch.Tensor]] = None
@@ -310,6 +317,9 @@ class LaneState:
             routed_mask=torch.zeros((f,), dtype=torch.bool, device=dev),
             route_lane_slots_by_flow={},
             runtime_max_lane_slot=-1,
+            edge_width_accum=torch.zeros(
+                int(grid_height) * int(grid_width) * 4, dtype=torch.float32, device=dev
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -343,6 +353,7 @@ class LaneState:
             routed_mask=self.routed_mask.clone(),
             route_lane_slots_by_flow=dict(self.route_lane_slots_by_flow),
             runtime_max_lane_slot=int(self.runtime_max_lane_slot),
+            edge_width_accum=self.edge_width_accum.clone(),
         )
         c._algorithm = self._algorithm
         c._algorithm_multi_src = self._algorithm_multi_src
@@ -350,6 +361,9 @@ class LaneState:
         c._max_path_steps = self._max_path_steps
         c._route_merge_allow = self._route_merge_allow
         c._route_reverse_allow = self._route_reverse_allow
+        c._route_capacity_epsilon = self._route_capacity_epsilon
+        c._current_lane_width = self._current_lane_width
+        c._allocator = self._allocator  # stateless, safe to share
         c._static_port_cells_by_gid = self._static_port_cells_by_gid
         c._static_port_xy_set = self._static_port_xy_set
         c._static_walkable_map = self._static_walkable_map
@@ -369,6 +383,8 @@ class LaneState:
         self.step_count = int(src.step_count)
         self.route_lane_slots_by_flow = dict(src.route_lane_slots_by_flow)
         self.runtime_max_lane_slot = int(src.runtime_max_lane_slot)
+        self.edge_width_accum.copy_(src.edge_width_accum.to(device=self.device, dtype=torch.float32))
+        self._current_lane_width = float(src._current_lane_width)
         self._runtime_last_dist_map = None
 
     def reset_runtime(self) -> None:
@@ -379,6 +395,8 @@ class LaneState:
         self.step_count = 0
         self.route_lane_slots_by_flow = {}
         self.runtime_max_lane_slot = -1
+        self.edge_width_accum.zero_()
+        self._current_lane_width = 1.0
         self._runtime_last_dist_map = None
 
     # ------------------------------------------------------------------
@@ -594,128 +612,97 @@ class LaneState:
             ordered_unique.append(e)
         return torch.tensor(ordered_unique, dtype=torch.long, device=self.device), int(turns)
 
-    @staticmethod
-    def _first_set_slot(mask: int) -> Optional[int]:
-        if int(mask) == 0:
-            return None
-        lsb = int(mask) & -int(mask)
-        return int(lsb.bit_length() - 1)
+    def _ensure_allocator(self):
+        if self._allocator is None:
+            from .slot_allocator import LaneSlotAllocator
+            self._allocator = LaneSlotAllocator(
+                capacity_epsilon=self._route_capacity_epsilon,
+            )
+        return self._allocator
 
-    @staticmethod
-    def _first_free_slot(forbidden_mask: int, *, max_slots: int = 63) -> int:
-        m = int(forbidden_mask)
-        for s in range(int(max_slots) + 1):
-            if ((m >> s) & 1) == 0:
-                return int(s)
-        raise RuntimeError(f"no free lane slot available within 0..{int(max_slots)}")
+    def _choose_lane_slot(self, *, dir_mask: int, rev_mask: int,
+                          merge_allow: bool, reverse_allow: bool) -> int:
+        """Compatibility shim — delegates to LaneSlotAllocator.choose_slot."""
+        slot, _ = self._ensure_allocator().choose_slot(
+            dir_mask=dir_mask, rev_mask=rev_mask,
+            width_accum=0.0, lane_width=self._current_lane_width,
+            merge_allow=merge_allow, reverse_allow=reverse_allow,
+        )
+        if slot is None:
+            raise RuntimeError("no lane slot available (capacity exceeded or max_slots reached)")
+        return int(slot)
 
-    def _choose_lane_slot(self, *, dir_mask: int, rev_mask: int) -> int:
-        merge = bool(self._route_merge_allow)
-        rev_allow = bool(self._route_reverse_allow)
-        if merge:
-            reuse_dir = self._first_set_slot(dir_mask)
-            if reuse_dir is not None:
-                return int(reuse_dir)
-            if rev_allow:
-                reuse_rev = self._first_set_slot(rev_mask)
-                if reuse_rev is not None:
-                    return int(reuse_rev)
-            forbidden = int(rev_mask) if not rev_allow else 0
-            return self._first_free_slot(forbidden)
-
-        if rev_allow:
-            shared = int(rev_mask) & ~int(dir_mask)
-            reuse_shared = self._first_set_slot(shared)
-            if reuse_shared is not None:
-                return int(reuse_shared)
-            forbidden = int(dir_mask)
-            return self._first_free_slot(forbidden)
-
-        forbidden = int(dir_mask) | int(rev_mask)
-        return self._first_free_slot(forbidden)
-
-    def _lane_slot_for_edge(self, edge_id: int) -> int:
-        edge_flat = self.edge_lane_mask.view(-1)
+    def _lane_slot_for_edge(self, edge_id: int, *,
+                            merge_allow: bool, reverse_allow: bool) -> int:
+        mask_flat = self.edge_lane_mask.view(-1)
         rev_flat = self.reverse_edge_lut.view(-1)
+        accum_flat = self.edge_width_accum.view(-1)
         e = int(edge_id)
-        if e < 0 or e >= int(edge_flat.shape[0]):
+        if e < 0 or e >= int(mask_flat.shape[0]):
             raise ValueError(f"edge id out of range: {e}")
         r = int(rev_flat[e].item())
-        dir_mask = int(edge_flat[e].item())
-        rev_mask = int(edge_flat[r].item()) if 0 <= r < int(edge_flat.shape[0]) else 0
-        return self._choose_lane_slot(dir_mask=dir_mask, rev_mask=rev_mask)
+        n = int(mask_flat.shape[0])
+        dir_mask = int(mask_flat[e].item())
+        rev_mask = int(mask_flat[r].item()) if 0 <= r < n else 0
+        leader = min(e, r) if 0 <= r < n else e
+        wa = float(accum_flat[leader].item())
+        slot, _ = self._ensure_allocator().choose_slot(
+            dir_mask=dir_mask, rev_mask=rev_mask,
+            width_accum=wa, lane_width=self._current_lane_width,
+            merge_allow=merge_allow, reverse_allow=reverse_allow,
+        )
+        if slot is None:
+            raise RuntimeError(f"no lane slot available for edge {e}")
+        return int(slot)
 
     def preview_lane_slots_batch(
         self,
         *,
         candidate_edge_idx: torch.Tensor,
         candidate_edge_mask: torch.Tensor,
+        merge_allow: Optional[bool] = None,
+        reverse_allow: Optional[bool] = None,
     ) -> torch.Tensor:
         """Plan lane slots per candidate edge without mutating runtime state.
 
-        Returns int16 tensor [K,L]. Invalid/padded entries are -1.
+        Returns int16 tensor [K, L].  -1 = infeasible or padding.
+        Delegates to :class:`LaneSlotAllocator` which tracks both mask and
+        width-accum scratchpads per candidate.
         """
-        idx = candidate_edge_idx.to(device=self.device, dtype=torch.long)
-        mask = candidate_edge_mask.to(device=self.device, dtype=torch.bool)
-        if idx.shape != mask.shape:
-            raise ValueError(
-                f"shape mismatch: candidate_edge_idx {tuple(idx.shape)} vs candidate_edge_mask {tuple(mask.shape)}"
-            )
-
-        k = int(idx.shape[0])
-        l = int(idx.shape[1]) if idx.dim() == 2 else 0
-        out = torch.full((k, l), -1, dtype=torch.int16, device=self.device)
-        if k == 0 or l == 0:
-            return out
-
-        mask_flat = self.edge_lane_mask.view(-1)
-        rev_flat = self.reverse_edge_lut.view(-1)
-        valid_flat = self.edge_valid_flat.view(-1)
-        n_edges = int(mask_flat.shape[0])
-
-        def _get_mask(edge_id: int, overrides: Dict[int, int]) -> int:
-            override = overrides.get(edge_id, None)
-            if override is not None:
-                return int(override)
-            return int(mask_flat[edge_id].item())
-
-        for ci in range(k):
-            overrides: Dict[int, int] = {}
-            for li in range(l):
-                if not bool(mask[ci, li].item()):
-                    continue
-                e = int(idx[ci, li].item())
-                if e < 0 or e >= n_edges:
-                    continue
-                if not bool(valid_flat[e].item()):
-                    continue
-                r = int(rev_flat[e].item())
-                dir_mask = _get_mask(e, overrides)
-                rev_mask = _get_mask(r, overrides) if 0 <= r < n_edges else 0
-                slot = int(self._choose_lane_slot(dir_mask=dir_mask, rev_mask=rev_mask))
-                out[ci, li] = int(slot)
-                overrides[e] = int(dir_mask | (1 << int(slot)))
-        return out
+        ma = merge_allow if merge_allow is not None else self._route_merge_allow
+        ra = reverse_allow if reverse_allow is not None else self._route_reverse_allow
+        return self._ensure_allocator().preview_batch(
+            self,
+            candidate_edge_idx=candidate_edge_idx,
+            candidate_edge_mask=candidate_edge_mask,
+            lane_width=self._current_lane_width,
+            merge_allow=ma, reverse_allow=ra,
+        )
 
     def apply_edges(
         self,
         edge_indices: torch.Tensor,
         *,
         lane_slots: Optional[Sequence[int]] = None,
+        lane_width: Optional[float] = None,
     ) -> None:
         if edge_indices.numel() == 0:
             return
+        lw = float(lane_width) if lane_width is not None else float(self._current_lane_width)
         idx = edge_indices.to(device=self.device, dtype=torch.long).view(-1)
         mask_flat = self.edge_lane_mask.view(-1)
         count_flat = self.edge_map.view(-1)
         lane_flat = self.lane_dir_flat.view(-1)
+        accum_flat = self.edge_width_accum.view(-1)
+        rev_flat = self.reverse_edge_lut.view(-1)
+        n = int(mask_flat.shape[0])
 
         if lane_slots is not None and len(lane_slots) != int(idx.numel()):
             raise ValueError("lane_slots length must match edge_indices length")
 
         for i in range(int(idx.numel())):
             e = int(idx[i].item())
-            if e < 0 or e >= int(mask_flat.shape[0]):
+            if e < 0 or e >= n:
                 continue
             if lane_slots is None:
                 slot = 0
@@ -723,12 +710,20 @@ class LaneState:
                 slot = int(lane_slots[i])
                 if slot < 0 or slot > 63:
                     raise ValueError(f"lane slot out of range [0,63]: {slot}")
-            new_mask = int(mask_flat[e].item()) | (1 << int(slot))
+            old_mask = int(mask_flat[e].item())
+            new_mask = old_mask | (1 << int(slot))
             mask_flat[e] = int(new_mask)
             count_flat[e] = int(int(new_mask).bit_count())
             lane_flat[e] = bool(new_mask != 0)
             if int(slot) > int(self.runtime_max_lane_slot):
                 self.runtime_max_lane_slot = int(slot)
+            # Update undirected width accumulator only for newly allocated bits
+            if new_mask != old_mask:
+                r = int(rev_flat[e].item())
+                leader = min(e, r) if 0 <= r < n else e
+                accum_flat[leader] = float(accum_flat[leader].item()) + lw
+                if 0 <= r < n and r != leader:
+                    accum_flat[r] = float(accum_flat[leader].item())
 
     @property
     def lane_map(self) -> torch.Tensor:
@@ -770,8 +765,15 @@ class LaneState:
         dst = self.dst_ports[i][self.dst_mask[i]]
         return src, dst
 
-    def forbid_opposite(self, flow_index: int) -> bool:
-        return bool(self.flow_specs[int(flow_index)].forbid_opposite)
+    def flow_reverse_allow(self, flow_index: int) -> bool:
+        """Per-flow reverse_allow (falls back to global RoutingConfig default)."""
+        v = self.flow_specs[int(flow_index)].reverse_allow
+        return bool(v) if v is not None else self._route_reverse_allow
+
+    def flow_merge_allow(self, flow_index: int) -> bool:
+        """Per-flow merge_allow (falls back to global RoutingConfig default)."""
+        v = self.flow_specs[int(flow_index)].merge_allow
+        return bool(v) if v is not None else self._route_merge_allow
 
     def remaining_weight(self) -> float:
         rem = self.weights.masked_fill(
@@ -801,6 +803,8 @@ class LaneState:
         cur = self.current_flow_index()
         if cur is None:
             raise RuntimeError("current flow is None")
+        # Stash the active flow's lane_width so allocator and apply_edges agree
+        self._current_lane_width = float(self.flow_specs[int(cur)].lane_width)
         if int(route.flow_index) != int(cur):
             raise ValueError(
                 f"route.flow_index={route.flow_index} does not match current flow={cur}"
@@ -816,8 +820,11 @@ class LaneState:
                     raise ValueError("planned_lane_slots must be non-negative for active edges")
                 lane_slots.append(s)
         else:
+            ma = self.flow_merge_allow(int(cur))
+            ra = self.flow_reverse_allow(int(cur))
             for i in range(int(e.numel())):
-                lane_slots.append(int(self._lane_slot_for_edge(int(e[i].item()))))
+                lane_slots.append(int(self._lane_slot_for_edge(
+                    int(e[i].item()), merge_allow=ma, reverse_allow=ra)))
             route.planned_lane_slots = torch.tensor(lane_slots, dtype=torch.long, device=self.device)
         self.apply_edges(e, lane_slots=lane_slots)
         self.route_lane_slots_by_flow[int(cur)] = tuple(lane_slots)
@@ -845,6 +852,12 @@ class LaneState:
         self._max_path_steps = int(config.max_path_steps)
         self._route_merge_allow = bool(config.merge_allow)
         self._route_reverse_allow = bool(config.reverse_allow)
+        self._route_capacity_epsilon = float(config.capacity_epsilon)
+
+        from .slot_allocator import LaneSlotAllocator
+        self._allocator = LaneSlotAllocator(
+            capacity_epsilon=float(config.capacity_epsilon),
+        )
 
         mode = (config.selection or "static").strip().lower()
         if mode == "benchmark":
@@ -866,7 +879,7 @@ class LaneState:
     # ------------------------------------------------------------------
 
     def allow_mask(self) -> torch.Tensor:
-        """Per-cell-per-direction "allow" mask for forbid_opposite.
+        """Per-cell-per-direction mask that forbids reverse-direction edges.
 
         ``result[y, x, d] == False`` iff the directed edge leaving cell
         ``(x, y)`` in direction ``d`` would walk against an already-placed lane.
@@ -877,6 +890,46 @@ class LaneState:
         rev = self.reverse_edge_lut[eid_flat]
         forbidden = self.lane_dir_flat[rev].view(h, w, 4)
         return ~forbidden
+
+    def capacity_mask(
+        self,
+        lane_width: Optional[float] = None,
+        *,
+        merge_allow: Optional[bool] = None,
+        reverse_allow: Optional[bool] = None,
+    ) -> torch.Tensor:
+        """Per-cell-per-direction feasibility mask for the given ``lane_width``.
+
+        ``result[y, x, d] == True`` iff the directed edge can accept a lane of
+        the requested width (either via slot reuse or remaining capacity).
+        Delegates to :class:`LaneSlotAllocator`.
+
+        Defaults to ``self._current_lane_width`` when *lane_width* is None.
+        Per-flow *merge_allow* / *reverse_allow* override global defaults.
+        """
+        lw = float(lane_width) if lane_width is not None else float(self._current_lane_width)
+        ma = merge_allow if merge_allow is not None else self._route_merge_allow
+        ra = reverse_allow if reverse_allow is not None else self._route_reverse_allow
+        return self._ensure_allocator().capacity_mask(
+            self, lw, merge_allow=ma, reverse_allow=ra)
+
+    def combined_mask(self, flow_index: int) -> Optional[torch.Tensor]:
+        """Unified pathfind mask combining reverse-direction + capacity constraints.
+
+        Returns ``None`` when no constraint is active (all edges feasible),
+        otherwise ``bool [H, W, 4]``.
+        """
+        ra = self.flow_reverse_allow(flow_index)
+        ma = self.flow_merge_allow(flow_index)
+        am_cap = self.capacity_mask(merge_allow=ma, reverse_allow=ra)
+        if not ra:
+            am_opp = self.allow_mask()
+            if am_cap.all():
+                return am_opp
+            return am_opp & am_cap
+        if am_cap.all():
+            return None
+        return am_cap
 
     def pathfind(
         self,

@@ -67,8 +67,38 @@ def apply_interchange_to_env(
     route_by_fi: Dict[int, Mapping[str, Any]] = {}
     for rd in data.get("routes", []):
         fi = int(rd["flow_index"])
-        if rd.get("success") and rd.get("edges"):
-            route_by_fi[fi] = rd
+        route_by_fi[fi] = rd  # keep all (success and failed) for lane_width restoration
+
+    # Restore per-flow overrides from interchange if present
+    for fi, rd in route_by_fi.items():
+        if 0 > fi or fi >= len(state.flow_specs):
+            continue
+        old_spec = state.flow_specs[fi]
+        new_lw = float(rd["lane_width"]) if "lane_width" in rd else old_spec.lane_width
+        new_ra = rd.get("reverse_allow", old_spec.reverse_allow)
+        new_ma = rd.get("merge_allow", old_spec.merge_allow)
+        needs_update = (
+            abs(float(new_lw) - old_spec.lane_width) > 1e-9
+            or new_ra != old_spec.reverse_allow
+            or new_ma != old_spec.merge_allow
+        )
+        if needs_update:
+            from lane_generation.envs.state.state import LaneFlowSpec
+            new_specs = list(state.flow_specs)
+            new_specs[fi] = LaneFlowSpec(
+                src_gid=old_spec.src_gid,
+                dst_gid=old_spec.dst_gid,
+                weight=old_spec.weight,
+                src_ports=old_spec.src_ports,
+                dst_ports=old_spec.dst_ports,
+                reverse_allow=new_ra if new_ra is not None else None,
+                merge_allow=new_ma if new_ma is not None else None,
+                lane_width=float(new_lw),
+            )
+            state.flow_specs = tuple(new_specs)
+
+    # Re-filter to only successful routes for edge replay
+    route_by_fi = {fi: rd for fi, rd in route_by_fi.items() if rd.get("success") and rd.get("edges")}
 
     routes_out: List[LaneRoute] = []
     routed_fis: List[int] = []
@@ -78,6 +108,10 @@ def apply_interchange_to_env(
         rd = route_by_fi.get(fi)
         if rd is not None:
             edges_t = torch.tensor(rd["edges"], dtype=torch.long, device=state.device)
+            spec = state.flow_specs[fi]
+            lw = float(spec.lane_width)
+            ma = state.flow_merge_allow(fi)
+            ra = state.flow_reverse_allow(fi)
             lane_slots_raw = rd.get("lane_slots", None)
             lane_slots = None
             if isinstance(lane_slots_raw, list) and len(lane_slots_raw) == int(edges_t.numel()):
@@ -89,9 +123,10 @@ def apply_interchange_to_env(
                 planned = state.preview_lane_slots_batch(
                     candidate_edge_idx=edge_idx,
                     candidate_edge_mask=edge_mask,
+                    merge_allow=ma, reverse_allow=ra,
                 )
                 lane_slots = [int(x) for x in planned[0].to(dtype=torch.long).tolist()]
-            state.apply_edges(edges_t, lane_slots=lane_slots)
+            state.apply_edges(edges_t, lane_slots=lane_slots, lane_width=lw)
             state.route_lane_slots_by_flow[fi] = tuple(lane_slots)
             routed_fis.append(fi)
             routes_out.append(LaneRoute(

@@ -69,6 +69,7 @@ def _lane_length_delta_from_planned_slots_batch(
         overrides: Dict[int, int] = {}
         touched_leaders: Set[int] = set()
         l = int(idx.shape[1]) if idx.dim() == 2 else 0
+        infeasible = False
         for li in range(l):
             if not bool(cand_mask[ci, li].item()):
                 continue
@@ -79,7 +80,9 @@ def _lane_length_delta_from_planned_slots_batch(
                 continue
             slot = int(slot_idx[ci, li].item())
             if slot < 0:
-                continue
+                # Infeasible candidate — should have been caught upstream by valid_mask
+                infeasible = True
+                break
             r = int(rev_flat[e].item())
             dir_mask = int(overrides.get(e, int(mask_flat[e].item())))
             new_dir_mask = int(dir_mask) | (1 << int(slot))
@@ -87,6 +90,10 @@ def _lane_length_delta_from_planned_slots_batch(
                 overrides[e] = int(new_dir_mask)
                 leader = int(e) if int(e) <= int(r) else int(r)
                 touched_leaders.add(leader)
+
+        if infeasible:
+            out[ci] = float("inf")
+            continue
 
         delta = 0
         for leader in touched_leaders:

@@ -69,7 +69,7 @@ def _bench_algorithm(
         for fi in flow_indices:
             src_ports, dst_ports = state.valid_ports(fi)
             src_gid, dst_gid, _ = state.flow_pair(fi)
-            allow_mask = state.allow_mask() if state.forbid_opposite(fi) else None
+            allow_mask = state.combined_mask(fi)
             for j in range(int(src_ports.shape[0])):
                 state.pathfind(
                     src_xy=(int(src_ports[j, 0]), int(src_ports[j, 1])),
