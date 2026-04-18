@@ -188,7 +188,7 @@ class RewardComposer:
         cur_max_y: float,
         route_blocked: Optional[torch.Tensor],
         placed_cell_occupied: Optional[torch.Tensor],
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         device = placed_entries.device
         if isinstance(comp, FlowReward):
@@ -200,7 +200,7 @@ class RewardComposer:
                 flow_w=flow_w,
                 exit_k=exit_k,
                 entry_k=entry_k,
-                return_meta=return_meta,
+                return_metadata=return_metadata,
             )
         if isinstance(comp, FlowCollisionReward):
             return comp.score(
@@ -212,7 +212,7 @@ class RewardComposer:
                 route_blocked=route_blocked,
                 exit_k=exit_k,
                 entry_k=entry_k,
-                return_meta=return_meta,
+                return_metadata=return_metadata,
             )
         if isinstance(comp, AreaReward):
             return comp.score(
@@ -221,10 +221,10 @@ class RewardComposer:
                 max_x=torch.tensor(float(cur_max_x), dtype=torch.float32, device=device),
                 min_y=torch.tensor(float(cur_min_y), dtype=torch.float32, device=device),
                 max_y=torch.tensor(float(cur_max_y), dtype=torch.float32, device=device),
-                return_meta=return_meta,
+                return_metadata=return_metadata,
             )
         if isinstance(comp, GridOccupancyReward):
-            return comp.score(placed_cell_occupied=placed_cell_occupied, return_meta=return_meta)
+            return comp.score(placed_cell_occupied=placed_cell_occupied, return_metadata=return_metadata)
         raise TypeError(f"unsupported reward component type: {type(comp).__name__}")
 
     def score_dict(
@@ -234,7 +234,7 @@ class RewardComposer:
         weighted: bool = True,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         (
             placed_nodes,
@@ -270,11 +270,11 @@ class RewardComposer:
                 cur_max_y=cur_max_y,
                 route_blocked=route_blocked,
                 placed_cell_occupied=placed_cell_occupied,
-                return_meta=return_meta,
+                return_metadata=return_metadata,
             )
-            if return_meta:
+            if return_metadata:
                 if not (isinstance(val_raw, tuple) and len(val_raw) == 2):
-                    raise TypeError(f"{type(comp).__name__}.score(return_meta=True) must return (score, meta)")
+                    raise TypeError(f"{type(comp).__name__}.score(return_metadata=True) must return (score, meta)")
                 val_t, comp_meta = val_raw
                 meta_out[str(name)] = self._normalize_metadata(
                     metadata=dict(comp_meta or {}),
@@ -288,7 +288,7 @@ class RewardComposer:
             out[name] = val
             total += val
         out["total"] = float(total)
-        if return_meta:
+        if return_metadata:
             return out, meta_out
         return out
 
@@ -298,25 +298,25 @@ class RewardComposer:
         *,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         scores = self.score_dict(
             state,
             weighted=True,
             route_blocked=route_blocked,
             placed_cell_occupied=placed_cell_occupied,
-            return_meta=return_meta,
+            return_metadata=return_metadata,
         )
         meta_out: Optional[Dict[str, Dict[str, Any]]] = None
-        if return_meta:
+        if return_metadata:
             if not (isinstance(scores, tuple) and len(scores) == 2):
-                raise TypeError("score_dict(return_meta=True) must return (scores, meta)")
+                raise TypeError("score_dict(return_metadata=True) must return (scores, meta)")
             scores, meta_out = scores
         return torch.tensor(
             float(scores.get("total", 0.0)),
             dtype=torch.float32,
             device=state.device,
-        ) if not return_meta else (
+        ) if not return_metadata else (
             torch.tensor(
                 float(scores.get("total", 0.0)),
                 dtype=torch.float32,
@@ -574,13 +574,13 @@ class RewardComposer:
                     c_entry_k=c_entry_k,
                     t_entry_k=t_entry_k,
                     t_exit_k=t_exit_k,
-                    return_meta=True,
+                    return_metadata=True,
                     placed_node_ids=placed_nodes,
                     candidate_gid=gid,
                     previous_metadata=previous_metadata,
                 )
                 if not (isinstance(raw_delta, tuple) and len(raw_delta) == 2):
-                    raise TypeError(f"{type(component).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    raise TypeError(f"{type(component).__name__}.delta(return_metadata=True) must return (delta, meta)")
                 delta_tensor, metadata = raw_delta
                 delta_value = float(delta_tensor.view(-1)[0].item())
                 reward_delta_by_name[name_s] = delta_value
@@ -606,10 +606,10 @@ class RewardComposer:
                     c_entry_k=c_entry_k,
                     t_entry_k=t_entry_k,
                     t_exit_k=t_exit_k,
-                    return_meta=True,
+                    return_metadata=True,
                 )
                 if not (isinstance(raw_delta, tuple) and len(raw_delta) == 2):
-                    raise TypeError(f"{type(component).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    raise TypeError(f"{type(component).__name__}.delta(return_metadata=True) must return (delta, meta)")
                 delta_tensor, metadata = raw_delta
                 delta_value = float(delta_tensor.view(-1)[0].item())
                 reward_delta_by_name[name_s] = delta_value
@@ -664,10 +664,10 @@ class RewardComposer:
                     candidate_max_x=max_x_t,
                     candidate_min_y=min_y_t,
                     candidate_max_y=max_y_t,
-                    return_meta=True,
+                    return_metadata=True,
                 )
                 if not (isinstance(raw_delta, tuple) and len(raw_delta) == 2):
-                    raise TypeError(f"{type(component).__name__}.delta(return_meta=True) must return (delta, meta)")
+                    raise TypeError(f"{type(component).__name__}.delta(return_metadata=True) must return (delta, meta)")
                 delta_tensor, metadata = raw_delta
                 delta_value = float(delta_tensor.view(-1)[0].item())
                 reward_delta_by_name[name_s] = delta_value
@@ -685,14 +685,14 @@ class RewardComposer:
         gid: Optional["str | int"] = None,
         route_blocked: Optional[torch.Tensor] = None,
         placed_cell_occupied: Optional[torch.Tensor] = None,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         """Compute incremental cost for each candidate in *action_space*.
 
         Delegates to ``delta_batch`` using ActionSpace fields.
         """
-        if return_meta:
-            raise ValueError("RewardComposer.delta(return_meta=True) is not supported; use delta_single()")
+        if return_metadata:
+            raise ValueError("RewardComposer.delta(return_metadata=True) is not supported; use delta_single()")
         return self.delta_batch(
             state,
             gid=gid,

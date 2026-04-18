@@ -144,13 +144,13 @@ class FactoryLayoutEnv(gym.Env):
                     penalty_weight=float(self.penalty_weight),
                     group_areas=group_areas,
                 ),
-                # "flow": TerminalFlowReward(
-                #     group_specs=self.group_specs,
-                #     unreachable_cost=float(terminal_flow_unreachable_cost),
-                #     max_wave_iters=int(terminal_flow_max_wave_iters),
-                #     batched_wavefront=bool(terminal_flow_batched_wavefront),
-                #     include_clear_invalid=bool(terminal_flow_include_clearance),
-                # ),
+                "flow": TerminalFlowReward(
+                    group_specs=self.group_specs,
+                    unreachable_cost=float(terminal_flow_unreachable_cost),
+                    max_wave_iters=int(terminal_flow_max_wave_iters),
+                    batched_wavefront=bool(terminal_flow_batched_wavefront),
+                    include_clear_invalid=bool(terminal_flow_include_clearance),
+                ),
             }
         else:
             t_components = dict(terminal_reward_components)
@@ -227,6 +227,11 @@ class FactoryLayoutEnv(gym.Env):
     def reward_composer(self) -> RewardComposer:
         """Public access to the RewardComposer for direct delta_batch calls."""
         return self._reward
+
+    @property
+    def terminal_reward_composer(self):
+        """Public access to the TerminalRewardComposer (for visualization)."""
+        return self._terminal
 
     def _placement_features_from_placements(
         self,
@@ -493,7 +498,7 @@ class FactoryLayoutEnv(gym.Env):
             reward_composer=self._reward,
             failed=bool(failed),
             base_scores_unweighted=base_unweighted,
-            return_meta=True,
+            return_metadata=True,
         )
         terminal_snapshot: Dict[str, Dict[str, Any]] = {}
         for name, delta in delta_raw.items():

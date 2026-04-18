@@ -109,6 +109,33 @@ class FlowEdge(BaseModel):
     dst_y: Optional[float] = None
 
 
+class RewardEdgePairInfo(BaseModel):
+    src_x: float
+    src_y: float
+    dst_x: float
+    dst_y: float
+    polyline: Optional[List[List[float]]] = None
+
+
+class RewardEdgeInfo(BaseModel):
+    src: str
+    dst: str
+    weight: float
+    distance: float = 0.0
+    pair_count: int = 0
+    pairs: List[RewardEdgePairInfo] = []
+
+
+class RewardLayerInfo(BaseModel):
+    key: str
+    label: str
+    color: str
+    style: str           # "solid" | "dashed"
+    default_visible: bool
+    phase: str           # "base" | "terminal"
+    edges: List[RewardEdgeInfo] = []
+
+
 class SessionState(BaseModel):
     grid_width: int
     grid_height: int
@@ -128,6 +155,7 @@ class SessionState(BaseModel):
     forbidden: List[ZoneRect] = []
     constraint_zones: Dict[str, List[ZoneRect]] = {}
     flow_edges: List[FlowEdge] = []
+    reward_layers: Dict[str, RewardLayerInfo] = {}
 
     # Physical context from last step (None at root)
     last_physical: Optional[PhysicalContextInfo] = None

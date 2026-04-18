@@ -22,7 +22,6 @@ const ctx = canvas.getContext('2d');
 // Settings
 const settings = {
     showCandidates: true,
-    showFlow: true,
     showForbidden: false,
     showConstraintZones: false,
     showScores: true,
@@ -30,6 +29,7 @@ const settings = {
     showLabels: true,
     showGrid: false,
     candidateColorSource: 'agent_score',
+    rewardLayers: {},  // key → visible (bool)
 };
 
 // Candidate 정렬 상태
@@ -129,7 +129,6 @@ function setupEventListeners() {
     // Layer toggles
     const layerToggles = [
         ['show-candidates', 'showCandidates'],
-        ['show-flow', 'showFlow'],
         ['show-forbidden', 'showForbidden'],
         ['show-constraint-zones', 'showConstraintZones'],
         ['show-scores', 'showScores'],
@@ -615,8 +614,50 @@ function connectWebSocket() {
 // State Updates
 // ============================================================
 
+function updateRewardLayerToggles(rewardLayers) {
+    const container = document.getElementById('reward-layer-toggles');
+    if (!container) return;
+    const existing = new Set(Array.from(container.querySelectorAll('input[data-reward-key]')).map(el => el.dataset.rewardKey));
+    const incoming = rewardLayers ? Object.keys(rewardLayers) : [];
+    // Remove toggles for layers no longer present
+    for (const key of existing) {
+        if (!incoming.includes(key)) {
+            const el = container.querySelector(`[data-reward-key="${CSS.escape(key)}"]`);
+            if (el && el.closest('label')) el.closest('label').remove();
+        }
+    }
+    // Add toggles for new layers
+    for (const key of incoming) {
+        if (existing.has(key)) continue;
+        const layer = rewardLayers[key];
+        if (!(key in settings.rewardLayers)) {
+            settings.rewardLayers[key] = layer.default_visible !== false;
+        }
+        const label = document.createElement('label');
+        label.className = 'layer-toggle';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = settings.rewardLayers[key];
+        checkbox.dataset.rewardKey = key;
+        checkbox.addEventListener('change', (e) => {
+            settings.rewardLayers[e.target.dataset.rewardKey] = e.target.checked;
+            render();
+        });
+        const swatch = document.createElement('span');
+        swatch.className = 'layer-color';
+        swatch.style.background = layer.color || '#1f77b4';
+        if (layer.style === 'dashed') swatch.style.opacity = '0.7';
+        const text = document.createTextNode(' ' + (layer.label || key));
+        label.appendChild(checkbox);
+        label.appendChild(swatch);
+        label.appendChild(text);
+        container.appendChild(label);
+    }
+}
+
 function updateState(state) {
     currentState = state;
+    updateRewardLayerToggles(state && state.reward_layers);
     resizeCanvas();
     render();
     updateInfoPanel();
@@ -1148,9 +1189,7 @@ function render() {
     drawPlaced(scaleX, scaleY);
     
     // Draw flow arrows (on top)
-    if (settings.showFlow) {
-        drawFlow(scaleX, scaleY);
-    }
+    drawRewardLayers(scaleX, scaleY);
 }
 
 function drawGrid(scaleX, scaleY) {
@@ -1217,43 +1256,74 @@ function drawConstraintZones(scaleX, scaleY, constraints, fillColor, strokeColor
     }
 }
 
-function drawFlow(scaleX, scaleY) {
-    if (!currentState.flow_edges) return;
-    
-    ctx.strokeStyle = COLORS.flow;
-    ctx.lineWidth = 1.8;
-    
-    currentState.flow_edges.forEach(edge => {
-        // Only draw if both endpoints are placed
-        if (edge.src_x === null || edge.dst_x === null) return;
-        
-        const sx = edge.src_x * scaleX;
-        const sy = canvas.height - edge.src_y * scaleY;
-        const dx = edge.dst_x * scaleX;
-        const dy = canvas.height - edge.dst_y * scaleY;
-        
-        // Draw line
-        ctx.beginPath();
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(dx, dy);
-        ctx.stroke();
-        
-        // Draw arrowhead
-        const angle = Math.atan2(dy - sy, dx - sx);
-        const arrowLen = 10;
-        ctx.beginPath();
-        ctx.moveTo(dx, dy);
-        ctx.lineTo(
-            dx - arrowLen * Math.cos(angle - Math.PI / 6),
-            dy - arrowLen * Math.sin(angle - Math.PI / 6)
-        );
-        ctx.moveTo(dx, dy);
-        ctx.lineTo(
-            dx - arrowLen * Math.cos(angle + Math.PI / 6),
-            dy - arrowLen * Math.sin(angle + Math.PI / 6)
-        );
-        ctx.stroke();
-    });
+function _drawArrowHeadOnly(sx, sy, dx, dy) {
+    const angle = Math.atan2(dy - sy, dx - sx);
+    const arrowLen = 10;
+    ctx.beginPath();
+    ctx.moveTo(dx, dy);
+    ctx.lineTo(dx - arrowLen * Math.cos(angle - Math.PI / 6), dy - arrowLen * Math.sin(angle - Math.PI / 6));
+    ctx.moveTo(dx, dy);
+    ctx.lineTo(dx - arrowLen * Math.cos(angle + Math.PI / 6), dy - arrowLen * Math.sin(angle + Math.PI / 6));
+    ctx.stroke();
+}
+
+function _drawArrow(sx, sy, dx, dy) {
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(dx, dy);
+    ctx.stroke();
+    _drawArrowHeadOnly(sx, sy, dx, dy);
+}
+
+function drawRewardLayers(scaleX, scaleY) {
+    const rewardLayers = currentState && currentState.reward_layers;
+    if (rewardLayers && Object.keys(rewardLayers).length > 0) {
+        for (const [key, layer] of Object.entries(rewardLayers)) {
+            if (settings.rewardLayers[key] === false) continue;
+            ctx.strokeStyle = layer.color || COLORS.flow;
+            ctx.lineWidth = 1.8;
+            ctx.setLineDash(layer.style === 'dashed' ? [6, 4] : []);
+            for (const edge of (layer.edges || [])) {
+                for (const pair of (edge.pairs || [])) {
+                    if (pair.polyline && pair.polyline.length >= 2) {
+                        ctx.beginPath();
+                        const [px0, py0] = pair.polyline[0];
+                        ctx.moveTo(px0 * scaleX, canvas.height - py0 * scaleY);
+                        for (let i = 1; i < pair.polyline.length; i++) {
+                            const [px, py] = pair.polyline[i];
+                            ctx.lineTo(px * scaleX, canvas.height - py * scaleY);
+                        }
+                        ctx.stroke();
+                        const n = pair.polyline.length;
+                        const [pxN1, pyN1] = pair.polyline[n - 2];
+                        const [pxN, pyN] = pair.polyline[n - 1];
+                        _drawArrowHeadOnly(
+                            pxN1 * scaleX, canvas.height - pyN1 * scaleY,
+                            pxN * scaleX, canvas.height - pyN * scaleY
+                        );
+                    } else if (pair.src_x !== null && pair.dst_x !== null) {
+                        _drawArrow(
+                            pair.src_x * scaleX, canvas.height - pair.src_y * scaleY,
+                            pair.dst_x * scaleX, canvas.height - pair.dst_y * scaleY
+                        );
+                    }
+                }
+            }
+        }
+        ctx.setLineDash([]);
+    } else if (currentState && currentState.flow_edges) {
+        // backward-compat: no reward_layers, fall back to flat flow_edges
+        ctx.strokeStyle = COLORS.flow;
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([]);
+        currentState.flow_edges.forEach(edge => {
+            if (edge.src_x === null || edge.dst_x === null) return;
+            _drawArrow(
+                edge.src_x * scaleX, canvas.height - edge.src_y * scaleY,
+                edge.dst_x * scaleX, canvas.height - edge.dst_y * scaleY
+            );
+        });
+    }
 }
 
 function drawPlaced(scaleX, scaleY) {

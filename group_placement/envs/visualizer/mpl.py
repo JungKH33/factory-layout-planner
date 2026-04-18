@@ -4,7 +4,7 @@ Moved from envs/env_visualizer.py — all matplotlib-specific rendering lives he
 """
 from __future__ import annotations
 
-from typing import Any, Optional, List, Callable
+from typing import Any, Optional, List, Callable, Tuple
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -18,6 +18,7 @@ from group_placement.envs.visualizer.data import (
     LayoutData, StepFrame, ConstraintZoneData,
     constraint_color, CONSTRAINT_BASE_COLORS,
 )
+from group_placement.envs.visualizer.layer import RewardLayer
 
 
 # ---------------------------------------------------------------------------
@@ -64,18 +65,26 @@ def _set_visible_group(group: list, v: bool) -> None:
             pass
 
 
-def _default_layer_visibility(constraint_names: list = ()) -> dict:
+def _default_layer_visibility(
+    constraint_names: list = (),
+    reward_layers: dict = (),
+) -> dict:
     vis = {
         "forbidden": True,
         "invalid_mask": False,
         "clearance_mask": True,
         "flow": True,
+        "ports": True,
         "score": True,
         "action_space": True,
-        "routes": True,
     }
     for name in constraint_names:
         vis[f"zone:{name}"] = False
+    for key, layer in dict(reward_layers).items():
+        if isinstance(layer, RewardLayer):
+            vis[f"reward:{key}"] = layer.default_visible
+        else:
+            vis[f"reward:{key}"] = True
     return vis
 
 
@@ -86,21 +95,37 @@ def _apply_layer_visibility(groups: dict, vis: dict) -> None:
         _set_visible_group(g, bool(vis[k]))
 
 
-def _legend_proxies(constraint_names: list = ()) -> list:
+def _legend_proxies(constraint_names: list = (), reward_layers: dict = ()) -> list:
     proxies = [
         patches.Patch(facecolor="#d62728", edgecolor="#d62728", alpha=0.15, label="forbidden"),
         patches.Patch(facecolor="#8b0000", edgecolor="#8b0000", alpha=0.10, label="invalid_mask"),
         patches.Patch(facecolor="lightgray", edgecolor="gray", alpha=0.30, label="clearance_mask"),
-        Line2D([0], [0], color="royalblue", lw=1.8, alpha=0.7, label="flow"),
         Line2D([0], [0], color="black", lw=0.0, marker="s", markersize=8, label="score"),
         Line2D([0], [0], color="green", lw=0.0, marker="o", markersize=6, alpha=0.65, label="action_space"),
-        Line2D([0], [0], color="orange", lw=2.0, alpha=0.8, label="routes"),
+        Line2D(
+            [0], [0], color="#555555", lw=0.0, marker="x", markersize=7,
+            markeredgewidth=1.3, linestyle="None", label="ports",
+        ),
     ]
     for name in constraint_names:
         color = constraint_color(name, list(constraint_names))
         proxies.append(
             patches.Patch(facecolor=color, edgecolor=color, alpha=0.15, label=f"zone:{name}"),
         )
+    # Per-reward-component proxies
+    for key, layer in dict(reward_layers).items():
+        if isinstance(layer, RewardLayer):
+            ls = "--" if layer.style == "dashed" else "-"
+            proxies.append(Line2D(
+                [0], [0], color=layer.color, lw=1.6, alpha=0.8,
+                linestyle=ls, label=f"reward:{key}",
+            ))
+        else:
+            proxies.append(Line2D([0], [0], color="royalblue", lw=1.6, alpha=0.8,
+                                  label=f"reward:{key}"))
+    # Fallback: if no reward layers, keep classic "flow" entry
+    if not dict(reward_layers):
+        proxies.insert(3, Line2D([0], [0], color="royalblue", lw=1.8, alpha=0.7, label="flow"))
     return proxies
 
 
@@ -115,9 +140,10 @@ def _install_click_legend(
     connect_once_state: Optional[dict] = None,
     on_toggle: Optional[Callable] = None,
     constraint_names: list = (),
+    reward_layers: dict = (),
 ) -> dict:
     leg_host = legend_ax if legend_ax is not None else ax
-    proxies = _legend_proxies(constraint_names=constraint_names)
+    proxies = _legend_proxies(constraint_names=constraint_names, reward_layers=reward_layers)
     leg = leg_host.legend(handles=proxies, loc="upper left", title=title, framealpha=0.85)
 
     legend_artist_to_key: dict = {}
@@ -192,9 +218,9 @@ def _draw_layout_from_data(
         "invalid_mask": [],
         "clearance_mask": [],
         "flow": [],
+        "ports": [],
         "score": [],
         "action_space": [],
-        "routes": [],
     }
     per_zone: dict = {}
 
@@ -319,37 +345,107 @@ def _draw_layout_from_data(
         sc.set_visible(True)
         misc_artists["action_space"].append(sc)
 
-    # --- flow arrows ---
-    for arrow in data.flow_arrows:
-        ann = ax.annotate(
-            "",
-            xy=arrow.dst_xy,
-            xytext=arrow.src_xy,
-            arrowprops=dict(
-                arrowstyle="-|>",
-                color="royalblue",
-                lw=1.0,
-                alpha=0.7,
-            ),
-        )
-        misc_artists["flow"].append(ann)
+    # --- per-reward-component layers ---
+    reward_artists: dict = {}
+    base_ports_drawn = False
 
-    # --- ports ---
-    def _scatter_ports(xys, *, color, alpha):
-        if not xys:
-            return
-        xs = [p[0] for p in xys]
-        ys = [p[1] for p in xys]
-        sc = ax.scatter(
-            xs, ys, s=28, c=color, alpha=alpha,
-            edgecolors="white", linewidths=0.8, marker="o", zorder=4.0,
-        )
-        misc_artists["flow"].append(sc)
+    if data.reward_layers:
+        for key, layer in data.reward_layers.items():
+            arts: list = []
+            ls = "--" if layer.style == "dashed" else "-"
+            for seg in layer.segments:
+                if seg.polyline and len(seg.polyline) >= 2:
+                    pl = seg.polyline
+                    (line,) = ax.plot(
+                        [p[0] for p in pl],
+                        [p[1] for p in pl],
+                        linestyle=ls, color=layer.color, lw=1.2, alpha=0.7, zorder=3.5,
+                    )
+                    arts.append(line)
+                    ann = ax.annotate(
+                        "",
+                        xy=(float(pl[-1][0]), float(pl[-1][1])),
+                        xytext=(float(pl[-2][0]), float(pl[-2][1])),
+                        arrowprops=dict(
+                            arrowstyle="-|>",
+                            color=layer.color,
+                            linestyle=ls,
+                            lw=1.0,
+                            alpha=0.7,
+                        ),
+                        zorder=3.55,
+                    )
+                    arts.append(ann)
+                else:
+                    ann = ax.annotate(
+                        "",
+                        xy=seg.dst_xy,
+                        xytext=seg.src_xy,
+                        arrowprops=dict(
+                            arrowstyle="-|>",
+                            color=layer.color,
+                            linestyle=ls,
+                            lw=1.0,
+                            alpha=0.7,
+                        ),
+                    )
+                    arts.append(ann)
 
-    _scatter_ports(data.ports.inactive_entries, color="#2ca02c", alpha=0.40)
-    _scatter_ports(data.ports.active_entries, color="#2ca02c", alpha=0.90)
-    _scatter_ports(data.ports.inactive_exits, color="#d62728", alpha=0.40)
-    _scatter_ports(data.ports.active_exits, color="#d62728", alpha=0.90)
+            # Draw ports only for the first base-phase layer (toggle: ports, not reward:*)
+            if layer.phase == "base" and not base_ports_drawn:
+                base_ports_drawn = True
+
+                def _scatter_ports(xys, *, color, alpha):
+                    if not xys:
+                        return
+                    xs_p = [pt[0] for pt in xys]
+                    ys_p = [pt[1] for pt in xys]
+                    sc = ax.scatter(
+                        xs_p, ys_p, s=52, c=color, alpha=alpha,
+                        marker="x", linewidths=1.15, zorder=4.0,
+                    )
+                    misc_artists["ports"].append(sc)
+
+                for port in layer.ports:
+                    if port.kind == "entry":
+                        color, alpha = "#2ca02c", (0.90 if port.active else 0.40)
+                    else:
+                        color, alpha = "#d62728", (0.90 if port.active else 0.40)
+                    _scatter_ports([port.xy], color=color, alpha=alpha)
+
+            reward_artists[f"reward:{key}"] = arts
+
+    # Fallback: use flow_arrows if no reward_layers (legacy path)
+    if not data.reward_layers and data.flow_arrows:
+        for arrow in data.flow_arrows:
+            ann = ax.annotate(
+                "",
+                xy=arrow.dst_xy,
+                xytext=arrow.src_xy,
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color="royalblue",
+                    lw=1.0,
+                    alpha=0.7,
+                ),
+            )
+            misc_artists["flow"].append(ann)
+
+        def _scatter_ports_legacy(xys, *, color, alpha):
+            if not xys:
+                return
+            xs_p = [p[0] for p in xys]
+            ys_p = [p[1] for p in xys]
+            sc = ax.scatter(
+                xs_p, ys_p, s=52, c=color, alpha=alpha,
+                marker="x", linewidths=1.15, zorder=4.0,
+            )
+            misc_artists["ports"].append(sc)
+
+        _scatter_ports_legacy(data.ports.inactive_entries, color="#2ca02c", alpha=0.40)
+        _scatter_ports_legacy(data.ports.active_entries, color="#2ca02c", alpha=0.90)
+        _scatter_ports_legacy(data.ports.inactive_exits, color="#d62728", alpha=0.40)
+        _scatter_ports_legacy(data.ports.active_exits, color="#d62728", alpha=0.90)
 
     # --- score ---
     score_text = ax.text(
@@ -360,39 +456,17 @@ def _draw_layout_from_data(
     score_text.set_visible(True)
     misc_artists["score"].append(score_text)
 
-    # --- routes ---
-    if data.routes:
-        for rd in data.routes:
-            xs = [p[0] for p in rd.path]
-            ys = [p[1] for p in rd.path]
-            line, = ax.plot(xs, ys, color=rd.color, lw=2.0, alpha=0.8, zorder=10)
-            misc_artists["routes"].append(line)
-            start_m = ax.scatter([xs[0]], [ys[0]], s=50, c=rd.color, marker="o",
-                                 edgecolors="white", linewidths=1, zorder=11)
-            misc_artists["routes"].append(start_m)
-            end_m = ax.scatter([xs[-1]], [ys[-1]], s=80, c=rd.color, marker=">",
-                               edgecolors="white", linewidths=1, zorder=11)
-            misc_artists["routes"].append(end_m)
-            mid_idx = len(rd.path) // 2
-            mid_x, mid_y = rd.path[mid_idx]
-            label = ax.text(
-                mid_x, mid_y, f"{rd.src_group}\u2192{rd.dst_group}",
-                fontsize=7, color=rd.color, ha="center", va="bottom",
-                bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.7, linewidth=0),
-                zorder=12,
-            )
-            misc_artists["routes"].append(label)
-
     groups: dict = {
         "forbidden": forbidden_artists,
         "invalid_mask": misc_artists["invalid_mask"],
         "clearance_mask": misc_artists["clearance_mask"],
         "flow": misc_artists["flow"],
+        "ports": misc_artists["ports"],
         "score": misc_artists["score"],
         "action_space": misc_artists["action_space"],
-        "routes": misc_artists["routes"],
     }
     groups.update(per_zone)
+    groups.update(reward_artists)
     return groups
 
 
@@ -405,7 +479,6 @@ def _draw_layout_layers(
     ax: plt.Axes,
     engine: Any,
     action_space: Any = None,
-    routes: Any = None,
 ) -> dict:
     """Draw layout layers directly from engine state.
 
@@ -413,7 +486,7 @@ def _draw_layout_layers(
     draw_layout_on_axes (external callers needing to pass their own ax).
     """
     from group_placement.envs.visualizer.data import extract_layout_data
-    data = extract_layout_data(engine, action_space=action_space, routes=routes)
+    data = extract_layout_data(engine, action_space=action_space)
     return _draw_layout_from_data(ax, data)
 
 
@@ -434,7 +507,7 @@ class MatplotlibBackend(VisualizerBackend):
         ax.set_xlim(0, data.grid_width)
         ax.set_ylim(0, data.grid_height)
         ax.set_aspect("equal")
-        layer_vis = _default_layer_visibility(c_names)
+        layer_vis = _default_layer_visibility(c_names, data.reward_layers)
         legend_state: Optional[dict] = None
 
         def _render() -> None:
@@ -454,6 +527,7 @@ class MatplotlibBackend(VisualizerBackend):
                 legend_ax=ax_leg, connect_once_state=legend_state,
                 on_toggle=lambda _key, _visible: _render(),
                 constraint_names=c_names,
+                reward_layers=data.reward_layers,
             )
             fig.canvas.draw_idle()
 
@@ -711,6 +785,5 @@ class MatplotlibBackend(VisualizerBackend):
         *,
         ax: Any,
         action_space: Any = None,
-        routes: Any = None,
     ) -> dict:
-        return _draw_layout_layers(ax=ax, engine=engine, action_space=action_space, routes=routes)
+        return _draw_layout_layers(ax=ax, engine=engine, action_space=action_space)

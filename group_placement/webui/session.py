@@ -32,7 +32,53 @@ from group_placement.webui.schemas import (
     FlowEdge,
     FlowDeltaInfo,
     PhysicalContextInfo,
+    RewardEdgePairInfo,
+    RewardEdgeInfo,
+    RewardLayerInfo,
 )
+
+
+def _extract_reward_layers(engine: Any, state: Any) -> Dict[str, RewardLayerInfo]:
+    """Build RewardLayerInfo dict from engine reward components and EvalState."""
+    try:
+        from group_placement.envs.visualizer.reward_layers import build_reward_layers
+        reward_composer = getattr(engine, "reward_composer", None)
+        terminal_composer = getattr(engine, "terminal_reward_composer", None)
+        maps = engine.get_maps() if hasattr(engine, "get_maps") else None
+        layers = build_reward_layers(reward_composer, terminal_composer, state, maps)
+    except Exception:
+        return {}
+
+    out: Dict[str, RewardLayerInfo] = {}
+    for key, layer in layers.items():
+        edges: list[RewardEdgeInfo] = []
+        for seg in layer.segments:
+            pl = None
+            if seg.polyline:
+                pl = [[float(x), float(y)] for x, y in seg.polyline]
+            pair = RewardEdgePairInfo(
+                src_x=float(seg.src_xy[0]),
+                src_y=float(seg.src_xy[1]),
+                dst_x=float(seg.dst_xy[0]),
+                dst_y=float(seg.dst_xy[1]),
+                polyline=pl,
+            )
+            edges.append(RewardEdgeInfo(
+                src="",
+                dst="",
+                weight=float(seg.weight),
+                pairs=[pair],
+            ))
+        out[key] = RewardLayerInfo(
+            key=key,
+            label=layer.label,
+            color=layer.color,
+            style=layer.style,
+            default_visible=layer.default_visible,
+            phase=layer.phase,
+            edges=edges,
+        )
+    return out
 
 
 @dataclass
@@ -198,20 +244,37 @@ class Session:
                             c_zones.append(z)
                 constraint_zones[str(cname)] = c_zones
 
-        # Extract flow edges with positions
+        # Per-component reward layers (primary)
+        reward_layers_info = _extract_reward_layers(engine, state)
+
+        # Extract flow edges with positions (backward-compat: project from reward_layers)
         flow_edges = []
-        edge_meta, edge_pairs = extract_flow_edges_and_pairs(state.eval, phase="base")
-        for edge_key, meta in edge_meta.items():
-            src, dst = edge_key
-            edge = FlowEdge(src=str(src), dst=str(dst), weight=float(meta.get("weight", 0.0)))
-            pairs = edge_pairs.get(edge_key, [])
-            if pairs:
-                (sx, sy), (dx, dy) = pairs[0]
-                edge.src_x = float(sx)
-                edge.src_y = float(sy)
-                edge.dst_x = float(dx)
-                edge.dst_y = float(dy)
-            flow_edges.append(edge)
+        if reward_layers_info:
+            for layer_info in reward_layers_info.values():
+                if layer_info.phase == "base":
+                    for edge_info in layer_info.edges:
+                        fe = FlowEdge(src=edge_info.src, dst=edge_info.dst, weight=edge_info.weight)
+                        if edge_info.pairs:
+                            p = edge_info.pairs[0]
+                            fe.src_x = p.src_x
+                            fe.src_y = p.src_y
+                            fe.dst_x = p.dst_x
+                            fe.dst_y = p.dst_y
+                        flow_edges.append(fe)
+                    break  # only first base layer for compat
+        else:
+            edge_meta, edge_pairs = extract_flow_edges_and_pairs(state.eval, phase="base")
+            for edge_key, meta in edge_meta.items():
+                src, dst = edge_key
+                edge = FlowEdge(src=str(src), dst=str(dst), weight=float(meta.get("weight", 0.0)))
+                pairs = edge_pairs.get(edge_key, [])
+                if pairs:
+                    (sx, sy), (dx, dy) = pairs[0]
+                    edge.src_x = float(sx)
+                    edge.src_y = float(sy)
+                    edge.dst_x = float(dx)
+                    edge.dst_y = float(dy)
+                flow_edges.append(edge)
 
         # Physical context from the parent node (the node that performed the step to reach here)
         last_physical_info = None
@@ -251,6 +314,7 @@ class Session:
             forbidden=forbidden_out,
             constraint_zones=constraint_zones,
             flow_edges=flow_edges,
+            reward_layers=reward_layers_info,
             last_physical=last_physical_info,
         )
 

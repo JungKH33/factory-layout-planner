@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import TYPE_CHECKING, Dict, Iterable, Mapping, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 import torch
 
@@ -338,12 +338,47 @@ class TerminalFlowReward:
                 anchored[i, j, 1] = int(boundary_t[k, 1].item())
         return raw, anchored, valid
 
+    @staticmethod
+    def _backtrack_polyline(
+        dist_field: torch.Tensor,
+        start_xy: Tuple[int, int],
+        grid_h: int,
+        grid_w: int,
+    ) -> List[List[int]]:
+        """Gradient-descent on dist field from start toward dist=0 (entry cell)."""
+        path = [[int(start_xy[0]), int(start_xy[1])]]
+        x, y = int(start_xy[0]), int(start_xy[1])
+        max_steps = grid_h + grid_w + 10
+        for _ in range(max_steps):
+            if x < 0 or x >= grid_w or y < 0 or y >= grid_h:
+                break
+            cur_d = int(dist_field[y, x].item())
+            if cur_d <= 0:
+                break
+            best_d = cur_d
+            best_nx, best_ny = x, y
+            for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < grid_w and 0 <= ny < grid_h:
+                    nd = int(dist_field[ny, nx].item())
+                    if 0 <= nd < best_d:
+                        best_d = nd
+                        best_nx, best_ny = nx, ny
+            if best_nx == x and best_ny == y:
+                break
+            x, y = best_nx, best_ny
+            path.append([x, y])
+        return path
+
     def exact_flow_cost(
         self,
         *,
         state: "EnvState",
         maps: "GridMaps",
-    ) -> torch.Tensor:
+        return_metadata: bool = False,
+    ):
+        _empty_meta: Dict[str, object] = {"edges": {}, "edge_key_kind": "gid"}
+
         (
             placed_nodes,
             placed_entries,
@@ -355,13 +390,13 @@ class TerminalFlowReward:
         device = placed_entries.device
         zero = torch.tensor(0.0, dtype=torch.float32, device=device)
         if n == 0:
-            return zero
+            return (zero, _empty_meta) if return_metadata else zero
         if int(placed_entries.shape[1]) == 0 or int(placed_exits.shape[1]) == 0:
-            return zero
+            return (zero, _empty_meta) if return_metadata else zero
 
         flow_w = state.build_flow_w().to(device=device, dtype=torch.float32)
         if int(flow_w.numel()) == 0 or not bool((flow_w != 0).any().item()):
-            return zero
+            return (zero, _empty_meta) if return_metadata else zero
 
         h = int(maps.static_invalid.shape[0])
         w = int(maps.static_invalid.shape[1])
@@ -403,15 +438,15 @@ class TerminalFlowReward:
         m = int(anchored_exits.shape[0])
         c = int(anchored_exits.shape[1])
         if m == 0 or c == 0 or t == 0 or p == 0:
-            return zero
+            return (zero, _empty_meta) if return_metadata else zero
 
         target_uid = torch.full((t, p), -1, dtype=torch.long, device=device)
         target_cells = anchored_entries[entries_valid]
         if int(target_cells.numel()) == 0:
-            return zero
+            return (zero, _empty_meta) if return_metadata else zero
         unique_targets, inverse = torch.unique(target_cells, dim=0, return_inverse=True)
         if int(unique_targets.numel()) == 0:
-            return zero
+            return (zero, _empty_meta) if return_metadata else zero
         target_uid[entries_valid] = inverse
 
         if self.batched_wavefront:
@@ -462,38 +497,104 @@ class TerminalFlowReward:
         valid = exits_valid[:, None, :, None] & entries_valid[None, :, None, :]
         cost = torch.full((m, t, c, p), float(self.unreachable_cost), dtype=torch.float32, device=device)
 
-        for ti in range(t):
-            for pj in range(p):
-                if not bool(entries_valid[ti, pj].item()):
-                    continue
-                uid = int(target_uid[ti, pj].item())
-                if uid < 0:
-                    continue
-                dist = dist_batch[uid]
-                vals = dist[src_y, src_x].to(dtype=torch.float32)
-                vals = torch.where(
-                    vals >= 0.0,
-                    vals,
-                    torch.full_like(vals, float(self.unreachable_cost)),
-                )
-                vals = vals + exit_anchor_extra + float(entry_anchor_extra[ti, pj].item())
-                cost[:, ti, :, pj] = vals
+        # Vectorized cost fill: gather dist_batch by target_uid for all valid (ti, pj)
+        tp_valid = entries_valid & (target_uid >= 0)  # [t, p]
+        tp_indices = torch.nonzero(tp_valid, as_tuple=False)  # [K, 2]
+        if int(tp_indices.shape[0]) > 0:
+            tp_ti = tp_indices[:, 0]  # [K]
+            tp_pj = tp_indices[:, 1]  # [K]
+            tp_uid = target_uid[tp_ti, tp_pj]  # [K]
+            # dist_batch[uid] gathered at all exit cell locations → [K, m, c]
+            gathered_dist = dist_batch[tp_uid][:, src_y, src_x].to(dtype=torch.float32)  # [K, m, c]
+            unreachable_val = float(self.unreachable_cost)
+            gathered_dist = torch.where(
+                gathered_dist >= 0.0,
+                gathered_dist,
+                torch.full_like(gathered_dist, unreachable_val),
+            )
+            # exit_anchor_extra: [m, c], entry_anchor_extra: [t, p] → per-(ti,pj) scalar
+            tp_entry_extra = entry_anchor_extra[tp_ti, tp_pj]  # [K]
+            gathered_dist = gathered_dist + exit_anchor_extra.unsqueeze(0) + tp_entry_extra.view(-1, 1, 1)
+            # Scatter into cost[:, ti, :, pj] — transpose to [m, c, K] then assign
+            for k_idx in range(int(tp_indices.shape[0])):
+                ti_k = int(tp_ti[k_idx].item())
+                pj_k = int(tp_pj[k_idx].item())
+                cost[:, ti_k, :, pj_k] = gathered_dist[k_idx]
 
         exit_k, entry_k = self._port_span_tensors(
             gids=placed_nodes,
             group_specs=self.group_specs,
             device=device,
         )
-        reduced_mt, _, _ = FlowReward._masked_pair_reduce(cost, valid, exit_k, entry_k)
-        return (reduced_mt * flow_w).sum()
+        reduced_mt, c_idx, p_idx = FlowReward._masked_pair_reduce(cost, valid, exit_k, entry_k)
+        total = (reduced_mt * flow_w).sum()
+
+        if not return_metadata:
+            return total
+
+        has_valid = valid.any(dim=3).any(dim=2)  # [m, t]
+        unreachable_thresh = float(self.unreachable_cost) * 0.9
+        edges: Dict[str, object] = {}
+        flow_w_cpu = flow_w.cpu()
+        reduced_cpu = reduced_mt.cpu()
+        has_valid_cpu = has_valid.cpu()
+        c_idx_cpu = c_idx.cpu() if c_idx is not None else None
+        p_idx_cpu = p_idx.cpu() if p_idx is not None else None
+        target_uid_cpu = target_uid.cpu()
+        exits_clamped_cpu = anchored_exits_clamped.cpu()
+        for i in range(m):
+            for j in range(t):
+                fij = float(flow_w_cpu[i, j].item())
+                if fij == 0.0:
+                    continue
+                if not bool(has_valid_cpu[i, j].item()):
+                    continue
+                dist_val = float(reduced_cpu[i, j].item())
+                if dist_val >= unreachable_thresh:
+                    continue
+                c_best = int(c_idx_cpu[i, j].item()) if c_idx_cpu is not None else 0
+                p_best = int(p_idx_cpu[i, j].item()) if p_idx_cpu is not None else 0
+                src_gid = str(placed_nodes[i])
+                dst_gid = str(placed_nodes[j])
+
+                terminal_model: Dict[str, object] = {
+                    "pair_indices": [[c_best, p_best]],
+                }
+                if c_idx is not None and p_idx is not None:
+                    uid = int(target_uid_cpu[j, p_best].item())
+                    if uid >= 0 and uid < int(dist_batch.shape[0]):
+                        ex_x = int(exits_clamped_cpu[i, c_best, 0].item())
+                        ex_y = int(exits_clamped_cpu[i, c_best, 1].item())
+                        polyline = self._backtrack_polyline(
+                            dist_batch[uid], (ex_x, ex_y), h, w
+                        )
+                        terminal_model["polylines"] = [polyline]
+
+                edges[f"{src_gid}->{dst_gid}"] = {
+                    "weight": fij,
+                    "distance": dist_val,
+                    "pair_count": 1,
+                    "models": {"terminal": terminal_model},
+                }
+
+        meta = {"edges": edges, "edge_key_kind": "gid"}
+        return total, meta
 
     def terminal_score(
         self,
         *,
         state: "EnvState",
         maps: "GridMaps",
-    ) -> float:
-        return float(self.exact_flow_cost(state=state, maps=maps).item())
+        return_metadata: bool = False,
+    ):
+        result = self.exact_flow_cost(
+            state=state, maps=maps,
+            return_metadata=return_metadata,
+        )
+        if return_metadata:
+            tensor, meta = result
+            return float(tensor.item()), meta
+        return float(result.item())
 
 
 @dataclass
@@ -526,7 +627,7 @@ class TerminalRewardComposer:
         reward_composer: "RewardComposer",
         failed: bool,
         base_scores_unweighted: Optional[Mapping[str, object]] = None,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         out: Dict[str, float] = {}
         meta_out: Dict[str, Dict[str, object]] = {}
@@ -538,7 +639,7 @@ class TerminalRewardComposer:
                 tw = float(self.weights.get(name, 1.0))
                 out[name] = tw * float(fn(state=state))
                 meta_out[str(name)] = {"failed": True}
-            if return_meta:
+            if return_metadata:
                 return out, meta_out
             return out
 
@@ -557,13 +658,24 @@ class TerminalRewardComposer:
                     f"terminal component {name!r} targets base key {base_key!r}, "
                     f"but available base keys are {sorted(unweighted.keys())}"
                 )
-            term_score = float(fn(state=state, maps=maps))
+            if return_metadata and isinstance(comp, TerminalFlowReward):
+                score_result = fn(
+                    state=state, maps=maps,
+                    return_metadata=True,
+                )
+                term_score, comp_meta = float(score_result[0]), score_result[1]
+            else:
+                term_score = float(fn(state=state, maps=maps))
+                comp_meta = {}
             base_score = float(unweighted[base_key])
             rw = float(reward_composer.weights.get(base_key, 1.0))
             tw = float(self.weights.get(name, 1.0))
             out[name] = tw * rw * (term_score - base_score)
-            meta_out[str(name)] = {"failed": False, "base_key": str(base_key)}
-        if return_meta:
+            base_meta = {"failed": False, "base_key": str(base_key)}
+            if comp_meta:
+                base_meta.update(comp_meta)
+            meta_out[str(name)] = base_meta
+        if return_metadata:
             return out, meta_out
         return out
 

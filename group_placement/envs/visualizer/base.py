@@ -52,7 +52,6 @@ class VisualizerBackend(ABC):
         *,
         ax: Any,
         action_space: Any = None,
-        routes: Any = None,
     ) -> Any:
         """Draw layout layers onto a pre-existing matplotlib Axes.
 

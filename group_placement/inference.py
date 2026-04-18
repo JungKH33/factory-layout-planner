@@ -28,7 +28,7 @@ from group_placement.envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "group_placement/envs/env_configs/mixed_01.json"
+ENV_JSON: str = "group_placement/envs/env_configs/clearance_03.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "greedyv5" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"
@@ -351,12 +351,8 @@ def main(*, output_dir: Path | str | None = None) -> None:
         browse_steps(adapter, frames=frames, title="Inference browser (←/→ to navigate, q to quit)")
         engine.set_state(final_state)  # type: ignore[arg-type]
 
-    # Route planning
-    # planner = RoutePlanner(engine, algorithm="astar")
-    # routes = planner.plan_all()
-
     # Preview before saving (interactive; close the window to continue).
-    plot_layout(adapter, action_space=None, routes= None, backend="matplotlib")
+    plot_layout(adapter, action_space=None, backend="matplotlib")
 
     save_layout(
         adapter,

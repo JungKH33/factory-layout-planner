@@ -54,12 +54,12 @@ class GridOccupancyReward:
         self,
         *,
         placed_cell_occupied: torch.Tensor,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         if placed_cell_occupied is None:
             raise ValueError("placed_cell_occupied is required for GridOccupancyReward.score")
         score = placed_cell_occupied.to(dtype=torch.float32).sum()
-        if not return_meta:
+        if not return_metadata:
             return score
         meta = {
             "occupied_cells": float(score.item()),
@@ -76,7 +76,7 @@ class GridOccupancyReward:
         candidate_max_x: torch.Tensor,
         candidate_min_y: torch.Tensor,
         candidate_max_y: torch.Tensor,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         if placed_cell_occupied is None:
             raise ValueError("placed_cell_occupied is required for GridOccupancyReward.delta")
@@ -91,7 +91,7 @@ class GridOccupancyReward:
             gw=gw,
         )
         delta = (cand & (~base.view(1, gh, gw))).to(dtype=torch.float32).sum(dim=(1, 2))
-        if not return_meta:
+        if not return_metadata:
             return delta
         return delta, {"candidate_count": int(delta.shape[0])}
 
@@ -109,13 +109,13 @@ class AreaReward:
         max_x: torch.Tensor,
         min_y: torch.Tensor,
         max_y: torch.Tensor,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         if placed_count == 0:
             score = torch.tensor(0.0, dtype=torch.float32, device=min_x.device)
         else:
             score = 0.5 * ((max_x - min_x) + (max_y - min_y))
-        if not return_meta:
+        if not return_metadata:
             return score
         meta = {
             "placed_count": int(placed_count),
@@ -140,7 +140,7 @@ class AreaReward:
         candidate_max_x: torch.Tensor,
         candidate_min_y: torch.Tensor,
         candidate_max_y: torch.Tensor,
-        return_meta: bool = False,
+        return_metadata: bool = False,
     ):
         if placed_count == 0:
             delta = 0.5 * ((candidate_max_x - candidate_min_x) + (candidate_max_y - candidate_min_y))
@@ -158,6 +158,6 @@ class AreaReward:
             cur_hpwl = 0.5 * ((float(cur_max_x) - float(cur_min_x)) + (float(cur_max_y) - float(cur_min_y)))
             new_hpwl = 0.5 * ((new_max_x - new_min_x) + (new_max_y - new_min_y))
             delta = new_hpwl - cur_hpwl
-        if not return_meta:
+        if not return_metadata:
             return delta
         return delta, {"candidate_count": int(delta.shape[0])}

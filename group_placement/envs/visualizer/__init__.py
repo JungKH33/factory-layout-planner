@@ -30,7 +30,6 @@ def plot_layout(
     env: Any,
     *,
     action_space: Any = None,
-    routes: Any = None,
     backend: Optional[str] = None,
 ) -> Any:
     """Interactive layout viewer.
@@ -38,11 +37,10 @@ def plot_layout(
     Args:
         env: FactoryLayoutEnv or wrapper
         action_space: Optional ActionSpace
-        routes: Optional list of RouteResult
         backend: 'matplotlib' (default) or 'plotly'
     """
     engine = getattr(env, "engine", env)
-    data = extract_layout_data(engine, action_space=action_space, routes=routes)
+    data = extract_layout_data(engine, action_space=action_space)
     return _get_backend(backend).plot_layout(data)
 
 
@@ -105,7 +103,6 @@ def draw_layout_layers(
     ax: Any,
     engine: Any,
     action_space: Any = None,
-    routes: Any = None,
 ) -> Any:
     """Draw layout layers onto a pre-existing matplotlib Axes.
 
@@ -113,5 +110,5 @@ def draw_layout_layers(
     """
     from group_placement.envs.visualizer.mpl import MatplotlibBackend
     return MatplotlibBackend().draw_layout_on_axes(
-        engine, ax=ax, action_space=action_space, routes=routes,
+        engine, ax=ax, action_space=action_space,
     )

@@ -11,6 +11,8 @@ from typing import Any, Dict, Mapping, Optional, List, Tuple
 
 import numpy as np
 
+from group_placement.envs.visualizer.layer import RewardLayer
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -60,14 +62,6 @@ class ConstraintZoneData:
 
 
 @dataclass
-class RouteData:
-    src_group: str
-    dst_group: str
-    path: List[Tuple[float, float]]
-    color: str
-
-
-@dataclass
 class LayoutData:
     grid_width: int
     grid_height: int
@@ -81,7 +75,7 @@ class LayoutData:
     ports: PortData = field(default_factory=PortData)
     cost: float = 0.0
     candidates_xy: Optional[List[Tuple[float, float]]] = None
-    routes: Optional[List[RouteData]] = None
+    reward_layers: Dict[str, RewardLayer] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -110,12 +104,6 @@ CONSTRAINT_BASE_COLORS = [
     "#e377c2",
     "#bcbd22",
 ]
-
-ROUTE_COLORS = [
-    "#FF6B00", "#00CC66", "#9933FF", "#FF3366",
-    "#00BFFF", "#FFD700", "#FF69B4", "#32CD32",
-]
-
 
 def constraint_color(name: str, names: list) -> str:
     idx = 0
@@ -341,14 +329,13 @@ def extract_layout_data(
     engine: Any,
     *,
     action_space: Any = None,
-    routes: Any = None,
+    terminal_composer: Any = None,
 ) -> LayoutData:
     """Extract all rendering data from engine state into a plain LayoutData.
 
     Args:
         engine: FactoryLayoutEnv instance
         action_space: Optional ActionSpace (with .centers, .valid_mask, .group_id)
-        routes: Optional list of RouteResult from lane_generation.inference
     """
     state = engine.get_state()
     c_names = _constraint_names(engine)
@@ -473,6 +460,43 @@ def extract_layout_data(
                 else:
                     ports.inactive_exits.append((float(x), float(y)))
 
+    # --- Reward layers (per-component) ---
+    reward_layers: Dict[str, RewardLayer] = {}
+    if state.placed:
+        try:
+            from group_placement.envs.visualizer.reward_layers import build_reward_layers
+            reward_composer = getattr(engine, "reward_composer", None)
+            t_composer = terminal_composer or getattr(engine, "terminal_reward_composer", None)
+            reward_layers = build_reward_layers(
+                reward_composer, t_composer, state, maps,
+            )
+        except Exception:
+            pass
+
+    # --- Shim: derive flow_arrows/ports from base flow layer (backward compat) ---
+    if not flow_arrows and reward_layers:
+        for layer in reward_layers.values():
+            if layer.phase != "base":
+                continue
+            for seg in layer.segments:
+                flow_arrows.append(FlowArrow(
+                    src_xy=seg.src_xy,
+                    dst_xy=seg.dst_xy,
+                    weight=seg.weight,
+                ))
+            for port in layer.ports:
+                if port.kind == "entry":
+                    if port.active:
+                        ports.active_entries.append(port.xy)
+                    else:
+                        ports.inactive_entries.append(port.xy)
+                else:
+                    if port.active:
+                        ports.active_exits.append(port.xy)
+                    else:
+                        ports.inactive_exits.append(port.xy)
+            break
+
     # --- Cost ---
     cost = float(engine.cost())
 
@@ -484,24 +508,6 @@ def extract_layout_data(
             candidates_xy = []
             for row in poses.detach().cpu().tolist():
                 candidates_xy.append((float(row[0]), float(row[1])))
-
-    # --- Routes ---
-    route_data: Optional[List[RouteData]] = None
-    if routes is not None:
-        route_data = []
-        for i, route in enumerate(routes):
-            if not route.success or route.path is None:
-                continue
-            path = route.path
-            if len(path) < 2:
-                continue
-            color = ROUTE_COLORS[i % len(ROUTE_COLORS)]
-            route_data.append(RouteData(
-                src_group=str(route.src_group),
-                dst_group=str(route.dst_group),
-                path=[(float(p[0]), float(p[1])) for p in path],
-                color=color,
-            ))
 
     return LayoutData(
         grid_width=int(engine.grid_width),
@@ -516,5 +522,5 @@ def extract_layout_data(
         ports=ports,
         cost=cost,
         candidates_xy=candidates_xy,
-        routes=route_data,
+        reward_layers=reward_layers,
     )

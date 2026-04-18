@@ -175,7 +175,7 @@ class PlotlyBackend(VisualizerBackend):
         )
         fig.show()
 
-    def draw_layout_on_axes(self, engine: Any, *, ax: Any, action_space: Any = None, routes: Any = None) -> Any:
+    def draw_layout_on_axes(self, engine: Any, *, ax: Any, action_space: Any = None) -> Any:
         raise NotImplementedError(
             "draw_layout_on_axes is matplotlib-specific. "
             "Use backend='matplotlib' for Axes-level drawing."
@@ -368,47 +368,6 @@ class PlotlyBackend(VisualizerBackend):
             _add_port_scatter(data.ports.active_exits, color="#d62728", alpha=0.9, name="exit (active)", first=first_flow)
 
             fig.update_layout(annotations=arrow_annotations)
-
-        # --- Routes ---
-        if data.routes:
-            first_route = True
-            for rd in data.routes:
-                xs = [p[0] for p in rd.path]
-                ys = [p[1] for p in rd.path]
-                fig.add_trace(go.Scatter(
-                    x=xs, y=ys,
-                    mode="lines",
-                    line=dict(color=rd.color, width=2),
-                    name="routes",
-                    legendgroup="routes",
-                    showlegend=first_route,
-                    hoverinfo="text",
-                    hovertext=f"{rd.src_group}\u2192{rd.dst_group}",
-                ))
-                first_route = False
-                # Start/end markers
-                fig.add_trace(go.Scatter(
-                    x=[xs[0]], y=[ys[0]],
-                    mode="markers",
-                    marker=dict(size=8, color=rd.color, symbol="circle",
-                                line=dict(width=1, color="white")),
-                    showlegend=False, legendgroup="routes", hoverinfo="skip",
-                ))
-                fig.add_trace(go.Scatter(
-                    x=[xs[-1]], y=[ys[-1]],
-                    mode="markers",
-                    marker=dict(size=10, color=rd.color, symbol="triangle-right",
-                                line=dict(width=1, color="white")),
-                    showlegend=False, legendgroup="routes", hoverinfo="skip",
-                ))
-                mid_idx = len(rd.path) // 2
-                fig.add_trace(go.Scatter(
-                    x=[rd.path[mid_idx][0]], y=[rd.path[mid_idx][1]],
-                    mode="text",
-                    text=[f"{rd.src_group}\u2192{rd.dst_group}"],
-                    textfont=dict(size=9, color=rd.color),
-                    showlegend=False, legendgroup="routes", hoverinfo="skip",
-                ))
 
         # --- Score annotation ---
         title_text = "FactoryLayoutEnv"
