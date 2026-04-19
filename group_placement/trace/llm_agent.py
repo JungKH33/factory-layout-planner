@@ -24,12 +24,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-import torch
-
-from group_placement.envs.env import FactoryLayoutEnv
-from group_placement.envs.action_space import ActionSpace
-from group_placement.agents.base import BaseAdapter
-from group_placement.trace.schema import DecisionNode, PhysicalContext, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +332,26 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "explain",
+        "description": (
+            "Explain why a placement decision was made. Returns the chosen "
+            "action, per-reward-component cost breakdown (e.g. how much flow "
+            "vs. area contributed), the alternative top candidates considered, "
+            "and signal info from each source (agent, search). Use this to "
+            "answer 'why did you place X here?' or 'what were the other "
+            "options?' questions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "integer",
+                    "description": "Decision tree node ID. Omit for current node.",
+                },
+            },
+        },
+    },
+    {
         "name": "detail",
         "description": (
             "Get physical placement detail for a specific step: facility ID, "
@@ -475,62 +489,6 @@ reason about flow, then place."""
 # Context helpers (reused from original implementation)
 # =====================================================================
 
-@dataclass
-class CandidateDescription:
-    """One candidate ready for LLM consumption."""
-    index: int
-    x_center: float
-    y_center: float
-    delta_cost: float
-    valid: bool
-    agent_score: float = 0.0
-    search_visits: int = 0
-    search_value: float = 0.0
-
-
-def _build_candidate_descriptions(
-    adapter: BaseAdapter,
-    node: DecisionNode,
-    *,
-    top_k: int = 8,
-) -> List[CandidateDescription]:
-    """Extract top-K candidates with costs and signal info."""
-    snapshot = node._snapshot
-    if snapshot is None or snapshot.action_space is None:
-        return []
-
-    aspace = snapshot.action_space
-    mask = aspace.valid_mask.cpu().numpy().astype(bool)
-    centers = aspace.centers.cpu().numpy()
-    valid_indices = np.where(mask)[0]
-    if len(valid_indices) == 0:
-        return []
-
-    costs = getattr(adapter, "action_costs", None)
-    if isinstance(costs, torch.Tensor):
-        costs_np = costs.cpu().numpy().astype(np.float32)
-    else:
-        costs_np = np.zeros(len(mask), dtype=np.float32)
-
-    agent_sig = node.signals.get("agent")
-    agent_scores = agent_sig.scores if agent_sig is not None else np.zeros(len(mask), dtype=np.float32)
-
-    order = np.argsort(-agent_scores[valid_indices])
-    selected = valid_indices[order[:top_k]]
-
-    result: List[CandidateDescription] = []
-    for idx in selected:
-        result.append(CandidateDescription(
-            index=int(idx),
-            x_center=float(centers[idx, 0]),
-            y_center=float(centers[idx, 1]),
-            delta_cost=float(costs_np[idx]),
-            valid=True,
-            agent_score=float(agent_scores[idx]),
-        ))
-    return result
-
-
 # =====================================================================
 # Tool executors
 # =====================================================================
@@ -570,10 +528,12 @@ def _tool_candidates(explorer, top_k: int = 8) -> str:
     if node.terminal:
         return "Terminal state — no candidates."
 
-    if "agent" not in node.signals:
-        explorer.predict_agent()
-
-    cands = _build_candidate_descriptions(explorer.adapter, node, top_k=top_k)
+    prev_cap = explorer.candidates_top_k
+    explorer.candidates_top_k = max(prev_cap, int(top_k))
+    try:
+        cands = explorer.candidates(top_k=top_k, compute_if_missing=True)
+    finally:
+        explorer.candidates_top_k = prev_cap
     if not cands:
         return "No valid candidates."
 
@@ -582,50 +542,119 @@ def _tool_candidates(explorer, top_k: int = 8) -> str:
     spec = explorer.engine.group_specs.get(current_gid) if current_gid else None
     size_str = f" (size {int(spec.width)}x{int(spec.height)})" if spec else ""
 
-    agent_sig = node.signals.get("agent")
-
     lines = [f"Candidates for {current_gid}{size_str}:"]
     for i, c in enumerate(cands):
-        tag = " <-- agent-pick" if (agent_sig and agent_sig.recommended_action == c.index) else ""
+        tag = " <-- agent-pick" if c.get("chosen") else ""
+        pos = c.get("pos", [0.0, 0.0])
+        parts = [
+            f"idx={c['action']}",
+            f"center=({pos[0]:.0f},{pos[1]:.0f})",
+        ]
+        if "delta" in c:
+            parts.append(f"delta_cost={c['delta']:+.1f}")
+        if "score" in c:
+            parts.append(f"score={c['score']:.3f}")
+        if "variant" in c:
+            parts.append(f"variant={c['variant']}")
+        lines.append(f"  #{i+1} " + " ".join(parts) + tag)
+    return "\n".join(lines)
+
+
+def _tool_explain(explorer, node_id: Optional[int] = None) -> str:
+    """Execute the 'explain' tool — structured decision explanation."""
+    try:
+        info = explorer.explain(node_id)
+    except KeyError:
+        return f"Node {node_id} not found."
+
+    lines: List[str] = [
+        f"Node {info['node_id']} (step {info['step']}, gid={info['gid']}):",
+    ]
+    if info.get("chosen_by") is not None:
+        lines.append(f"  chosen_by: {info['chosen_by']}  action={info['chosen_action']}")
+
+    phys = info.get("physical") or {}
+    if phys:
         lines.append(
-            f"  #{i+1} idx={c.index} center=({c.x_center:.0f},{c.y_center:.0f}) "
-            f"delta_cost={c.delta_cost:+.1f} score={c.agent_score:.3f}{tag}"
+            f"  placement: center=({phys['x_center']:.0f},{phys['y_center']:.0f}) "
+            f"size={phys['w']:.0f}x{phys['h']:.0f} rot={phys['rotation']}"
         )
+        lines.append(
+            f"  cost: {phys['cost_before']:.1f} -> {phys['cost_after']:.1f} "
+            f"(delta={phys['delta_cost']:+.2f})"
+        )
+        breakdown = phys.get("breakdown") or {}
+        if breakdown:
+            parts = [f"{name}={rec.get('delta', 0.0):+.2f}" for name, rec in breakdown.items()]
+            lines.append(f"  breakdown: {', '.join(parts)}")
+            for name, rec in breakdown.items():
+                meta_after = rec.get("metadata_after") or {}
+                if not meta_after:
+                    continue
+                try:
+                    meta_json = json.dumps(
+                        meta_after, default=str, ensure_ascii=False, separators=(",", ":")
+                    )
+                except (TypeError, ValueError):
+                    meta_json = str(meta_after)
+                if len(meta_json) > 400:
+                    meta_json = meta_json[:397] + "..."
+                lines.append(f"    {name} metadata: {meta_json}")
+
+    signals = info.get("signals") or {}
+    for src, sig in signals.items():
+        lines.append(f"  [{src}] recommended_action={sig['recommended_action']}")
+        for c in sig.get("candidates", [])[:5]:
+            tag = " <-- chosen" if c.get("chosen") else ""
+            parts = [f"idx={c['action']}", f"pos=({c['pos'][0]:.0f},{c['pos'][1]:.0f})"]
+            if "delta" in c:
+                parts.append(f"delta={c['delta']:+.2f}")
+            if "visits" in c:
+                parts.append(f"visits={int(c['visits'])}")
+            if "score" in c:
+                parts.append(f"score={c['score']:.3f}")
+            lines.append(f"    rank {c['rank']}: " + " ".join(parts) + tag)
+
+    if not phys and not signals:
+        lines.append("  (no placement or signals recorded at this node)")
     return "\n".join(lines)
 
 
 def _tool_detail(explorer, node_id: Optional[int] = None) -> str:
     """Execute the 'detail' tool."""
-    if node_id is not None:
-        node = explorer.tree.nodes.get(node_id)
-        if node is None:
-            return f"Node {node_id} not found."
-    else:
-        node = explorer.current()
-        if node.physical is None and node.parent_id is not None:
-            node = explorer.tree.nodes[node.parent_id]
+    try:
+        info = explorer.detail(node_id)
+    except KeyError:
+        return f"Node {node_id} not found."
 
-    phys = node.physical
+    phys = info.get("physical")
     if phys is None:
-        return f"Node {node.id} has no physical context."
+        return f"Node {info['node_id']} has no physical context."
 
     lines = [
-        f"Node {node.id} placement:",
-        f"  Facility: {phys.gid}",
-        f"  Center: ({phys.x_center:.1f}, {phys.y_center:.1f})",
-        f"  Bottom-left: ({phys.x:.1f}, {phys.y:.1f})",
-        f"  Size: {phys.w:.0f} x {phys.h:.0f}",
-        f"  Rotation: {phys.rotation}",
-        f"  Cost: {phys.cost_before:.1f} -> {phys.cost_after:.1f} (delta={phys.delta_cost:+.1f})",
+        f"Node {info['node_id']} placement:",
+        f"  Facility: {phys['gid']}",
+        f"  Center: ({phys['x_center']:.1f}, {phys['y_center']:.1f})",
+        f"  Bottom-left: ({phys['x']:.1f}, {phys['y']:.1f})",
+        f"  Size: {phys['w']:.0f} x {phys['h']:.0f}",
+        f"  Rotation: {phys['rotation']}",
+        f"  Cost: {phys['cost_before']:.1f} -> {phys['cost_after']:.1f} "
+        f"(delta={phys['delta_cost']:+.1f})",
     ]
-    if phys.entries:
-        lines.append(f"  Entries: {', '.join(f'({x:.0f},{y:.0f})' for x, y in phys.entries)}")
-    if phys.exits:
-        lines.append(f"  Exits: {', '.join(f'({x:.0f},{y:.0f})' for x, y in phys.exits)}")
-    if phys.affected_flows:
-        lines.append(f"  Affected flows:")
-        for fd in phys.affected_flows:
-            lines.append(f"    {fd.src} -> {fd.dst}: weight={fd.weight:.1f} dist={fd.distance:.1f}")
+    entries = phys.get("entries") or []
+    if entries:
+        lines.append("  Entries: " + ", ".join(f"({x:.0f},{y:.0f})" for x, y in entries))
+    exits_ = phys.get("exits") or []
+    if exits_:
+        lines.append("  Exits: " + ", ".join(f"({x:.0f},{y:.0f})" for x, y in exits_))
+    flows = phys.get("affected_flows") or []
+    if flows:
+        lines.append("  Affected flows:")
+        for fd in flows:
+            lines.append(
+                f"    {fd['src']} -> {fd['dst']}: "
+                f"weight={float(fd['weight']):.1f} dist={float(fd['distance']):.1f}"
+            )
     return "\n".join(lines)
 
 
@@ -771,9 +800,9 @@ StepCallback = Callable[[str, str], None]  # (event_type, text) → None
 
 MODE_TOOL_NAMES: Dict[str, set[str]] = {
     # conversation-focused: inspect only
-    "chat": {"status", "detail", "flow_info", "render", "done"},
+    "chat": {"status", "explain", "detail", "flow_info", "render", "done"},
     # planning: inspect + recommendations
-    "plan": {"status", "candidates", "detail", "flow_info", "agent_recommend", "render", "done"},
+    "plan": {"status", "candidates", "explain", "detail", "flow_info", "agent_recommend", "render", "done"},
     # execution: full tool access
     "agent": {t["name"] for t in TOOL_SCHEMAS},
 }
@@ -916,6 +945,8 @@ class ExplorerAgent:
                 text = _tool_status(explorer)
             elif name == "candidates":
                 text = _tool_candidates(explorer, top_k=args.get("top_k", 8))
+            elif name == "explain":
+                text = _tool_explain(explorer, node_id=args.get("node_id"))
             elif name == "detail":
                 text = _tool_detail(explorer, node_id=args.get("node_id"))
             elif name == "flow_info":

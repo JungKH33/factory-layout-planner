@@ -60,6 +60,26 @@ class PhysicalContext:
 
     affected_flows: List[FlowDelta] = field(default_factory=list)
 
+    breakdown: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    """Per-reward-component delta + full record.
+
+    Keys are reward component names (e.g. ``"flow"``, ``"area"``) as published
+    by :class:`EvalState`. Each value carries::
+
+        {
+            "delta":            float,   # weighted_cost_after - weighted_cost_before
+            "raw_before":       float,   # raw_cost_before
+            "raw_after":        float,   # raw_cost_after
+            "weight":           float,   # weight used for weighting (post-step)
+            "metadata_before":  dict,    # EvalState metadata before step (passthrough)
+            "metadata_after":   dict,    # EvalState metadata after step (passthrough)
+        }
+
+    Summed ``delta`` across keys equals ``delta_cost`` up to float error. The
+    metadata dicts are verbatim from the reward components — Explorer does not
+    interpret their contents. Empty when eval state is unavailable.
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "gid": self.gid,
@@ -70,6 +90,7 @@ class PhysicalContext:
             "delta_cost": self.delta_cost,
             "cost_before": self.cost_before, "cost_after": self.cost_after,
             "affected_flows": [f.to_dict() for f in self.affected_flows],
+            "breakdown": dict(self.breakdown),
         }
 
     def summary(self) -> str:

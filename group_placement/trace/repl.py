@@ -94,6 +94,75 @@ def _fmt_cost(v: Optional[float]) -> str:
     return f"{v:.2f}" if v is not None else "?"
 
 
+def _format_scalar(v: Any) -> str:
+    if isinstance(v, float):
+        return f"{v:.3g}"
+    if v is None:
+        return "-"
+    return str(v)
+
+
+def _print_struct(label: str, value: Any, *, indent: int = 2) -> None:
+    """Pretty-print any JSON-like value with a label.
+
+    Type-driven and recursive — no field-name or schema hardcoding:
+
+    * ``dict``     — label heading; scalars joined on one line; nested
+      dicts/lists recurse below.
+    * ``list`` of dicts — mini :class:`rich.table.Table` using the union
+      of keys as columns.
+    * ``list`` of scalars — inline preview (up to 6 items, then ``+N``).
+    * scalar       — ``label=value`` on a single line.
+    """
+    pad = " " * indent
+    if isinstance(value, dict):
+        scalars = {k: v for k, v in value.items() if not isinstance(v, (dict, list, tuple))}
+        nested = {k: v for k, v in value.items() if isinstance(v, (dict, list, tuple))}
+        console.print(f"{pad}[bold cyan]{label}[/bold cyan]")
+        if scalars:
+            line = "  ".join(f"{k}={_format_scalar(v)}" for k, v in scalars.items())
+            console.print(f"{pad}  [muted]{line}[/muted]")
+        for k, v in nested.items():
+            _print_struct(k, v, indent=indent + 2)
+        return
+
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        if items and all(isinstance(x, dict) for x in items):
+            keys: List[str] = []
+            seen: set = set()
+            for item in items:
+                for ik in item.keys():
+                    if ik not in seen:
+                        seen.add(ik)
+                        keys.append(ik)
+            sub = Table(
+                title=f"{label} ({len(items)})", title_style="dim",
+                box=None, padding=(0, 1), show_header=True, header_style="dim",
+            )
+            for ik in keys:
+                sub.add_column(ik)
+            for item in items:
+                row: List[str] = []
+                for ik in keys:
+                    iv = item.get(ik)
+                    if isinstance(iv, (dict, list, tuple)):
+                        row.append(f"[{type(iv).__name__}:{len(iv)}]")
+                    else:
+                        row.append(_format_scalar(iv))
+                sub.add_row(*row)
+            console.print(sub)
+            return
+        if len(items) <= 6:
+            preview = ", ".join(_format_scalar(v) for v in items)
+        else:
+            preview = ", ".join(_format_scalar(v) for v in items[:6]) + f", ... (+{len(items) - 6})"
+        console.print(f"{pad}[muted]{label}:[/muted] [{preview}]")
+        return
+
+    console.print(f"{pad}[muted]{label}=[/muted]{_format_scalar(value)}")
+
+
 def _top_actions(scores: np.ndarray, n: int = 5) -> str:
     """Format top-N action indices with scores."""
     order = np.argsort(-scores)
@@ -225,41 +294,80 @@ class ExplorerREPL(cmd.Cmd):
         if node.terminal:
             console.print("  [warning]Terminal node -- no candidates.[/warning]")
             return
+        n = int(arg) if arg.strip() else 10
+
+        prev_cap = self.exp.candidates_top_k
+        self.exp.candidates_top_k = max(prev_cap, n)
+        try:
+            cands = self.exp.candidates(top_k=n, compute_if_missing=False)
+        finally:
+            self.exp.candidates_top_k = prev_cap
+
+        if cands:
+            total_valid = node.valid_actions or len(cands)
+            has_delta = any("delta" in c for c in cands)
+            has_score = any("score" in c for c in cands)
+            has_visits = any("visits" in c for c in cands)
+
+            table = Table(
+                title=f"{total_valid} valid candidates (top {len(cands)})",
+                title_style="bold", border_style="dim",
+            )
+            table.add_column("rank", justify="right")
+            table.add_column("idx", justify="right", style="bold")
+            table.add_column("x", justify="right")
+            table.add_column("y", justify="right")
+            if has_delta:
+                table.add_column("delta", justify="right")
+            if has_score:
+                table.add_column("score", justify="right", style="cyan")
+            if has_visits:
+                table.add_column("visits", justify="right")
+            table.add_column("", style="accent")
+            for c in cands:
+                row = [
+                    str(c["rank"]),
+                    str(c["action"]),
+                    f"{c['pos'][0]:.1f}",
+                    f"{c['pos'][1]:.1f}",
+                ]
+                if has_delta:
+                    row.append(f"{c['delta']:+.2f}" if "delta" in c else "-")
+                if has_score:
+                    row.append(f"{c['score']:.4f}" if "score" in c else "-")
+                if has_visits:
+                    row.append(f"{int(c.get('visits', 0))}")
+                row.append("chosen" if c.get("chosen") else "")
+                table.add_row(*row)
+            console.print(table)
+            if total_valid > len(cands):
+                console.print(
+                    f"  [muted]... {total_valid - len(cands)} more"
+                    f" (use 'candidates {total_valid}' to see all)[/muted]"
+                )
+            return
+
+        # Fallback: no cached signal — show raw action_space positions.
         snapshot = node._snapshot
         if snapshot is None or snapshot.action_space is None:
             console.print("  [muted]No action space available.[/muted]")
             return
-        n = int(arg) if arg.strip() else 10
         aspace = snapshot.action_space
         mask = aspace.valid_mask.cpu().numpy()
         centers = aspace.centers.cpu().numpy()
         valid_indices = np.where(mask)[0]
-
-        scores = self._last_agent_sig.scores if self._last_agent_sig is not None else None
-
-        if scores is not None and len(scores) == len(mask):
-            order = np.argsort(-scores[valid_indices])
-            valid_indices = valid_indices[order]
-
         total_valid = len(valid_indices)
         show = valid_indices[:n]
-
         table = Table(
-            title=f"{total_valid} valid candidates (top {len(show)})",
-            title_style="bold",
-            border_style="dim",
+            title=f"{total_valid} valid candidates (top {len(show)}, unranked — run 'agent predict')",
+            title_style="bold", border_style="dim",
         )
         table.add_column("idx", justify="right", style="bold")
         table.add_column("x", justify="right")
         table.add_column("y", justify="right")
-        if scores is not None:
-            table.add_column("score", justify="right", style="cyan")
         for idx in show:
             cx, cy = centers[idx]
-            row = [str(idx), f"{cx:.1f}", f"{cy:.1f}"]
-            if scores is not None:
-                row.append(f"{scores[idx]:.4f}")
-            table.add_row(*row)
+            table.add_row(str(idx), f"{cx:.1f}", f"{cy:.1f}")
         console.print(table)
         if total_valid > n:
             console.print(
@@ -558,71 +666,188 @@ class ExplorerREPL(cmd.Cmd):
 
     def do_detail(self, arg: str) -> None:
         """Show physical placement detail for current or specified node. Usage: detail [node_id]"""
+        node_id: Optional[int] = None
         if arg.strip():
             try:
-                nid = int(arg.strip())
-                node = self.exp.tree.nodes[nid]
-            except (ValueError, KeyError) as e:
-                console.print(f"  [error]Error: {e}[/error]")
+                node_id = int(arg.strip())
+            except ValueError:
+                console.print("  [error]Error: node_id must be integer[/error]")
                 return
-        else:
-            node = self.exp.current()
-            if node.physical is None and node.parent_id is not None:
-                parent = self.exp.tree.nodes[node.parent_id]
-                if parent.physical is not None:
-                    node = parent
+        try:
+            info = self.exp.detail(node_id)
+        except KeyError as e:
+            console.print(f"  [error]Error: {e}[/error]")
+            return
 
-        phys = node.physical
+        phys = info.get("physical")
         if phys is None:
             console.print(
-                f"  [muted]Node {node.id} has no physical context"
+                f"  [muted]Node {info['node_id']} has no physical context"
                 f" (root or no step taken).[/muted]"
             )
             return
 
         table = Table(
             show_header=False, box=None, padding=(0, 1),
-            title=f"Node {node.id} Placement", title_style="bold",
+            title=f"Node {info['node_id']} Placement", title_style="bold",
         )
         table.add_column(style="bold cyan", width=12)
         table.add_column()
-        table.add_row("Facility", phys.gid)
+        table.add_row("Facility", phys["gid"])
         table.add_row(
             "Position",
-            f"({phys.x_center:.1f}, {phys.y_center:.1f}) center,"
-            f" ({phys.x:.1f}, {phys.y:.1f}) BL",
+            f"({phys['x_center']:.1f}, {phys['y_center']:.1f}) center,"
+            f" ({phys['x']:.1f}, {phys['y']:.1f}) BL",
         )
-        table.add_row("Size", f"{phys.w:.0f} x {phys.h:.0f}")
-        table.add_row("Rotation", str(phys.rotation))
-        table.add_row("Variant", str(phys.variant_index))
-        delta_style = "red" if phys.delta_cost > 0 else "green"
+        table.add_row("Size", f"{phys['w']:.0f} x {phys['h']:.0f}")
+        table.add_row("Rotation", str(phys["rotation"]))
+        table.add_row("Variant", str(phys["variant_index"]))
+        delta = float(phys["delta_cost"])
+        delta_style = "red" if delta > 0 else "green"
         table.add_row(
             "Cost",
-            f"{phys.cost_before:.2f} \u2192 {phys.cost_after:.2f}"
-            f" ([{delta_style}]{phys.delta_cost:+.2f}[/{delta_style}])",
+            f"{phys['cost_before']:.2f} \u2192 {phys['cost_after']:.2f}"
+            f" ([{delta_style}]{delta:+.2f}[/{delta_style}])",
         )
-        if phys.entries:
-            ent_str = ", ".join(f"({x:.0f},{y:.0f})" for x, y in phys.entries)
+        if phys.get("entries"):
+            ent_str = ", ".join(f"({x:.0f},{y:.0f})" for x, y in phys["entries"])
             table.add_row("Entries", ent_str)
-        if phys.exits:
-            ext_str = ", ".join(f"({x:.0f},{y:.0f})" for x, y in phys.exits)
+        if phys.get("exits"):
+            ext_str = ", ".join(f"({x:.0f},{y:.0f})" for x, y in phys["exits"])
             table.add_row("Exits", ext_str)
         console.print(table)
 
-        if phys.affected_flows:
+        flows = phys.get("affected_flows") or []
+        if flows:
             flow_table = Table(
-                title=f"Flows ({len(phys.affected_flows)})",
+                title=f"Flows ({len(flows)})",
                 title_style="bold", border_style="dim",
             )
             flow_table.add_column("Src", style="bold")
             flow_table.add_column("Dst", style="bold")
             flow_table.add_column("Weight", justify="right")
             flow_table.add_column("Avg Dist", justify="right", style="cyan")
-            for fd in phys.affected_flows:
-                flow_table.add_row(fd.src, fd.dst, f"{fd.weight:.1f}", f"{fd.distance:.1f}")
+            for fd in flows:
+                flow_table.add_row(
+                    fd["src"], fd["dst"],
+                    f"{float(fd['weight']):.1f}", f"{float(fd['distance']):.1f}",
+                )
             console.print(flow_table)
         else:
             console.print("  [muted]Flows: (none)[/muted]")
+
+    def do_explain(self, arg: str) -> None:
+        """Explain decision at current or specified node. Usage: explain [node_id]
+
+        Shows per-reward-component cost breakdown plus the alternative top
+        candidates with their delta / score. Each component's metadata is
+        expanded recursively (scalars inline, list-of-dict as a mini-table,
+        nested dicts/lists indented).
+        """
+        tokens = [t for t in arg.split() if t]
+        node_id: Optional[int] = None
+        for tok in tokens:
+            try:
+                node_id = int(tok)
+            except ValueError:
+                console.print(f"  [error]Error: unknown argument {tok!r}[/error]")
+                return
+        try:
+            info = self.exp.explain(node_id)
+        except KeyError as e:
+            console.print(f"  [error]Error: {e}[/error]")
+            return
+
+        header = Text()
+        header.append(f"Node {info['node_id']}  ", style="bold")
+        header.append(f"step={info['step']}  gid={info['gid']}  ", style="dim")
+        if info.get("chosen_by") is not None:
+            header.append(
+                f"chosen_by={info['chosen_by']}  action={info['chosen_action']}",
+                style="accent",
+            )
+        console.print(header)
+
+        phys = info.get("physical") or {}
+        if phys:
+            delta = float(phys["delta_cost"])
+            delta_style = "red" if delta > 0 else "green"
+            summary = Text()
+            summary.append(
+                f"  placement ({phys['x_center']:.0f},{phys['y_center']:.0f}) "
+                f"{phys['w']:.0f}x{phys['h']:.0f} rot{phys['rotation']}  ",
+                style="dim",
+            )
+            summary.append(
+                f"cost {phys['cost_before']:.1f} \u2192 {phys['cost_after']:.1f} ",
+                style="dim",
+            )
+            summary.append(f"(delta={delta:+.2f})", style=delta_style)
+            console.print(summary)
+
+            breakdown = phys.get("breakdown") or {}
+            if breakdown:
+                bt = Table(
+                    title="Reward Breakdown", title_style="bold",
+                    box=None, padding=(0, 1),
+                )
+                bt.add_column("Component", style="bold cyan")
+                bt.add_column("Delta", justify="right")
+                bt.add_column("Share", style="muted", justify="right")
+                total = 0.0
+                for name, rec in breakdown.items():
+                    vf = float(rec.get("delta", 0.0))
+                    total += vf
+                    s = "red" if vf > 0 else "green"
+                    share = (vf / delta * 100.0) if delta != 0.0 else 0.0
+                    bt.add_row(
+                        name,
+                        f"[{s}]{vf:+.2f}[/{s}]",
+                        f"{share:+.0f}%",
+                    )
+                bt.add_row("total", f"{total:+.2f}", "")
+                console.print(bt)
+                for name, rec in breakdown.items():
+                    meta_after = rec.get("metadata_after") or {}
+                    if meta_after:
+                        _print_struct(name, meta_after)
+
+        signals = info.get("signals") or {}
+        for src, sig in signals.items():
+            cands = sig.get("candidates", [])
+            if not cands:
+                continue
+            ct = Table(
+                title=f"Candidates [{src}]", title_style="bold", border_style="dim",
+            )
+            ct.add_column("Rank", justify="right")
+            ct.add_column("Action", justify="right")
+            ct.add_column("Pos")
+            ct.add_column("Delta", justify="right")
+            ct.add_column("Score", justify="right")
+            has_visits = any("visits" in c for c in cands)
+            if has_visits:
+                ct.add_column("Visits", justify="right")
+            ct.add_column("", style="accent")
+            for c in cands:
+                delta_s = f"{c['delta']:+.2f}" if "delta" in c else "-"
+                score_s = f"{c['score']:.3f}" if "score" in c else "-"
+                row = [
+                    str(c["rank"]),
+                    str(c["action"]),
+                    f"({c['pos'][0]:.0f},{c['pos'][1]:.0f})",
+                    delta_s,
+                    score_s,
+                ]
+                if has_visits:
+                    row.append(f"{int(c.get('visits', 0))}")
+                row.append("chosen" if c.get("chosen") else "")
+                ct.add_row(*row)
+            console.print(ct)
+
+        if not phys and not signals:
+            console.print("  [muted](no placement or signals recorded)[/muted]")
+            return
 
     # ── render system ─────────────────────────────────────────────────
 
@@ -954,6 +1179,7 @@ class ExplorerREPL(cmd.Cmd):
             ("Analysis", [
                 ("candidates [n]", "Show top-N candidate positions"),
                 ("detail [node_id]", "Show physical placement detail"),
+                ("explain [node_id]", "Why this placement? breakdown + alternatives"),
                 ("tree [depth]", "Show decision tree"),
                 ("query best", "Best terminal path"),
                 ("query topk [k]", "Top-K terminal paths"),

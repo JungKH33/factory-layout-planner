@@ -37,6 +37,9 @@ EventCallback = Callable[[TraceEvent], None]
 class Explorer:
     """Pipeline-level decision explorer with branching, undo, and multi-source signals."""
 
+    #: Default top-K candidates captured per signal.
+    candidates_top_k: int = 5
+
     def __init__(
         self,
         engine: FactoryLayoutEnv,
@@ -122,6 +125,122 @@ class Explorer:
     def current(self) -> DecisionNode:
         return self.tree.active_node()
 
+    def detail(
+        self,
+        node_id: Optional[int] = None,
+        *,
+        fallback_to_parent: bool = True,
+    ) -> Dict[str, Any]:
+        """Return the physical placement detail for *node_id* (default: active).
+
+        Looks up the node, optionally walks to its parent when the node has no
+        :class:`PhysicalContext` (typically a freshly-created post-step child
+        that hasn't been stepped through yet). Returns a flat dict::
+
+            {"node_id", "gid", "step", "terminal", "physical"}
+
+        where ``physical`` is the result of
+        :meth:`PhysicalContext.to_dict` or ``None``. Raises :class:`KeyError`
+        for unknown ids.
+        """
+        target = self.tree.active_id if node_id is None else int(node_id)
+        if target not in self.tree.nodes:
+            raise KeyError(f"Node {target} not in tree")
+        node = self.tree.nodes[target]
+
+        if (
+            fallback_to_parent
+            and node.physical is None
+            and node.parent_id is not None
+        ):
+            parent = self.tree.nodes.get(node.parent_id)
+            if parent is not None and parent.physical is not None:
+                node = parent
+
+        return {
+            "node_id": node.id,
+            "gid": node.group_id,
+            "step": node.step,
+            "terminal": node.terminal,
+            "physical": node.physical.to_dict() if node.physical else None,
+        }
+
+    def candidates(
+        self,
+        node_id: Optional[int] = None,
+        *,
+        source: str = "agent",
+        top_k: Optional[int] = None,
+        compute_if_missing: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return cached top-K candidates from *source*'s signal.
+
+        Reads :attr:`Signal.metadata['candidates']` at *node_id* (default:
+        active). When *compute_if_missing* is true and the signal is absent
+        on the active node, triggers the matching predictor
+        (:meth:`predict_agent` / :meth:`predict_search`). Remote nodes are
+        never auto-predicted. Returns an empty list for terminal nodes or
+        when the signal is unavailable. Each entry is the plain dict built
+        by :meth:`_build_candidates`.
+        """
+        target = self.tree.active_id if node_id is None else int(node_id)
+        if target not in self.tree.nodes:
+            raise KeyError(f"Node {target} not in tree")
+        node = self.tree.nodes[target]
+        if node.terminal:
+            return []
+        sig = node.signals.get(source)
+        if sig is None and compute_if_missing and target == self.tree.active_id:
+            if source == "agent":
+                sig = self.predict_agent()
+            elif source.startswith("search") and self.search is not None:
+                sig = self.predict_search()
+        if sig is None:
+            return []
+        cands = list(sig.metadata.get("candidates", []))
+        if top_k is not None and int(top_k) > 0:
+            cands = cands[: int(top_k)]
+        return cands
+
+    def explain(self, node_id: Optional[int] = None) -> Dict[str, Any]:
+        """Return a structured explanation of the decision at *node_id*.
+
+        Pure read-only composition of ``physical.breakdown`` (per-reward
+        contribution), ``Signal.metadata['candidates']`` (top-K considered),
+        and the chosen signal into a single dict — intended for LLM tool
+        responses and UI rendering. Defaults to the active node when
+        *node_id* is ``None``. Raises :class:`KeyError` for unknown ids.
+        """
+        target = self.tree.active_id if node_id is None else int(node_id)
+        if target not in self.tree.nodes:
+            raise KeyError(f"Node {target} not in tree")
+        node = self.tree.nodes[target]
+
+        signals_out: Dict[str, Dict[str, Any]] = {}
+        for name, sig in node.signals.items():
+            other_meta = {k: v for k, v in sig.metadata.items() if k != "candidates"}
+            signals_out[name] = {
+                "recommended_action": int(sig.recommended_action),
+                "recommended_value": float(sig.recommended_value),
+                "candidates": list(sig.metadata.get("candidates", [])),
+                "metadata": other_meta,
+            }
+
+        return {
+            "node_id": node.id,
+            "parent_id": node.parent_id,
+            "step": node.step,
+            "gid": node.group_id,
+            "chosen_action": node.chosen_action,
+            "chosen_by": node.chosen_by,
+            "terminal": node.terminal,
+            "reward": float(node.reward),
+            "cum_reward": float(node.cum_reward),
+            "cost_after": node.cost_after,
+            "physical": node.physical.to_dict() if node.physical else None,
+            "signals": signals_out,
+        }
+
     def state_summary(self) -> Dict[str, Any]:
         state = self.engine.get_state()
         node = self.current()
@@ -162,12 +281,31 @@ class Explorer:
         action = int(self.agent.select_action(obs=obs, action_space=action_space))
         scores = scores_t.detach().cpu().numpy().astype(np.float32)
 
+        # Top-K candidates: rank by delta cost (lower = better) when available,
+        # else fall back to ranking by -score (higher score = better).
+        action_costs = obs.get("action_costs", None)
+        if isinstance(action_costs, torch.Tensor) and int(action_costs.numel()) == int(action_space.centers.shape[0]):
+            candidates = self._build_candidates(
+                action_space=action_space,
+                rank_key=action_costs,
+                delta_costs=action_costs,
+                score=scores_t,
+                chosen_action=action,
+            )
+        else:
+            candidates = self._build_candidates(
+                action_space=action_space,
+                rank_key=-scores_t,
+                score=scores_t,
+                chosen_action=action,
+            )
+
         signal = Signal(
             source="agent",
             scores=scores,
             recommended_action=action,
             recommended_value=value,
-            metadata={"value_estimate": value},
+            metadata={"value_estimate": value, "candidates": candidates},
         )
 
         node = self.current()
@@ -243,6 +381,19 @@ class Explorer:
         visit_sum = float(visits.sum())
         scores = (visits / visit_sum).astype(np.float32) if visit_sum > 0 else np.zeros(n, dtype=np.float32)
 
+        # Top-K candidates: rank by -visits (more visits = better).
+        visits_t = torch.as_tensor(visits, dtype=torch.float32)
+        values_t = torch.as_tensor(values, dtype=torch.float32)
+        candidates = self._build_candidates(
+            action_space=action_space,
+            rank_key=-visits_t,
+            score=values_t,
+            chosen_action=output.action,
+        )
+        # Carry visits through explicitly alongside value per candidate.
+        for entry in candidates:
+            entry["visits"] = float(visits_t.view(-1)[entry["action"]].item())
+
         signal = Signal(
             source=f"search:{algo_name}",
             scores=scores,
@@ -255,6 +406,7 @@ class Explorer:
                 "visits": visits.tolist(),
                 "top_k": output.top_k,
                 "worker_action": output.worker_action,
+                "candidates": candidates,
             },
         )
 
@@ -308,14 +460,18 @@ class Explorer:
             placement = self.adapter.resolve_action(action_index, action_space)
 
         cost_before = float(self.engine.cost())
+        records_before = self._snapshot_eval_records()
 
         _obs, reward, terminated, truncated, info = self.engine.step(placement)
 
         cost_after = float(self.engine.cost())
+        records_after = self._snapshot_eval_records()
 
         # build PhysicalContext from the resolved placement
         physical = self._build_physical_context(
             placement, cost_before, cost_after,
+            records_before=records_before,
+            records_after=records_after,
         )
 
         # record on current node
@@ -588,11 +744,106 @@ class Explorer:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _build_candidates(
+        self,
+        *,
+        action_space: ActionSpace,
+        rank_key: torch.Tensor,
+        delta_costs: Optional[torch.Tensor] = None,
+        score: Optional[torch.Tensor] = None,
+        chosen_action: int = -1,
+        k: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return top-K candidates as plain dicts (sorted by *rank_key* ascending).
+
+        Each dict carries ``{action, pos, rank, chosen}`` plus optional
+        ``delta`` (from *delta_costs*), ``score`` (from *score*), and
+        ``variant`` (from :attr:`ActionSpace.variant_indices`). Invalid actions
+        are excluded.
+        """
+        k = int(k) if k is not None else int(self.candidates_top_k)
+        if k <= 0 or int(action_space.centers.shape[0]) <= 0:
+            return []
+        valid = action_space.valid_mask.view(-1)
+        valid_idx = torch.where(valid)[0]
+        if int(valid_idx.numel()) == 0:
+            return []
+        keys = rank_key.to(dtype=torch.float32).view(-1)[valid_idx]
+        order = torch.argsort(keys)
+        picks = valid_idx[order[: k]]
+        centers = action_space.centers
+        variant_indices = action_space.variant_indices
+        out: List[Dict[str, Any]] = []
+        for rank, idx_t in enumerate(picks.tolist()):
+            idx = int(idx_t)
+            pos = centers[idx].tolist()
+            entry: Dict[str, Any] = {
+                "action": idx,
+                "pos": [float(pos[0]), float(pos[1])],
+                "rank": int(rank),
+                "chosen": idx == int(chosen_action),
+            }
+            if delta_costs is not None:
+                entry["delta"] = float(delta_costs.view(-1)[idx].item())
+            if score is not None:
+                entry["score"] = float(score.view(-1)[idx].item())
+            if variant_indices is not None:
+                entry["variant"] = int(variant_indices.view(-1)[idx].item())
+            out.append(entry)
+        return out
+
+    def _snapshot_eval_records(self) -> Dict[str, Dict[str, Any]]:
+        """Snapshot full per-reward records from :class:`EvalState`.
+
+        Returns ``{name: record}`` where each record carries
+        ``weighted_cost``, ``raw_cost``, ``weight``, and ``metadata``
+        (verbatim from the reward component). Combines base and terminal
+        phases; on name collision terminal is merged into base's weighted
+        bucket. Empty dict if eval state is unavailable.
+        """
+        try:
+            eval_state = self.engine.get_state().eval
+        except AttributeError:
+            return {}
+        records: Dict[str, Dict[str, Any]] = {}
+        for name, rec in eval_state.base_rewards.items():
+            records[str(name)] = {
+                "weighted_cost": float(rec.get("weighted_cost", 0.0)),
+                "raw_cost": float(rec.get("raw_cost", 0.0)),
+                "weight": float(rec.get("weight", 1.0)),
+                "metadata": dict(rec.get("metadata", {}) or {}),
+                "phase": "base",
+            }
+        for name, rec in eval_state.terminal_rewards.items():
+            key = str(name)
+            delta = float(rec.get("delta_cost", 0.0))
+            metadata = dict(rec.get("metadata", {}) or {})
+            if key in records:
+                # Merge terminal delta into base bucket's weighted cost.
+                records[key]["weighted_cost"] += delta
+                records[key]["metadata"] = {
+                    **records[key]["metadata"],
+                    "_terminal": metadata,
+                }
+                records[key]["phase"] = "mixed"
+            else:
+                records[key] = {
+                    "weighted_cost": delta,
+                    "raw_cost": delta,
+                    "weight": 1.0,
+                    "metadata": metadata,
+                    "phase": "terminal",
+                }
+        return records
+
     def _build_physical_context(
         self,
         placement: GroupPlacement,
         cost_before: float,
         cost_after: float,
+        *,
+        records_before: Optional[Dict[str, Dict[str, Any]]] = None,
+        records_after: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Optional[PhysicalContext]:
         """Extract PhysicalContext from a resolved placement after engine step."""
         try:
@@ -624,6 +875,35 @@ class Explorer:
                     weight=weight, distance=total_dist,
                 ))
 
+            breakdown: Dict[str, Dict[str, Any]] = {}
+            if records_before is not None and records_after is not None:
+                keys = set(records_before) | set(records_after)
+                for key in keys:
+                    rec_b = records_before.get(key) or {}
+                    rec_a = records_after.get(key) or {}
+                    w_before = float(rec_b.get("weighted_cost", 0.0))
+                    w_after = float(rec_a.get("weighted_cost", 0.0))
+                    delta = w_after - w_before
+                    raw_before = float(rec_b.get("raw_cost", 0.0))
+                    raw_after = float(rec_a.get("raw_cost", 0.0))
+                    meta_before = dict(rec_b.get("metadata", {}) or {})
+                    meta_after = dict(rec_a.get("metadata", {}) or {})
+                    if (
+                        delta == 0.0
+                        and raw_before == raw_after
+                        and not meta_before
+                        and not meta_after
+                    ):
+                        continue
+                    breakdown[key] = {
+                        "delta": float(delta),
+                        "raw_before": raw_before,
+                        "raw_after": raw_after,
+                        "weight": float(rec_a.get("weight", rec_b.get("weight", 1.0))),
+                        "metadata_before": meta_before,
+                        "metadata_after": meta_after,
+                    }
+
             return PhysicalContext(
                 gid=str(gid),
                 x=x_bl, y=y_bl, w=w, h=h,
@@ -636,6 +916,7 @@ class Explorer:
                 cost_before=cost_before,
                 cost_after=cost_after,
                 affected_flows=affected,
+                breakdown=breakdown,
             )
         except Exception:
             logger.debug("Failed to build PhysicalContext", exc_info=True)
