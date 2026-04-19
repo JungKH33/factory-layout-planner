@@ -83,14 +83,12 @@ def apply_interchange_to_env(
             or new_ma != old_spec.merge_allow
         )
         if needs_update:
-            from lane_generation.envs.state.state import LaneFlowSpec
+            from lane_generation.envs.state.lane import LaneFlowSpec
             new_specs = list(state.flow_specs)
             new_specs[fi] = LaneFlowSpec(
-                src_gid=old_spec.src_gid,
-                dst_gid=old_spec.dst_gid,
+                src=old_spec.src,
+                dst=old_spec.dst,
                 weight=old_spec.weight,
-                src_ports=old_spec.src_ports,
-                dst_ports=old_spec.dst_ports,
                 reverse_allow=new_ra if new_ra is not None else None,
                 merge_allow=new_ma if new_ma is not None else None,
                 lane_width=float(new_lw),

@@ -13,7 +13,15 @@ from .interchange import (
     apply_interchange_to_env,
     restore_lane_from_files,
 )
-from .state import LaneFlowSpec, LaneState, RoutingConfig
+from .state import (
+    LaneFlowSpec,
+    LaneState,
+    PortGroup,
+    PortPolicy,
+    PortSelector,
+    PortSpec,
+    RoutingConfig,
+)
 
 __all__ = [
     "LaneAction",
@@ -29,6 +37,10 @@ __all__ = [
     "load_lane_env",
     "LaneFlowSpec",
     "LaneState",
+    "PortGroup",
+    "PortPolicy",
+    "PortSelector",
+    "PortSpec",
     "LaneNewEdgeReward",
     "LanePathLengthReward",
     "LaneTurnReward",

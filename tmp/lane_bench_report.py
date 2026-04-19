@@ -41,7 +41,7 @@ from lane_generation.envs.routing import (
     RoutingStrategy,
     WavefrontStrategy,
 )
-from lane_generation.envs.state import LaneFlowSpec
+from lane_generation.envs.state import LaneFlowSpec, PortSelector, PortSpec
 
 
 ALGORITHMS = ("wavefront", "astar", "dijkstra")
@@ -57,6 +57,7 @@ class Scenario:
     grid_h: int
     blocked: torch.Tensor
     flows: List[LaneFlowSpec]
+    ports: dict
 
 
 def _empty(gw: int, gh: int) -> torch.Tensor:
@@ -94,57 +95,61 @@ def _maze(gw: int, gh: int) -> torch.Tensor:
     return m
 
 
-def _flows_simple(gw: int, gh: int) -> List[LaneFlowSpec]:
+def _mk_flow(sg: str, dg: str, w: float, src_xy, dst_xy,
+             catalog: dict) -> LaneFlowSpec:
+    src_ids: List[str] = []
+    for i, (x, y) in enumerate(src_xy):
+        pid = f"{sg}.ex.{i}"
+        catalog[pid] = PortSpec(port_id=pid, gid=sg, xy=(int(x), int(y)), kind="exit")
+        src_ids.append(pid)
+    dst_ids: List[str] = []
+    for i, (x, y) in enumerate(dst_xy):
+        pid = f"{dg}.en.{i}"
+        catalog[pid] = PortSpec(port_id=pid, gid=dg, xy=(int(x), int(y)), kind="entry")
+        dst_ids.append(pid)
+    return LaneFlowSpec(
+        src=PortSelector(gid=sg, port_ids=tuple(src_ids)),
+        dst=PortSelector(gid=dg, port_ids=tuple(dst_ids)),
+        weight=float(w),
+    )
+
+
+def _flows_simple(gw: int, gh: int, catalog: dict) -> List[LaneFlowSpec]:
     return [
-        LaneFlowSpec(
-            src_gid="A", dst_gid="B", weight=1.0,
-            src_ports=((10, 10),), dst_ports=((gw - 10, gh - 10),),
-        ),
-        LaneFlowSpec(
-            src_gid="A", dst_gid="C", weight=0.9,
-            src_ports=((10, 10),), dst_ports=((gw - 10, 10),),
-        ),
-        LaneFlowSpec(
-            src_gid="D", dst_gid="E", weight=0.7,
-            src_ports=((10, gh - 10),), dst_ports=((gw - 10, gh - 10),),
-        ),
+        _mk_flow("A", "B", 1.0, ((10, 10),), ((gw - 10, gh - 10),), catalog),
+        _mk_flow("A", "C", 0.9, ((10, 10),), ((gw - 10, 10),), catalog),
+        _mk_flow("D", "E", 0.7, ((10, gh - 10),), ((gw - 10, gh - 10),), catalog),
     ]
 
 
-def _flows_mixed(gw: int, gh: int) -> List[LaneFlowSpec]:
+def _flows_mixed(gw: int, gh: int, catalog: dict) -> List[LaneFlowSpec]:
     mid_y = gh // 2
     return [
-        LaneFlowSpec(
-            src_gid="A", dst_gid="B", weight=1.0,
-            src_ports=((10, 10),), dst_ports=((gw - 10, gh - 10),),
-        ),
-        LaneFlowSpec(
-            src_gid="C", dst_gid="D", weight=0.8,
-            src_ports=((10, gh - 10),), dst_ports=((gw - 10, 10),),
-        ),
-        LaneFlowSpec(
-            src_gid="E", dst_gid="F", weight=0.6,
-            src_ports=((10, mid_y - 20), (10, mid_y), (10, mid_y + 20)),
-            dst_ports=((gw - 10, mid_y),),
-        ),
-        LaneFlowSpec(
-            src_gid="G", dst_gid="H", weight=0.5,
-            src_ports=((20, 20), (20, 30)),
-            dst_ports=((gw - 20, gh - 20), (gw - 20, gh - 30)),
-        ),
+        _mk_flow("A", "B", 1.0, ((10, 10),), ((gw - 10, gh - 10),), catalog),
+        _mk_flow("C", "D", 0.8, ((10, gh - 10),), ((gw - 10, 10),), catalog),
+        _mk_flow("E", "F", 0.6,
+                 ((10, mid_y - 20), (10, mid_y), (10, mid_y + 20)),
+                 ((gw - 10, mid_y),), catalog),
+        _mk_flow("G", "H", 0.5,
+                 ((20, 20), (20, 30)),
+                 ((gw - 20, gh - 20), (gw - 20, gh - 30)), catalog),
     ]
 
 
 def make_scenarios() -> List[Scenario]:
     out: List[Scenario] = []
+    def _scn(name, gw, gh, blocked, flows_fn):
+        cat: dict = {}
+        flows = flows_fn(gw, gh, cat)
+        return Scenario(name, gw, gh, blocked, flows, cat)
     gw, gh = 80, 80
-    out.append(Scenario("empty_80", gw, gh, _empty(gw, gh), _flows_simple(gw, gh)))
+    out.append(_scn("empty_80", gw, gh, _empty(gw, gh), _flows_simple))
     gw, gh = 150, 150
-    out.append(Scenario("empty_150", gw, gh, _empty(gw, gh), _flows_mixed(gw, gh)))
-    out.append(Scenario("sparse_150", gw, gh, _sparse(gw, gh), _flows_mixed(gw, gh)))
+    out.append(_scn("empty_150", gw, gh, _empty(gw, gh), _flows_mixed))
+    out.append(_scn("sparse_150", gw, gh, _sparse(gw, gh), _flows_mixed))
     gw, gh = 200, 200
-    out.append(Scenario("dense_200", gw, gh, _dense(gw, gh), _flows_mixed(gw, gh)))
-    out.append(Scenario("maze_200", gw, gh, _maze(gw, gh), _flows_mixed(gw, gh)))
+    out.append(_scn("dense_200", gw, gh, _dense(gw, gh), _flows_mixed))
+    out.append(_scn("maze_200", gw, gh, _maze(gw, gh), _flows_mixed))
     return out
 
 
@@ -208,6 +213,7 @@ def bench_scenario(scn: Scenario, device: torch.device) -> Dict[str, dict]:
         grid_height=scn.grid_h,
         blocked_static=scn.blocked.to(device),
         flows=scn.flows,
+        port_specs=scn.ports,
         device=device,
         routing_config=RoutingConfig(
             selection="static",

@@ -1,26 +1,31 @@
 """Flat state object for the lane-generation env.
 
 ``LaneState`` flattens the directed-edge graph, the per-flow tensor bundle,
-and the runtime placement bookkeeping into one object.
+the port policy catalog (see :mod:`.port`), and the runtime routing
+bookkeeping into one object.
 
 Lifecycle:
 
-* :meth:`LaneState.build` constructs everything in one shot — edge tables
-  and flow arrays.
+* :meth:`LaneState.build` constructs everything in one shot — edge tables,
+  flow arrays, and the :class:`PortPolicy` catalog.
 * :meth:`LaneState.copy` shares static tensors/caches by reference and clones
-  only runtime route state, so MCTS snapshots stay cheap.
+  only runtime route state + runtime port counters, so MCTS snapshots stay
+  cheap.
 * :meth:`LaneState.apply_route` records directed edges and lane slots on
-  ``edge_map`` / ``edge_lane_mask``.
+  ``edge_map`` / ``edge_lane_mask``, and commits the chosen src/dst ports
+  to :class:`PortPolicy` so subsequent flows see the updated capacity and
+  group-lock state.
 """
 from __future__ import annotations
 
 import random as _random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import torch
 
 from ..action import LaneRoute
+from .port import PortGroup, PortPolicy, PortSelector, PortSpec
 
 
 # ----------------------------------------------------------------------
@@ -30,11 +35,15 @@ from ..action import LaneRoute
 
 @dataclass(frozen=True)
 class LaneFlowSpec:
-    src_gid: str
-    dst_gid: str
+    """Flow declaration with structured src/dst port selectors.
+
+    The owning ``gid`` is carried inside each :class:`PortSelector`; callers
+    read it as ``spec.src.gid`` / ``spec.dst.gid``.
+    """
+
+    src: PortSelector
+    dst: PortSelector
     weight: float
-    src_ports: Tuple[Tuple[int, int], ...]
-    dst_ports: Tuple[Tuple[int, int], ...]
     reverse_allow: Optional[bool] = None
     merge_allow: Optional[bool] = None
     lane_width: float = 1.0
@@ -135,14 +144,16 @@ def _build_edge_tables(
 def _build_flow_arrays(
     flows: Sequence[LaneFlowSpec],
     *,
+    policy: PortPolicy,
     device: torch.device,
     ordering: str = "weight_desc",
 ) -> Dict[str, Any]:
     """Materialize the per-flow tensor bundle for :class:`LaneState`.
 
-    Returns a dict containing all per-flow tensors plus the flat lists of
-    src/dst gids and a python ``total_weight`` float. ``ordering`` controls
-    the routing order returned in ``flow_order``.
+    Each flow's ``src_ports`` / ``dst_ports`` row holds the **full static pool**
+    of cells referenced by the :class:`PortSelector` (ignoring runtime
+    capacity / group locks).  Runtime filtering is applied by
+    :meth:`LaneState.valid_ports` through :class:`PortPolicy`.
     """
     dev = torch.device(device)
     f = len(flows)
@@ -151,8 +162,22 @@ def _build_flow_arrays(
     src_gid: List[str] = []
     dst_gid: List[str] = []
 
-    smax = max((len(x.src_ports) for x in flows), default=0)
-    dmax = max((len(x.dst_ports) for x in flows), default=0)
+    static_src_pool: List[List[Tuple[int, int]]] = []
+    static_dst_pool: List[List[Tuple[int, int]]] = []
+    for spec in flows:
+        src_pool: List[Tuple[int, int]] = []
+        for pid in policy._selector_port_ids(spec.src):
+            p = policy.port_specs[pid]
+            src_pool.append((int(p.xy[0]), int(p.xy[1])))
+        dst_pool: List[Tuple[int, int]] = []
+        for pid in policy._selector_port_ids(spec.dst):
+            p = policy.port_specs[pid]
+            dst_pool.append((int(p.xy[0]), int(p.xy[1])))
+        static_src_pool.append(src_pool)
+        static_dst_pool.append(dst_pool)
+
+    smax = max((len(pool) for pool in static_src_pool), default=0)
+    dmax = max((len(pool) for pool in static_dst_pool), default=0)
     smax = max(1, int(smax))
     dmax = max(1, int(dmax))
     src_ports = torch.zeros((f, smax, 2), dtype=torch.long, device=dev)
@@ -162,13 +187,13 @@ def _build_flow_arrays(
 
     for i, spec in enumerate(flows):
         weights[i] = float(spec.weight)
-        src_gid.append(str(spec.src_gid))
-        dst_gid.append(str(spec.dst_gid))
-        for j, (x, y) in enumerate(spec.src_ports):
+        src_gid.append(str(spec.src.gid))
+        dst_gid.append(str(spec.dst.gid))
+        for j, (x, y) in enumerate(static_src_pool[i]):
             src_ports[i, j, 0] = int(x)
             src_ports[i, j, 1] = int(y)
             src_mask[i, j] = True
-        for j, (x, y) in enumerate(spec.dst_ports):
+        for j, (x, y) in enumerate(static_dst_pool[i]):
             dst_ports[i, j, 0] = int(x)
             dst_ports[i, j, 1] = int(y)
             dst_mask[i, j] = True
@@ -212,6 +237,7 @@ class LaneState:
     * Runtime placed-lane bits.
     * Per-flow tensor bundle (shared by reference across copies).
     * Per-flow python metadata (gids, original specs).
+    * Port policy catalog + runtime counters (:class:`PortPolicy`).
     * Episode progression.
     * Static pathfinding caches.
     """
@@ -239,6 +265,8 @@ class LaneState:
     src_gid: List[str]
     dst_gid: List[str]
     flow_specs: Tuple[LaneFlowSpec, ...]
+
+    port_policy: PortPolicy
 
     step_count: int
     routed_mask: torch.Tensor
@@ -278,6 +306,8 @@ class LaneState:
         grid_width: int,
         blocked_static: torch.Tensor,
         flows: Sequence[LaneFlowSpec],
+        port_specs: Mapping[str, PortSpec],
+        port_groups: Mapping[str, PortGroup],
         device: torch.device,
         flow_ordering: str = "weight_desc",
     ) -> "LaneState":
@@ -288,7 +318,14 @@ class LaneState:
             blocked_static=blocked_static,
             device=dev,
         )
-        flow_arrays = _build_flow_arrays(flows, device=dev, ordering=flow_ordering)
+        policy = PortPolicy.build(
+            port_specs=port_specs,
+            port_groups=port_groups,
+            device=dev,
+        )
+        flow_arrays = _build_flow_arrays(
+            flows, policy=policy, device=dev, ordering=flow_ordering,
+        )
         f = len(flows)
 
         return cls(
@@ -313,6 +350,7 @@ class LaneState:
             src_gid=list(flow_arrays["src_gid"]),
             dst_gid=list(flow_arrays["dst_gid"]),
             flow_specs=tuple(flows),
+            port_policy=policy,
             step_count=0,
             routed_mask=torch.zeros((f,), dtype=torch.bool, device=dev),
             route_lane_slots_by_flow={},
@@ -349,6 +387,7 @@ class LaneState:
             src_gid=self.src_gid,
             dst_gid=self.dst_gid,
             flow_specs=self.flow_specs,
+            port_policy=self.port_policy.copy(),
             step_count=int(self.step_count),
             routed_mask=self.routed_mask.clone(),
             route_lane_slots_by_flow=dict(self.route_lane_slots_by_flow),
@@ -386,6 +425,7 @@ class LaneState:
         self.edge_width_accum.copy_(src.edge_width_accum.to(device=self.device, dtype=torch.float32))
         self._current_lane_width = float(src._current_lane_width)
         self._runtime_last_dist_map = None
+        self.port_policy.restore(src.port_policy)
 
     def reset_runtime(self) -> None:
         self.lane_dir_flat.zero_()
@@ -398,6 +438,7 @@ class LaneState:
         self.edge_width_accum.zero_()
         self._current_lane_width = 1.0
         self._runtime_last_dist_map = None
+        self.port_policy.reset_runtime()
 
     # ------------------------------------------------------------------
     # Group port lookup & per-route free map
@@ -407,11 +448,9 @@ class LaneState:
         if self._static_port_cells_by_gid is not None:
             return self._static_port_cells_by_gid
         cache: Dict[str, List[Tuple[int, int]]] = {}
-        for spec in self.flow_specs:
-            for gid, ports in ((spec.src_gid, spec.src_ports), (spec.dst_gid, spec.dst_ports)):
-                cells = cache.setdefault(gid, [])
-                for xy in ports:
-                    cells.append((int(xy[0]), int(xy[1])))
+        for spec in self.port_policy.port_specs.values():
+            cells = cache.setdefault(spec.gid, [])
+            cells.append((int(spec.xy[0]), int(spec.xy[1])))
         result: Dict[str, torch.Tensor] = {}
         for gid, cells in cache.items():
             t = torch.tensor(cells, dtype=torch.long, device=self.device)
@@ -422,11 +461,9 @@ class LaneState:
     def _ensure_static_port_xy_set(self) -> Set[Tuple[int, int]]:
         if self._static_port_xy_set is not None:
             return self._static_port_xy_set
-        cells_by_gid = self._ensure_static_port_cells_by_gid()
         out: Set[Tuple[int, int]] = set()
-        for cells in cells_by_gid.values():
-            for p in cells.detach().cpu().tolist():
-                out.add((int(p[0]), int(p[1])))
+        for spec in self.port_policy.port_specs.values():
+            out.add((int(spec.xy[0]), int(spec.xy[1])))
         self._static_port_xy_set = out
         return out
 
@@ -760,9 +797,14 @@ class LaneState:
         return self.src_gid[i], self.dst_gid[i], float(self.weights[i].item())
 
     def valid_ports(self, flow_index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        i = int(flow_index)
-        src = self.src_ports[i][self.src_mask[i]]
-        dst = self.dst_ports[i][self.dst_mask[i]]
+        """Runtime-filtered ``(src_xy, dst_xy)`` for *flow_index*.
+
+        Delegates to :class:`PortPolicy` so port capacity and group-lock
+        constraints are applied.
+        """
+        spec = self.flow_specs[int(flow_index)]
+        src = self.port_policy.resolve_xy(spec.src)
+        dst = self.port_policy.resolve_xy(spec.dst)
         return src, dst
 
     def flow_reverse_allow(self, flow_index: int) -> bool:
@@ -797,6 +839,23 @@ class LaneState:
     # Stepping
     # ------------------------------------------------------------------
 
+    def _commit_route_port_selection(self, flow_index: int, edge_ids: torch.Tensor) -> None:
+        """Commit the src/dst ports actually used by *edge_ids* to port_policy."""
+        if int(edge_ids.numel()) == 0:
+            return
+        spec = self.flow_specs[int(flow_index)]
+        w = int(self.grid_width)
+        first_eid = int(edge_ids[0].item())
+        last_eid = int(edge_ids[-1].item())
+        src_cell = int(self.edge_src_cell[first_eid].item())
+        dst_cell = int(self.edge_dst_cell[last_eid].item())
+        if src_cell >= 0:
+            src_xy = (int(src_cell % w), int(src_cell // w))
+            self.port_policy.commit_xy(spec.src, src_xy)
+        if dst_cell >= 0:
+            dst_xy = (int(dst_cell % w), int(dst_cell // w))
+            self.port_policy.commit_xy(spec.dst, dst_xy)
+
     def apply_route(self, route: LaneRoute) -> None:
         if self.done:
             raise RuntimeError("cannot apply route: already done")
@@ -829,6 +888,7 @@ class LaneState:
         self.apply_edges(e, lane_slots=lane_slots)
         self.route_lane_slots_by_flow[int(cur)] = tuple(lane_slots)
         self.routed_mask[int(cur)] = True
+        self._commit_route_port_selection(int(cur), e)
         self.step_count += 1
 
     def step(self, *, apply: bool, route: Optional[LaneRoute] = None) -> None:

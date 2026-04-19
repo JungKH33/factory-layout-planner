@@ -12,7 +12,7 @@ from lane_generation.agents.placement.greedy import LaneAdapter, LaneAdapterConf
 
 from .env import FactoryLaneEnv
 from .state import RoutingConfig
-from .state import LaneFlowSpec
+from .state import LaneFlowSpec, PortGroup, PortSelector, PortSpec
 
 
 @dataclass(frozen=True)
@@ -97,6 +97,9 @@ def load_lane_env(
     flow_lane_widths: Optional[Dict[Tuple[str, str], float]] = None,
     flow_reverse_allow: Optional[Dict[Tuple[str, str], bool]] = None,
     flow_merge_allow: Optional[Dict[Tuple[str, str], bool]] = None,
+    port_max_flows: Optional[Dict[str, int]] = None,
+    port_groups: Optional[Dict[str, PortGroup]] = None,
+    extra_port_specs: Optional[Dict[str, PortSpec]] = None,
 ) -> LoadedLaneEnv:
     """Load a lane-generation environment.
 
@@ -120,28 +123,61 @@ def load_lane_env(
     _widths: Dict[Tuple[str, str], float] = flow_lane_widths or {}
     _rev: Dict[Tuple[str, str], bool] = flow_reverse_allow or {}
     _mrg: Dict[Tuple[str, str], bool] = flow_merge_allow or {}
+    _maxflows: Dict[str, int] = port_max_flows or {}
+
+    port_catalog: Dict[str, PortSpec] = {}
+    exit_ids_by_gid: Dict[str, Tuple[str, ...]] = {}
+    entry_ids_by_gid: Dict[str, Tuple[str, ...]] = {}
+    for gid, placement in gstate.placements.items():
+        if placement is None:
+            continue
+        g = str(gid)
+        ex_ids: List[str] = []
+        for i, xy in enumerate(_ports_from_placement(placement, kind="exit_points")):
+            pid = f"{g}.ex.{i}"
+            port_catalog[pid] = PortSpec(
+                port_id=pid, gid=g, xy=(int(xy[0]), int(xy[1])),
+                kind="exit", max_flows=int(_maxflows.get(pid, 0)),
+            )
+            ex_ids.append(pid)
+        exit_ids_by_gid[g] = tuple(ex_ids)
+        en_ids: List[str] = []
+        for i, xy in enumerate(_ports_from_placement(placement, kind="entry_points")):
+            pid = f"{g}.en.{i}"
+            port_catalog[pid] = PortSpec(
+                port_id=pid, gid=g, xy=(int(xy[0]), int(xy[1])),
+                kind="entry", max_flows=int(_maxflows.get(pid, 0)),
+            )
+            en_ids.append(pid)
+        entry_ids_by_gid[g] = tuple(en_ids)
+    if extra_port_specs:
+        for pid, spec in extra_port_specs.items():
+            port_catalog[str(pid)] = spec
+
     flow_specs: List[LaneFlowSpec] = []
     for src_gid, dsts in loaded_group.env.group_flow.items():
         src_p = gstate.placements.get(src_gid, None)
         if src_p is None:
             continue
-        src_ports = tuple(_ports_from_placement(src_p, kind="exit_points"))
+        src_pids = exit_ids_by_gid.get(str(src_gid), ())
+        if not src_pids:
+            continue
         for dst_gid, w in dsts.items():
             dst_p = gstate.placements.get(dst_gid, None)
             if dst_p is None:
                 continue
-            dst_ports = tuple(_ports_from_placement(dst_p, kind="entry_points"))
+            dst_pids = entry_ids_by_gid.get(str(dst_gid), ())
+            if not dst_pids:
+                continue
             key = (str(src_gid), str(dst_gid))
             lw = float(_widths.get(key, 1.0))
             ra = _rev.get(key)
             ma = _mrg.get(key)
             flow_specs.append(
                 LaneFlowSpec(
-                    src_gid=str(src_gid),
-                    dst_gid=str(dst_gid),
+                    src=PortSelector(gid=str(src_gid), port_ids=src_pids),
+                    dst=PortSelector(gid=str(dst_gid), port_ids=dst_pids),
                     weight=float(w),
-                    src_ports=src_ports,
-                    dst_ports=dst_ports,
                     reverse_allow=ra,
                     merge_allow=ma,
                     lane_width=lw,
@@ -158,6 +194,8 @@ def load_lane_env(
         grid_height=int(loaded_group.env.grid_height),
         blocked_static=blocked_static,
         flows=flow_specs,
+        port_specs=port_catalog,
+        port_groups=dict(port_groups or {}),
         device=dev,
         flow_ordering=flow_ordering,
         routing_config=routing_config,

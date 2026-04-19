@@ -70,8 +70,8 @@ def _route_to_dict(route: LaneRoute, state) -> Dict[str, Any]:
 
     out = {
         "flow_index": fi,
-        "src_gid": str(spec.src_gid),
-        "dst_gid": str(spec.dst_gid),
+        "src_gid": str(spec.src.gid),
+        "dst_gid": str(spec.dst.gid),
         "weight": float(spec.weight),
         "lane_width": float(spec.lane_width),
         "success": True,
@@ -94,8 +94,8 @@ def _failed_flow_dict(state, flow_index: int) -> Dict[str, Any]:
     spec = state.flow_specs[int(flow_index)]
     return {
         "flow_index": int(flow_index),
-        "src_gid": str(spec.src_gid),
-        "dst_gid": str(spec.dst_gid),
+        "src_gid": str(spec.src.gid),
+        "dst_gid": str(spec.dst.gid),
         "weight": float(spec.weight),
         "lane_width": float(spec.lane_width),
         "success": False,

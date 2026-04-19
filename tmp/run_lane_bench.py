@@ -9,7 +9,7 @@ import torch
 from lane_generation.agents.placement.greedy import LaneAdapter, LaneAdapterConfig
 from lane_generation.envs.env import FactoryLaneEnv
 from lane_generation.envs.routing import RoutingConfig
-from lane_generation.envs.state import LaneFlowSpec
+from lane_generation.envs.state import LaneFlowSpec, PortSelector, PortSpec
 
 
 GRID_W = 150
@@ -25,29 +25,41 @@ def _make_blocked(grid_w: int, grid_h: int) -> torch.Tensor:
     return m
 
 
-def _make_flows() -> list[LaneFlowSpec]:
+def _mk_flow(sg, dg, w, src_xy, dst_xy, catalog):
+    src_ids = []
+    for i, (x, y) in enumerate(src_xy):
+        pid = f"{sg}.ex.{i}"
+        catalog[pid] = PortSpec(port_id=pid, gid=sg, xy=(int(x), int(y)), kind="exit")
+        src_ids.append(pid)
+    dst_ids = []
+    for i, (x, y) in enumerate(dst_xy):
+        pid = f"{dg}.en.{i}"
+        catalog[pid] = PortSpec(port_id=pid, gid=dg, xy=(int(x), int(y)), kind="entry")
+        dst_ids.append(pid)
+    return LaneFlowSpec(
+        src=PortSelector(gid=sg, port_ids=tuple(src_ids)),
+        dst=PortSelector(gid=dg, port_ids=tuple(dst_ids)),
+        weight=float(w),
+    )
+
+
+def _make_flows() -> tuple[list[LaneFlowSpec], dict]:
     """Mix of single-source (1 port) and multi-source (several ports) flows."""
-    return [
-        # single_src
-        LaneFlowSpec(src_gid="A", dst_gid="B", weight=1.0,
-                     src_ports=((10, 10),), dst_ports=((140, 140),)),
-        LaneFlowSpec(src_gid="A", dst_gid="C", weight=0.8,
-                     src_ports=((10, 10),), dst_ports=((140, 10),)),
-        LaneFlowSpec(src_gid="D", dst_gid="E", weight=0.6,
-                     src_ports=((10, 140),), dst_ports=((140, 140),)),
-        LaneFlowSpec(src_gid="D", dst_gid="F", weight=0.5,
-                     src_ports=((75, 10),), dst_ports=((75, 140),)),
-        # multi_src
-        LaneFlowSpec(src_gid="G", dst_gid="H", weight=0.9,
-                     src_ports=((10, 30), (10, 40), (10, 50)),
-                     dst_ports=((140, 75),)),
-        LaneFlowSpec(src_gid="G", dst_gid="I", weight=0.7,
-                     src_ports=((15, 85), (15, 95), (15, 105), (15, 115)),
-                     dst_ports=((135, 30),)),
-        LaneFlowSpec(src_gid="J", dst_gid="K", weight=0.5,
-                     src_ports=((20, 20), (20, 30)),
-                     dst_ports=((130, 130), (130, 140))),
+    cat: dict = {}
+    flows = [
+        _mk_flow("A", "B", 1.0, ((10, 10),), ((140, 140),), cat),
+        _mk_flow("A", "C", 0.8, ((10, 10),), ((140, 10),), cat),
+        _mk_flow("D", "E", 0.6, ((10, 140),), ((140, 140),), cat),
+        _mk_flow("D", "F", 0.5, ((75, 10),), ((75, 140),), cat),
+        _mk_flow("G", "H", 0.9, ((10, 30), (10, 40), (10, 50)), ((140, 75),), cat),
+        _mk_flow("G", "I", 0.7,
+                 ((15, 85), (15, 95), (15, 105), (15, 115)),
+                 ((135, 30),), cat),
+        _mk_flow("J", "K", 0.5,
+                 ((20, 20), (20, 30)),
+                 ((130, 130), (130, 140)), cat),
     ]
+    return flows, cat
 
 
 def main() -> int:
@@ -69,11 +81,13 @@ def main() -> int:
         benchmark_rounds=6,
         benchmark_max_flows_per_method=6,
     )
+    flows, port_catalog = _make_flows()
     env = FactoryLaneEnv(
         grid_width=grid_w,
         grid_height=grid_h,
         blocked_static=blocked,
-        flows=_make_flows(),
+        flows=flows,
+        port_specs=port_catalog,
         device=device,
         routing_config=routing_cfg,
     )

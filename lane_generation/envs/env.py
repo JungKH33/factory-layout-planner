@@ -11,7 +11,7 @@ from lane_generation.agents.base import BaseAdapter
 from .action import LaneAction, LaneRoute
 from .action_space import ActionSpace
 from .reward import LaneNewEdgeReward, LanePathLengthReward, LaneTurnReward, RewardComposer, TerminalReward
-from .state import LaneFlowSpec, LaneState, RoutingConfig
+from .state import LaneFlowSpec, LaneState, PortGroup, PortSpec, RoutingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,8 @@ class FactoryLaneEnv(gym.Env):
         grid_height: int,
         blocked_static: torch.Tensor,
         flows: Sequence[LaneFlowSpec],
+        port_specs: Optional[Dict[str, PortSpec]] = None,
+        port_groups: Optional[Dict[str, PortGroup]] = None,
         device: Optional[torch.device] = None,
         flow_ordering: str = "weight_desc",
         routing_config: Optional[RoutingConfig] = None,
@@ -51,6 +53,8 @@ class FactoryLaneEnv(gym.Env):
             grid_width=self.grid_width,
             blocked_static=blocked_static,
             flows=flows,
+            port_specs=port_specs or {},
+            port_groups=port_groups or {},
             device=self.device,
             flow_ordering=flow_ordering,
         )

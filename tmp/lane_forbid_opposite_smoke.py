@@ -35,23 +35,29 @@ from lane_generation.envs.routing import (
     RoutingStrategy,
     WavefrontStrategy,
 )
-from lane_generation.envs.state import LaneFlowSpec, LaneState
+from lane_generation.envs.state import LaneFlowSpec, LaneState, PortSelector, PortSpec
 
 
 GRID = 16
 
 
 def _build_state(algorithm: str) -> LaneState:
+    ports = {
+        "A_src.ex.0": PortSpec(port_id="A_src.ex.0", gid="A_src", xy=(0, 0), kind="exit"),
+        "A_dst.en.0": PortSpec(port_id="A_dst.en.0", gid="A_dst", xy=(GRID - 1, GRID - 1), kind="entry"),
+        "B_src.ex.0": PortSpec(port_id="B_src.ex.0", gid="B_src", xy=(GRID - 1, GRID - 1), kind="exit"),
+        "B_dst.en.0": PortSpec(port_id="B_dst.en.0", gid="B_dst", xy=(0, 0), kind="entry"),
+    }
     flows = [
         LaneFlowSpec(
-            src_gid="A_src", dst_gid="A_dst", weight=1.0,
-            src_ports=((0, 0),), dst_ports=((GRID - 1, GRID - 1),),
-            forbid_opposite=True,
+            src=PortSelector(gid="A_src", port_ids=("A_src.ex.0",)),
+            dst=PortSelector(gid="A_dst", port_ids=("A_dst.en.0",)),
+            weight=1.0,
         ),
         LaneFlowSpec(
-            src_gid="B_src", dst_gid="B_dst", weight=0.9,
-            src_ports=((GRID - 1, GRID - 1),), dst_ports=((0, 0),),
-            forbid_opposite=True,
+            src=PortSelector(gid="B_src", port_ids=("B_src.ex.0",)),
+            dst=PortSelector(gid="B_dst", port_ids=("B_dst.en.0",)),
+            weight=0.9,
         ),
     ]
     blocked = torch.zeros((GRID, GRID), dtype=torch.bool)
@@ -60,13 +66,10 @@ def _build_state(algorithm: str) -> LaneState:
         grid_width=GRID,
         blocked_static=blocked,
         flows=flows,
+        port_specs=ports,
+        port_groups={},
         device=torch.device("cpu"),
         flow_ordering="given",
-        routing_config=RoutingConfig(
-            selection="static",
-            algorithm=algorithm,
-            candidate_k=4,
-        ),
     )
 
 

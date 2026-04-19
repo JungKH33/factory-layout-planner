@@ -45,6 +45,7 @@ def _build_env(scn: Scenario, device: torch.device) -> FactoryLaneEnv:
         grid_height=scn.grid_h,
         blocked_static=scn.blocked.to(device),
         flows=scn.flows,
+        port_specs=scn.ports,
         flow_ordering="weight_desc",
         device=device,
         routing_config=RoutingConfig(
