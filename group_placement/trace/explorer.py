@@ -764,15 +764,21 @@ class Explorer:
         k = int(k) if k is not None else int(self.candidates_top_k)
         if k <= 0 or int(action_space.centers.shape[0]) <= 0:
             return []
-        valid = action_space.valid_mask.view(-1)
+        valid = action_space.valid_mask.view(-1).cpu()
         valid_idx = torch.where(valid)[0]
         if int(valid_idx.numel()) == 0:
             return []
-        keys = rank_key.to(dtype=torch.float32).view(-1)[valid_idx]
+        keys = rank_key.detach().to(dtype=torch.float32, device="cpu").view(-1)[valid_idx]
         order = torch.argsort(keys)
         picks = valid_idx[order[: k]]
-        centers = action_space.centers
+        centers = action_space.centers.detach().cpu()
         variant_indices = action_space.variant_indices
+        if variant_indices is not None:
+            variant_indices = variant_indices.detach().cpu()
+        if delta_costs is not None:
+            delta_costs = delta_costs.detach().to(dtype=torch.float32, device="cpu")
+        if score is not None:
+            score = score.detach().to(dtype=torch.float32, device="cpu")
         out: List[Dict[str, Any]] = []
         for rank, idx_t in enumerate(picks.tolist()):
             idx = int(idx_t)
