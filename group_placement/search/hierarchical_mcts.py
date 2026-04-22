@@ -72,6 +72,7 @@ class _ManagerNode:
     __slots__ = (
         "decision_cache", "priors", "action", "reward",
         "terminal", "visits", "total_value", "children", "valid_actions",
+        "is_invalid", "parent_worker",
     )
 
     def __init__(
@@ -91,13 +92,15 @@ class _ManagerNode:
         self.visits = 0
         self.total_value = 0.0
         self.children: Dict[int, _WorkerNode] = {}
+        self.is_invalid = False  # dead-end exclusion flag
+        self.parent_worker: Optional[_WorkerNode] = None  # for recursive invalidation
 
         valid = decision_cache.action_space.valid_mask
         self.valid_actions = torch.where(
             valid.to(dtype=torch.bool, device=priors.device).view(-1)
         )[0].to(dtype=torch.long)
 
-    def best_manager_action(self, c_puct: float, pw_enabled: bool = False, pw_c: float = 1.5, pw_alpha: float = 0.5) -> int:
+    def best_manager_action(self, c_puct: float, pw_enabled: bool = False, pw_c: float = 1.5, pw_alpha: float = 0.5, exclude_invalid: bool = False) -> int:
         """PUCT selection over manager actions. Returns manager_action or -1."""
         acts = self.valid_actions
         if acts.numel() == 0:
@@ -109,7 +112,7 @@ class _ManagerNode:
             allowed = min(int(acts.numel()), allowed)
             if len(self.children) < allowed:
                 return self._best_unexpanded_manager_action()
-            return self._best_expanded_manager_action(c_puct)
+            return self._best_expanded_manager_action(c_puct, exclude_invalid=exclude_invalid)
 
         fpu_val = (self.total_value / self.visits) if self.visits > 0 else 0.0
         pri = self.priors.index_select(0, acts)
@@ -131,9 +134,24 @@ class _ManagerNode:
             q[pos] = ch_q
             n[pos] = ch_n
 
+            # Exclude invalid (dead-end) children from selection
+            if exclude_invalid:
+                inv_mask = torch.tensor(
+                    [ch.is_invalid for _, ch in sorted_ch],
+                    dtype=torch.bool, device=acts.device,
+                )
+                if inv_mask.any():
+                    inv_full = torch.zeros((int(acts.shape[0]),), dtype=torch.bool, device=acts.device)
+                    inv_full[pos] = inv_mask
+                    pri = pri.masked_fill(inv_full, 0.0)
+                    q = q.masked_fill(inv_full, float("-inf"))
+
         u = c_puct * pri * math.sqrt(self.visits + 1) / (1.0 + n)
         score = q + u
-        return int(acts[int(torch.argmax(score).item())].item())
+        best = int(torch.argmax(score).item())
+        if not torch.isfinite(score[best]):
+            return -1
+        return int(acts[best].item())
 
     def _best_unexpanded_manager_action(self) -> int:
         acts = self.valid_actions
@@ -148,7 +166,7 @@ class _ManagerNode:
             return -1
         return int(acts[int(torch.argmax(pri).item())].item())
 
-    def _best_expanded_manager_action(self, c_puct: float) -> int:
+    def _best_expanded_manager_action(self, c_puct: float, *, exclude_invalid: bool = False) -> int:
         if not self.children:
             return -1
         sorted_ch = sorted((int(a), ch) for a, ch in self.children.items())
@@ -162,9 +180,22 @@ class _ManagerNode:
             dtype=torch.float32, device=self.priors.device,
         )
         p = self.priors.index_select(0, ch_acts)
+
+        if exclude_invalid:
+            inv_mask = torch.tensor(
+                [ch.is_invalid for _, ch in sorted_ch],
+                dtype=torch.bool, device=self.priors.device,
+            )
+            if inv_mask.any():
+                p = p.masked_fill(inv_mask, 0.0)
+                q = q.masked_fill(inv_mask, float("-inf"))
+
         u = c_puct * p * math.sqrt(self.visits + 1) / (1.0 + n)
         score = q + u
-        return int(ch_acts[int(torch.argmax(score).item())].item())
+        best = int(torch.argmax(score).item())
+        if not torch.isfinite(score[best]):
+            return -1
+        return int(ch_acts[best].item())
 
 
 class _WorkerNode:
@@ -173,6 +204,7 @@ class _WorkerNode:
     __slots__ = (
         "manager_action", "priors", "worker_action_space",
         "visits", "total_value", "children",
+        "is_invalid", "parent_manager",
     )
 
     def __init__(
@@ -188,8 +220,10 @@ class _WorkerNode:
         self.visits = 0
         self.total_value = 0.0
         self.children: Dict[int, _ManagerNode] = {}
+        self.is_invalid = False  # dead-end exclusion flag
+        self.parent_manager: Optional[_ManagerNode] = None  # for recursive invalidation
 
-    def best_worker_action(self, c_puct: float) -> int:
+    def best_worker_action(self, c_puct: float, *, exclude_invalid: bool = False) -> int:
         """PUCT over within-parent candidates. Returns local_cand_idx or -1."""
         M = int(self.priors.shape[0])
         if M == 0:
@@ -199,6 +233,7 @@ class _WorkerNode:
         fpu_val = (self.total_value / self.visits) if self.visits > 0 else 0.0
         q = torch.full((M,), float(fpu_val), dtype=torch.float32, device=self.priors.device)
         n = torch.zeros((M,), dtype=torch.float32, device=self.priors.device)
+        pri = self.priors.clone()
 
         if self.children:
             sorted_ch = sorted((int(a), ch) for a, ch in self.children.items())
@@ -214,9 +249,22 @@ class _WorkerNode:
             q[ch_acts] = ch_q
             n[ch_acts] = ch_n
 
-        u = c_puct * self.priors * math.sqrt(self.visits + 1) / (1.0 + n)
+            # Exclude invalid (dead-end) children from selection
+            if exclude_invalid:
+                inv_mask = torch.tensor(
+                    [ch.is_invalid for _, ch in sorted_ch],
+                    dtype=torch.bool, device=self.priors.device,
+                )
+                if inv_mask.any():
+                    pri[ch_acts] = pri[ch_acts].masked_fill(inv_mask, 0.0)
+                    q[ch_acts] = q[ch_acts].masked_fill(inv_mask, float("-inf"))
+
+        u = c_puct * pri * math.sqrt(self.visits + 1) / (1.0 + n)
         score = q + u
-        return int(torch.argmax(score).item())
+        best = int(torch.argmax(score).item())
+        if not torch.isfinite(score[best]):
+            return -1
+        return best
 
 
 class HierarchicalMCTSSearch(BaseHierarchicalSearch):
@@ -323,6 +371,26 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
             top_k=collect_top_k(topk_heap),
         )
 
+    def _propagate_invalid_h(self, child_manager: _ManagerNode) -> None:
+        """Recursively mark ancestors invalid if all their children are invalid.
+
+        Traversal: child_manager → parent_worker → parent_manager → ...
+        """
+        worker = child_manager.parent_worker
+        while worker is not None:
+            # Check if all worker's children (ManagerNodes) are invalid
+            if not worker.children or not all(ch.is_invalid for ch in worker.children.values()):
+                break
+            worker.is_invalid = True
+            parent_mgr = worker.parent_manager
+            if parent_mgr is None:
+                break
+            # Check if all parent_manager's children (WorkerNodes) are invalid
+            if not parent_mgr.children or not all(wn.is_invalid for wn in parent_mgr.children.values()):
+                break
+            parent_mgr.is_invalid = True
+            worker = parent_mgr.parent_worker
+
     def _simulate(
         self,
         *,
@@ -335,17 +403,21 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
         max_k: int,
     ) -> None:
         cfg = self.config
+        use_exclude = (cfg.dead_node_strategy == "exclude")
         manager_node = root
         path: List[Tuple[_ManagerNode, Optional[_WorkerNode]]] = []
         path_rewards: List[float] = []
 
         while not manager_node.terminal:
+            if manager_node.is_invalid:
+                break
             # Manager: select action
             manager_action = manager_node.best_manager_action(
                 cfg.c_puct,
                 pw_enabled=cfg.pw_enabled,
                 pw_c=cfg.pw_c,
                 pw_alpha=cfg.pw_alpha,
+                exclude_invalid=use_exclude,
             )
             if manager_action == -1:
                 break
@@ -366,12 +438,16 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                     priors=worker_priors,
                     worker_action_space=worker_as,
                 )
+                worker_node.parent_manager = manager_node
                 manager_node.children[manager_action] = worker_node
             else:
                 worker_node = manager_node.children[manager_action]
 
+            if worker_node.is_invalid:
+                break
+
             # Worker: select action
-            worker_action = worker_node.best_worker_action(cfg.worker_c_puct)
+            worker_action = worker_node.best_worker_action(cfg.worker_c_puct, exclude_invalid=use_exclude)
             if worker_action == -1:
                 break
 
@@ -401,6 +477,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                 except ValueError:
                     _obs, reward, terminated, truncated, _info = engine.fail(reason="masked_action")
                 terminal = bool(terminated or truncated)
+                is_dead_end = False  # flag for exclude strategy
 
                 if terminal:
                     child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
@@ -415,14 +492,22 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                     )
                     next_valid = int(child_as.valid_mask.to(torch.int64).sum().item())
                     if next_valid <= 0:
-                        dead_reward, _, _, _ = self._apply_action_index(
-                            engine=engine, adapter=adapter,
-                            action=0, action_space=child_as,
-                        )
-                        reward = float(reward) + float(dead_reward)
-                        terminal = True
-                        child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
-                        child_priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
+                        if use_exclude:
+                            # Exclude strategy: mark as dead-end, skip penalty evaluation
+                            terminal = True
+                            is_dead_end = True
+                            child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
+                            child_priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
+                        else:
+                            # Penalty strategy (legacy): apply action 0 to get penalty reward
+                            dead_reward, _, _, _ = self._apply_action_index(
+                                engine=engine, adapter=adapter,
+                                action=0, action_space=child_as,
+                            )
+                            reward = float(reward) + float(dead_reward)
+                            terminal = True
+                            child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
+                            child_priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
 
                 child_step = _ManagerNode(
                     decision_cache=child_cache,
@@ -431,11 +516,18 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
                     reward=float(reward),
                     terminal=terminal,
                 )
+                child_step.parent_worker = worker_node
                 worker_node.children[worker_action] = child_step
 
                 path.append((manager_node, worker_node))
                 path_rewards.append(float(reward))
                 manager_node = child_step
+
+                if use_exclude and is_dead_end:
+                    # Exclude strategy: mark child invalid, propagate upward, skip backup
+                    child_step.is_invalid = True
+                    self._propagate_invalid_h(child_step)
+                    return  # no backpropagation for this simulation
 
                 if child_step.terminal:
                     cum_reward = sum(path_rewards)
@@ -444,7 +536,7 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
 
         # Leaf evaluation
         leaf_value = 0.0
-        if not manager_node.terminal:
+        if not manager_node.terminal and not manager_node.is_invalid:
             if cfg.rollout_enabled:
                 self._restore_snapshot(
                     engine=engine, adapter=adapter,
@@ -496,6 +588,9 @@ class HierarchicalMCTSSearch(BaseHierarchicalSearch):
             action_space = adapter.build_action_space()
             valid_n = int(action_space.valid_mask.to(torch.int64).sum().item())
             if valid_n == 0:
+                if self.config.dead_node_strategy == "exclude":
+                    # Exclude strategy: stop rollout, no penalty — return accumulated reward only
+                    break
                 reward, _, _, _ = self._apply_action_index(
                     engine=engine, adapter=adapter, action=0, action_space=action_space,
                 )

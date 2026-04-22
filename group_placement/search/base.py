@@ -124,7 +124,16 @@ class DecisionCache:
 @dataclass(frozen=True)
 class BaseSearchConfig:
     """Common search config fields shared by all search algorithms."""
-    pass
+
+    # Dead-end node handling strategy:
+    #   "penalty"  — current behaviour: dead-end penalty reward is back-propagated
+    #                into parent Q values (standard MCTS).
+    #   "exclude"  — dead-end nodes are excluded from Q averaging and marked
+    #                invalid.  If ALL children of a parent become invalid the
+    #                parent is recursively invalidated too.  This prevents
+    #                dead-end penalties from drowning out rare viable paths
+    #                (better for tight-constraint / sparse-reward domains).
+    dead_node_strategy: str = "exclude"
 
 
 # ---------------------------------------------------------------------------

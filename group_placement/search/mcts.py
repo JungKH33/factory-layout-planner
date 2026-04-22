@@ -70,6 +70,8 @@ class _Node:
         self.visits = 0
         self.total_value = 0.0
         self.children: Dict[int, "_Node"] = {}
+        self.is_invalid = False  # dead-end exclusion flag
+        self.parent: Optional["_Node"] = None  # for recursive invalidation
 
         valid = self.action_space.valid_mask
         self.valid_actions = torch.where(valid.to(dtype=torch.bool, device=priors.device).view(-1))[0].to(dtype=torch.long)
@@ -100,7 +102,7 @@ class _Node:
             return -1
         return int(acts[int(torch.argmax(pri).item())].item())
 
-    def best_action(self, c_puct: float) -> int:
+    def best_action(self, c_puct: float, *, exclude_invalid: bool = False) -> int:
         acts = self.valid_actions
         if int(acts.numel()) == 0:
             return -1
@@ -125,11 +127,27 @@ class _Node:
             )
             q[pos] = child_q
             n[pos] = child_n
+
+            # Exclude invalid (dead-end) children from selection
+            if exclude_invalid:
+                inv_mask = torch.tensor(
+                    [child.is_invalid for _a, child in sorted_children],
+                    dtype=torch.bool, device=acts.device,
+                )
+                if inv_mask.any():
+                    inv_full = torch.zeros((int(acts.shape[0]),), dtype=torch.bool, device=acts.device)
+                    inv_full[pos] = inv_mask
+                    pri = pri.masked_fill(inv_full, 0.0)
+                    q = q.masked_fill(inv_full, float("-inf"))
+
         u = float(c_puct) * pri * math.sqrt(self.visits + 1) / (1.0 + n)
         score = q + u
-        return int(acts[int(torch.argmax(score).item())].item())
+        best = int(torch.argmax(score).item())
+        if not torch.isfinite(score[best]):
+            return -1
+        return int(acts[best].item())
 
-    def best_action_expanded(self, c_puct: float) -> int:
+    def best_action_expanded(self, c_puct: float, *, exclude_invalid: bool = False) -> int:
         """PUCT over expanded children only (used after PW saturation)."""
         if not self.children:
             return -1
@@ -146,9 +164,23 @@ class _Node:
             device=self.priors.device,
         )
         p = self.priors.index_select(0, child_acts)
+
+        # Exclude invalid (dead-end) children from selection
+        if exclude_invalid:
+            inv_mask = torch.tensor(
+                [child.is_invalid for _a, child in sorted_children],
+                dtype=torch.bool, device=self.priors.device,
+            )
+            if inv_mask.any():
+                p = p.masked_fill(inv_mask, 0.0)
+                q = q.masked_fill(inv_mask, float("-inf"))
+
         u = float(c_puct) * p * math.sqrt(self.visits + 1) / (1.0 + n)
         score = q + u
-        return int(child_acts[int(torch.argmax(score).item())].item())
+        best = int(torch.argmax(score).item())
+        if not torch.isfinite(score[best]):
+            return -1
+        return int(child_acts[best].item())
 
 
 class MCTSSearch(BaseSearch):
@@ -327,6 +359,20 @@ class MCTSSearch(BaseSearch):
 
     # ---- main simulation loop ----
 
+    def _propagate_invalid(self, node: _Node) -> None:
+        """Recursively mark ancestors invalid if all their children are invalid."""
+        parent = node.parent
+        while parent is not None:
+            # Check if all children of parent are invalid
+            if not parent.children:
+                break
+            all_invalid = all(ch.is_invalid for ch in parent.children.values())
+            if all_invalid:
+                parent.is_invalid = True
+                parent = parent.parent
+            else:
+                break
+
     def _simulate(
         self,
         *,
@@ -339,19 +385,22 @@ class MCTSSearch(BaseSearch):
         max_k: int,
     ) -> None:
         node = root
+        use_exclude = (self.config.dead_node_strategy == "exclude")
 
         path_nodes = [root]
         path_rewards: List[float] = []
 
         while not node.terminal:
+            if node.is_invalid:
+                break
             if self.config.pw_enabled:
                 allowed = node._allowed_children(self.config)
                 if len(node.children) < allowed:
                     action = node._best_unexpanded_action_by_prior()
                 else:
-                    action = node.best_action_expanded(self.config.c_puct)
+                    action = node.best_action_expanded(self.config.c_puct, exclude_invalid=use_exclude)
             else:
-                action = node.best_action(self.config.c_puct)
+                action = node.best_action(self.config.c_puct, exclude_invalid=use_exclude)
             if action == -1:
                 break
 
@@ -370,6 +419,7 @@ class MCTSSearch(BaseSearch):
                     action_space=cand,
                 )
                 terminal = bool(terminated or truncated)
+                is_dead_end = False  # flag for exclude strategy
 
                 if terminal:
                     child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
@@ -392,17 +442,26 @@ class MCTSSearch(BaseSearch):
                     )
                     next_valid = int(next_action_space.valid_mask.to(torch.int64).sum().item())
                     if next_valid <= 0:
-                        dead_reward, _dead_term, _dead_trunc, _dead_info = self._apply_action_index(
-                            engine=engine,
-                            adapter=adapter,
-                            action=0,
-                            action_space=next_action_space,
-                        )
-                        reward = float(reward) + float(dead_reward)
-                        terminal = True
-                        child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
-                        next_action_space = child_cache.action_space
-                        priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
+                        if use_exclude:
+                            # Exclude strategy: mark as dead-end, skip penalty evaluation
+                            terminal = True
+                            is_dead_end = True
+                            child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
+                            next_action_space = child_cache.action_space
+                            priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
+                        else:
+                            # Penalty strategy (legacy): apply action 0 to get penalty reward
+                            dead_reward, _dead_term, _dead_trunc, _dead_info = self._apply_action_index(
+                                engine=engine,
+                                adapter=adapter,
+                                action=0,
+                                action_space=next_action_space,
+                            )
+                            reward = float(reward) + float(dead_reward)
+                            terminal = True
+                            child_cache = self._capture_terminal_cache(engine=engine, adapter=adapter)
+                            next_action_space = child_cache.action_space
+                            priors = torch.zeros((0,), dtype=torch.float32, device=adapter.device)
 
                 child = _Node(
                     decision_cache=child_cache,
@@ -411,10 +470,18 @@ class MCTSSearch(BaseSearch):
                     reward=float(reward),
                     terminal=terminal or (not terminal and int(next_action_space.valid_mask.to(torch.int64).sum().item()) == 0),
                 )
+                parent_node = node
+                child.parent = parent_node
                 node.children[int(action)] = child
                 node = child
                 path_nodes.append(node)
                 path_rewards.append(float(reward))
+
+                if use_exclude and is_dead_end:
+                    # Exclude strategy: mark child invalid, propagate upward, skip backup
+                    child.is_invalid = True
+                    self._propagate_invalid(child)
+                    return  # no backpropagation for this simulation
 
                 if child.terminal:
                     cum_reward = sum(path_rewards)
@@ -422,7 +489,7 @@ class MCTSSearch(BaseSearch):
                 break
 
         leaf_value = 0.0
-        if not node.terminal:
+        if not node.terminal and not node.is_invalid:
             if not bool(self.config.rollout_enabled):
                 if bool(self.config.cache_decision_state):
                     leaf_value = float(agent.value(obs=node.obs, action_space=node.action_space))
@@ -474,6 +541,9 @@ class MCTSSearch(BaseSearch):
                 obs = adapter.build_observation()
                 action_space = adapter.build_action_space()
             if int(action_space.valid_mask.to(torch.int64).sum().item()) == 0:
+                if self.config.dead_node_strategy == "exclude":
+                    # Exclude strategy: stop rollout, no penalty — return accumulated reward only
+                    break
                 reward, terminated, truncated, _ = self._apply_action_index(
                     engine=engine,
                     adapter=adapter,
