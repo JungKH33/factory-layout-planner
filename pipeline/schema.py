@@ -16,6 +16,16 @@ def utc_now_iso() -> str:
 
 
 @dataclass(frozen=True)
+class PreprocessArtifact:
+    stage: str
+    created_at: str
+    input_json: str
+    input_copy_json: str
+    env_json: str
+    metrics: JsonDict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class GroupPlacementArtifact:
     stage: str
     created_at: str
@@ -25,7 +35,7 @@ class GroupPlacementArtifact:
 
 
 @dataclass(frozen=True)
-class GroupLaneGenerationArtifact:
+class LaneGenerationArtifact:
     stage: str
     created_at: str
     env_json: str
@@ -78,8 +88,9 @@ def require_key(data: Mapping[str, Any], key: str) -> Any:
 
 
 __all__ = [
+    "PreprocessArtifact",
     "GroupPlacementArtifact",
-    "GroupLaneGenerationArtifact",
+    "LaneGenerationArtifact",
     "FacilityPlacementArtifact",
     "utc_now_iso",
     "save_json",

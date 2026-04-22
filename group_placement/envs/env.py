@@ -144,13 +144,13 @@ class FactoryLayoutEnv(gym.Env):
                     penalty_weight=float(self.penalty_weight),
                     group_areas=group_areas,
                 ),
-                "flow": TerminalFlowReward(
-                    group_specs=self.group_specs,
-                    unreachable_cost=float(terminal_flow_unreachable_cost),
-                    max_wave_iters=int(terminal_flow_max_wave_iters),
-                    batched_wavefront=bool(terminal_flow_batched_wavefront),
-                    include_clear_invalid=bool(terminal_flow_include_clearance),
-                ),
+                # "flow": TerminalFlowReward(
+                #     group_specs=self.group_specs,
+                #     unreachable_cost=float(terminal_flow_unreachable_cost),
+                #     max_wave_iters=int(terminal_flow_max_wave_iters),
+                #     batched_wavefront=bool(terminal_flow_batched_wavefront),
+                #     include_clear_invalid=bool(terminal_flow_include_clearance),
+                # ),
             }
         else:
             t_components = dict(terminal_reward_components)

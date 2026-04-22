@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import time
 
 logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="3-stage layout pipeline")
-    p.add_argument("--env-json", type=str, required=True)
-
-    p.add_argument("--group-json", type=str, default="results/pipeline/group_placement.json")
-    p.add_argument("--lane-json", type=str, default="results/pipeline/group_lane_generation.json")
-    p.add_argument("--facility-json", type=str, default="results/pipeline/facility_placement.json")
+    p.add_argument("--input", type=str, required=True)
+    p.add_argument("--workspace", type=str, default="results")
 
     p.add_argument("--skip-group", action="store_true")
     p.add_argument("--skip-lane", action="store_true")
@@ -35,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--search-depth", type=int, default=5)
     p.add_argument("--expansion-topk", type=int, default=16)
     p.add_argument("--max-expansions", type=int, default=200)
+    p.add_argument("--group-top-n", type=int, default=1)
 
     p.add_argument("--lane-algorithm", type=str, default="astar")
     p.add_argument("--lane-diagonal", action="store_true")
@@ -46,15 +46,54 @@ def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
-    group_json = str(Path(args.group_json))
-    lane_json = str(Path(args.lane_json))
-    facility_json = str(Path(args.facility_json))
+    input_path = Path(args.input)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(args.workspace) / f"{input_path.stem}_{ts}"
+    preprocess_dir = run_dir / "preprocess"
+    group_dir = run_dir / "group_placement"
+    lane_dir = run_dir / "lane_generation"
+    facility_dir = run_dir / "facility_placement"
+    for d in (preprocess_dir, group_dir, lane_dir, facility_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    group_json = str(group_dir / "group_placement.json")
+    logger.info("run workspace: %s", run_dir)
+    logger.info(
+        "stage output dirs: preprocess=%s, group_placement=%s, lane_generation=%s, facility_placement=%s",
+        preprocess_dir,
+        group_dir,
+        lane_dir,
+        facility_dir,
+    )
+
+    from pipeline.preprocess import PreprocessConfig, run_and_save_preprocess
+
+    def _run_stage(stage_name: str, fn):
+        logger.info("[stage=%s] START", stage_name)
+        start = time.perf_counter()
+        try:
+            result = fn()
+        except Exception:
+            elapsed = time.perf_counter() - start
+            logger.exception("[stage=%s] FAILED elapsed_sec=%.3f", stage_name, elapsed)
+            raise
+        elapsed = time.perf_counter() - start
+        logger.info("[stage=%s] DONE elapsed_sec=%.3f", stage_name, elapsed)
+        return result
+
+    pp_cfg = PreprocessConfig(
+        input_json=str(args.input),
+        output_dir=str(preprocess_dir),
+    )
+    pp_artifact = _run_stage("preprocess", lambda: run_and_save_preprocess(pp_cfg))
+    env_json_path = Path(pp_artifact.env_json)
 
     if not args.skip_group:
         from pipeline.group_placement import GroupPlacementConfig, run_and_save_group_placement
 
         gp_cfg = GroupPlacementConfig(
-            env_json=str(args.env_json),
+            env_json=str(env_json_path),
+            output_dir=str(group_dir),
             device=args.device,
             backend_selection=str(args.backend_selection),
             wrapper_mode=str(args.wrapper_mode),
@@ -69,41 +108,38 @@ def main() -> None:
             search_depth=int(args.search_depth),
             expansion_topk=int(args.expansion_topk),
             max_expansions=int(args.max_expansions),
+            top_n=max(1, int(args.group_top_n)),
         )
-        gp_artifact = run_and_save_group_placement(gp_cfg, group_json)
-        logger.info("group_placement saved: %s", group_json)
-        logger.info("group metrics: %s", gp_artifact.metrics)
-    elif not Path(group_json).exists():
-        raise FileNotFoundError(f"--skip-group was set, but group artifact does not exist: {group_json}")
+        _run_stage("group_placement", lambda: run_and_save_group_placement(gp_cfg))
+    elif (not args.skip_lane or not args.skip_facility) and not Path(group_json).exists():
+        raise FileNotFoundError(
+            f"--skip-group was set, but group artifact does not exist: {group_json}"
+        )
 
     if not args.skip_lane:
-        from pipeline.group_lane_generation import GroupLaneGenerationConfig, run_and_save_group_lane_generation
+        from pipeline.lane_generation import LaneGenerationConfig, run_and_save_lane_generation
 
-        lane_cfg = GroupLaneGenerationConfig(
+        lane_cfg = LaneGenerationConfig(
             group_placement_json=group_json,
-            output_json=lane_json,
-            env_json=str(args.env_json),
+            output_dir=str(lane_dir),
+            env_json=str(env_json_path),
             device=args.device,
             backend_selection=str(args.backend_selection),
             algorithm=str(args.lane_algorithm),
             allow_diagonal=bool(args.lane_diagonal),
         )
-        lane_artifact = run_and_save_group_lane_generation(lane_cfg)
-        logger.info("group_lane_generation saved: %s", lane_json)
-        logger.info("lane metrics: %s", lane_artifact.metrics)
+        _run_stage("lane_generation", lambda: run_and_save_lane_generation(lane_cfg))
 
     if not args.skip_facility:
         from pipeline.facility_placement import FacilityPlacementConfig, run_and_save_facility_placement
 
         facility_cfg = FacilityPlacementConfig(
             group_placement_json=group_json,
-            output_json=facility_json,
-            env_json=str(args.env_json),
+            output_dir=str(facility_dir),
+            env_json=str(env_json_path),
             on_missing=str(args.facility_on_missing),
         )
-        facility_artifact = run_and_save_facility_placement(facility_cfg)
-        logger.info("facility_placement saved: %s", facility_json)
-        logger.info("facility metrics: %s", facility_artifact.metrics)
+        _run_stage("facility_placement", lambda: run_and_save_facility_placement(facility_cfg))
 
 
 if __name__ == "__main__":

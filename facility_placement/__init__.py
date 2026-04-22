@@ -6,7 +6,7 @@ from ``envs`` / ``agents`` / ``search``.
 """
 
 from .schema import FacilityPlacement
-from .resolver import resolve_facilities
+from .unfold import resolve_facilities
 from .visualize import (
     draw_cluster_outlines,
     draw_facility_rects,

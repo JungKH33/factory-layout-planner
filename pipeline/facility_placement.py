@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import logging
+from pathlib import Path
 import time
 from typing import Dict, Optional
 
@@ -13,11 +15,13 @@ from pipeline.schema import (
     utc_now_iso,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class FacilityPlacementConfig:
     group_placement_json: str
-    output_json: Optional[str] = None
+    output_dir: str
     env_json: Optional[str] = None
     on_missing: str = "warn"  # warn|silent|error
 
@@ -68,8 +72,11 @@ def run_facility_placement(cfg: FacilityPlacementConfig) -> FacilityPlacementArt
 
 def run_and_save_facility_placement(cfg: FacilityPlacementConfig) -> FacilityPlacementArtifact:
     artifact = run_facility_placement(cfg)
-    if cfg.output_json:
-        save_json(artifact, cfg.output_json)
+    out_path = Path(cfg.output_dir) / "facility_placement.json"
+    save_json(artifact, out_path)
+    logger.info("facility_placement output_dir: %s", cfg.output_dir)
+    logger.info("facility_placement artifact saved: %s", out_path)
+    logger.info("facility_placement metrics: %s", artifact.metrics)
     return artifact
 
 

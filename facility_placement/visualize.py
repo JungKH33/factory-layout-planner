@@ -284,7 +284,7 @@ def plot_facility_layout(
         ``(fig, ax)`` tuple, or ``None`` if there are no resolvable facilities.
     """
     import matplotlib.pyplot as plt
-    from .resolver import resolve_facilities
+    from .unfold import resolve_facilities
 
     if resolved is None:
         resolved = resolve_facilities(state_dict, on_missing=on_missing)
@@ -336,7 +336,7 @@ def save_facility_layout(
         resolved layout was empty.
     """
     import matplotlib.pyplot as plt
-    from .resolver import resolve_facilities
+    from .unfold import resolve_facilities
 
     if resolved is None:
         resolved = resolve_facilities(state_dict, on_missing=on_missing)

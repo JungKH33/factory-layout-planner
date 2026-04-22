@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+from pathlib import Path
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -10,18 +12,20 @@ from group_placement.envs.env_loader import LoadedEnv, load_env
 from lane_generation.output import routes_to_dict
 from lane_generation.inference import RoutePlanner
 from pipeline.schema import (
-    GroupLaneGenerationArtifact,
+    LaneGenerationArtifact,
     load_json,
     require_key,
     save_json,
     utc_now_iso,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
-class GroupLaneGenerationConfig:
+class LaneGenerationConfig:
     group_placement_json: str
-    output_json: Optional[str] = None
+    output_dir: str
     env_json: Optional[str] = None
     device: Optional[str] = None
     backend_selection: str = "benchmark"
@@ -100,7 +104,7 @@ def _summarize_routes(routes: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def run_group_lane_generation(cfg: GroupLaneGenerationConfig) -> GroupLaneGenerationArtifact:
+def run_lane_generation(cfg: LaneGenerationConfig) -> LaneGenerationArtifact:
     start = time.perf_counter()
     group_artifact = load_json(cfg.group_placement_json)
     if "group_placement" in group_artifact:
@@ -130,8 +134,8 @@ def run_group_lane_generation(cfg: GroupLaneGenerationConfig) -> GroupLaneGenera
     routes = routes_to_dict(planner.plan_all())
     summary = _summarize_routes(routes)
 
-    artifact = GroupLaneGenerationArtifact(
-        stage="group_lane_generation",
+    artifact = LaneGenerationArtifact(
+        stage="lane_generation",
         created_at=utc_now_iso(),
         env_json=env_json,
         group_placement=dict(payload),
@@ -152,15 +156,18 @@ def run_group_lane_generation(cfg: GroupLaneGenerationConfig) -> GroupLaneGenera
     return artifact
 
 
-def run_and_save_group_lane_generation(cfg: GroupLaneGenerationConfig) -> GroupLaneGenerationArtifact:
-    artifact = run_group_lane_generation(cfg)
-    if cfg.output_json:
-        save_json(artifact, cfg.output_json)
+def run_and_save_lane_generation(cfg: LaneGenerationConfig) -> LaneGenerationArtifact:
+    artifact = run_lane_generation(cfg)
+    out_path = Path(cfg.output_dir) / "lane_generation.json"
+    save_json(artifact, out_path)
+    logger.info("lane_generation output_dir: %s", cfg.output_dir)
+    logger.info("lane_generation artifact saved: %s", out_path)
+    logger.info("lane_generation metrics: %s", artifact.metrics)
     return artifact
 
 
 __all__ = [
-    "GroupLaneGenerationConfig",
-    "run_group_lane_generation",
-    "run_and_save_group_lane_generation",
+    "LaneGenerationConfig",
+    "run_lane_generation",
+    "run_and_save_lane_generation",
 ]

@@ -28,7 +28,7 @@ from group_placement.envs.action_space import ActionSpace
 
 
 # --- config (module-level constants, keep simple) ---
-ENV_JSON: str = "group_placement/envs/env_configs/mixed_01.json"
+ENV_JSON: str = "group_placement/envs/env_configs/hard_01.json"
 #ENV_JSON: str = "preprocess/조립.json"
 WRAPPER_MODE: str = "greedyv3"  # "greedy" | "greedyv2" | "greedyv3" | "greedyv4" | "greedyv5" | "alphachip" | "maskplace"
 AGENT_MODE: str = "greedy"  # "greedy" | "alphachip" | "maskplace"

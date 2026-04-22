@@ -1,0 +1,120 @@
+{
+  "grid": {
+    "width": 8000,
+    "height": 6000,
+    "grid_size": 1.0,
+    "auto_scale_up": true
+  },
+  "env": {},
+  "groups": [
+    {
+      "id": "G01",
+      "facility_count": 5,
+      "unit_width": 240.0,
+      "unit_height": 120.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[5, 1], [1, 5]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G02",
+      "facility_count": 6,
+      "unit_width": 220.0,
+      "unit_height": 110.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[3, 2], [2, 3]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G03",
+      "facility_count": 7,
+      "unit_width": 200.0,
+      "unit_height": 100.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[7, 1], [1, 7]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G04",
+      "facility_count": 8,
+      "unit_width": 260.0,
+      "unit_height": 130.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[4, 2], [2, 4]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G05",
+      "facility_count": 9,
+      "unit_width": 180.0,
+      "unit_height": 120.0,
+      "clearance_lrtb": [10, 10, 10, 10],
+      "variant_layouts": [[3, 3], [9, 1]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G06",
+      "facility_count": 10,
+      "unit_width": 160.0,
+      "unit_height": 100.0,
+      "clearance_lrtb": [10, 10, 10, 10],
+      "variant_layouts": [[5, 2], [2, 5]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G07",
+      "facility_count": 5,
+      "unit_width": 280.0,
+      "unit_height": 140.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[5, 1], [1, 5]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G08",
+      "facility_count": 6,
+      "unit_width": 210.0,
+      "unit_height": 120.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[3, 2], [2, 3]],
+      "allow_irregular_on_remainder": false
+    },
+    {
+      "id": "G09",
+      "facility_count": 7,
+      "unit_width": 190.0,
+      "unit_height": 110.0,
+      "clearance_lrtb": [20, 20, 20, 20],
+      "variant_layouts": [[4, 2], [3, 3]],
+      "allow_irregular_on_remainder": true
+    },
+    {
+      "id": "G10",
+      "facility_count": 9,
+      "unit_width": 170.0,
+      "unit_height": 100.0,
+      "clearance_lrtb": [10, 10, 10, 10],
+      "variant_layouts": [[5, 2], [4, 3]],
+      "allow_irregular_on_remainder": true
+    }
+  ],
+  "flow": [
+    ["G01", "G02", 10.0],
+    ["G02", "G03", 8.0],
+    ["G03", "G04", 7.0],
+    ["G04", "G05", 9.0],
+    ["G05", "G06", 6.0],
+    ["G06", "G07", 5.0],
+    ["G07", "G08", 7.0],
+    ["G08", "G09", 8.0],
+    ["G09", "G10", 9.0],
+    ["G10", "G01", 4.0]
+  ],
+  "zones": {
+    "constraints": {}
+  },
+  "reset": {},
+  "facilities": {
+    "obstacles": []
+  }
+}

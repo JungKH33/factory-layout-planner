@@ -1,8 +1,8 @@
-"""Phase 2 resolver — unfold facilities from cluster placements.
+"""Phase 2 resolver -- unfold facilities from cluster placements.
 
 Consumes ONLY the dict produced by ``group_placement.envs.interchange.export_group_placement``; has
-zero imports from ``envs`` / ``agents`` / ``search``.  Deterministic geometry
-unfold — no search, no placeability re-validation.
+zero imports from ``envs`` / ``agents`` / ``search``. Deterministic geometry
+unfold -- no search, no placeability re-validation.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Rotation helpers — match envs/placement/static.py::StaticSpec._rotate_point
+# Rotation helpers -- match envs/placement/static.py::StaticSpec._rotate_point
 # ---------------------------------------------------------------------------
 
 def _norm_rotation(rotation: int) -> int:
@@ -27,8 +27,8 @@ def _norm_rotation(rotation: int) -> int:
 
 
 def _rotate_offset(dx: float, dy: float, rotation: int) -> Tuple[float, float]:
-    """Rotate a center-relative offset.  Same convention as ``_rotate_point``
-    in ``envs.placement.static``: 90° maps ``(dx, dy) -> (dy, -dx)``.
+    """Rotate a center-relative offset. Same convention as ``_rotate_point``
+    in ``envs.placement.static``: 90 deg maps ``(dx, dy) -> (dy, -dx)``.
     """
     r = _norm_rotation(rotation)
     if r == 0:
@@ -62,11 +62,11 @@ def _unfold_slot(
     All coordinates are in mm.
 
     Transform chain (per point):
-      1. Point in facility BL frame → offset from facility center.
+      1. Point in facility BL frame -> offset from facility center.
       2. Optional slot mirror, then slot rotation around facility center.
       3. Translate by facility BL in cluster *source* frame (given by slot.x/y).
-      4. Offset from cluster source center → optional cluster mirror → cluster rotation.
-      5. Translate by cluster world center → world mm.
+      4. Offset from cluster source center -> optional cluster mirror -> cluster rotation.
+      5. Translate by cluster world center -> world mm.
     """
     fw = float(facility["width"])
     fh = float(facility["height"])
@@ -96,7 +96,7 @@ def _unfold_slot(
         return (cluster_cx_mm + rdx, cluster_cy_mm + rdy)
 
     def _transform_port(px_bl: float, py_bl: float) -> Tuple[float, float]:
-        """Facility BL-frame port → world mm."""
+        """Facility BL-frame port -> world mm."""
         pdx = px_bl - fw / 2.0
         pdy = py_bl - fh / 2.0
         if slot_mirror:
@@ -110,7 +110,7 @@ def _unfold_slot(
     # World-frame facility center (from source-frame center).
     fc_world_x, fc_world_y = _cluster_src_to_world(fc_src_x, fc_src_y)
 
-    # Total rotation after combining slot + cluster.  Determines the world bbox dims.
+    # Total rotation after combining slot + cluster. Determines the world bbox dims.
     total_rotation = (slot_rotation + cluster_rotation) % 360
     if total_rotation in (90, 270):
         fw_world, fh_world = fh, fw
@@ -166,14 +166,14 @@ def resolve_facilities(
     """Unfold cluster placements into per-cluster facility lists.
 
     Args:
-        state_dict: Dict from ``export_group_placement``.  Required
+        state_dict: Dict from ``export_group_placement``. Required
             keys: ``placements``, ``facilities``, ``layouts``.
-        on_missing: ``"warn"`` (default), ``"silent"``, or ``"error"`` — how
+        on_missing: ``"warn"`` (default), ``"silent"``, or ``"error"`` -- how
             to report missing ``layout_ref`` or unknown ``fid`` references.
 
     Returns:
         Mapping from cluster ``gid`` to a list of ``FacilityPlacement``
-        instances in world mm coordinates.  Clusters without a resolvable
+        instances in world mm coordinates. Clusters without a resolvable
         layout are represented by an empty list.
     """
     if on_missing not in _VALID_ON_MISSING:
