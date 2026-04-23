@@ -91,6 +91,7 @@ def main() -> None:
     pp_cfg = PreprocessConfig(
         input_json=str(args.input),
         output_dir=str(preprocess_dir),
+        visualize_dir=str(preprocess_dir),
     )
     pp_artifact = _run_stage("preprocess", lambda: run_and_save_preprocess(pp_cfg))
     env_json_path = Path(pp_artifact.env_json)
