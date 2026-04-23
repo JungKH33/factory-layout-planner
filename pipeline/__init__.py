@@ -15,6 +15,9 @@ _EXPORTS = {
     "FacilityPlacementConfig": ("pipeline.facility_placement", "FacilityPlacementConfig"),
     "run_facility_placement": ("pipeline.facility_placement", "run_facility_placement"),
     "run_and_save_facility_placement": ("pipeline.facility_placement", "run_and_save_facility_placement"),
+    "SimulationConfig": ("pipeline.simulation", "SimulationConfig"),
+    "run_simulation": ("pipeline.simulation", "run_simulation"),
+    "run_and_save_simulation": ("pipeline.simulation", "run_and_save_simulation"),
 }
 
 

@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-group", action="store_true")
     p.add_argument("--skip-lane", action="store_true")
     p.add_argument("--skip-facility", action="store_true")
+    p.add_argument("--skip-simulation", action="store_true")
 
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--backend-selection", type=str, default="benchmark")
@@ -39,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lane-algorithm", type=str, default="astar")
     p.add_argument("--lane-diagonal", action="store_true")
     p.add_argument("--facility-on-missing", type=str, default="warn")
+    p.add_argument("--sim-horizon", type=float, default=3600.0)
+    p.add_argument("--sim-warmup", type=float, default=300.0)
+    p.add_argument("--sim-seed", type=int, default=0)
+    p.add_argument("--sim-timeline-step", type=float, default=60.0)
     return p.parse_args()
 
 
@@ -53,17 +58,19 @@ def main() -> None:
     group_dir = run_dir / "group_placement"
     lane_dir = run_dir / "lane_generation"
     facility_dir = run_dir / "facility_placement"
-    for d in (preprocess_dir, group_dir, lane_dir, facility_dir):
+    simulation_dir = run_dir / "simulation"
+    for d in (preprocess_dir, group_dir, lane_dir, facility_dir, simulation_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     group_json = str(group_dir / "group_placement.json")
     logger.info("run workspace: %s", run_dir)
     logger.info(
-        "stage output dirs: preprocess=%s, group_placement=%s, lane_generation=%s, facility_placement=%s",
+        "stage output dirs: preprocess=%s, group_placement=%s, lane_generation=%s, facility_placement=%s, simulation=%s",
         preprocess_dir,
         group_dir,
         lane_dir,
         facility_dir,
+        simulation_dir,
     )
 
     from pipeline.preprocess import PreprocessConfig, run_and_save_preprocess
@@ -140,6 +147,22 @@ def main() -> None:
             on_missing=str(args.facility_on_missing),
         )
         _run_stage("facility_placement", lambda: run_and_save_facility_placement(facility_cfg))
+
+    if not args.skip_simulation:
+        from pipeline.simulation import SimulationConfig, run_and_save_simulation
+
+        sim_cfg = SimulationConfig(
+            group_placement_json=group_json,
+            output_dir=str(simulation_dir),
+            env_json=str(env_json_path),
+            facility_placement_json=str(facility_dir / "facility_placement.json"),
+            lane_generation_json=str(lane_dir / "lane_generation.json"),
+            horizon_sec=float(args.sim_horizon),
+            warmup_sec=float(args.sim_warmup),
+            seed=int(args.sim_seed),
+            timeline_step_sec=float(args.sim_timeline_step),
+        )
+        _run_stage("simulation", lambda: run_and_save_simulation(sim_cfg))
 
 
 if __name__ == "__main__":

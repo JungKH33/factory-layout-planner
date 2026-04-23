@@ -54,6 +54,18 @@ class FacilityPlacementArtifact:
     metrics: JsonDict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SimulationArtifact:
+    stage: str
+    created_at: str
+    env_json: str
+    group_placement: JsonDict
+    facility_placement: JsonDict
+    lane_generation: JsonDict
+    simulation: JsonDict
+    metrics: JsonDict = field(default_factory=dict)
+
+
 def ensure_parent_dir(path: str | Path) -> None:
     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
@@ -92,6 +104,7 @@ __all__ = [
     "GroupPlacementArtifact",
     "LaneGenerationArtifact",
     "FacilityPlacementArtifact",
+    "SimulationArtifact",
     "utc_now_iso",
     "save_json",
     "load_json",
