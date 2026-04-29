@@ -73,12 +73,15 @@ def _build_flow_layer(
         weight = float(raw_edge.get("weight", 0.0))
         pair_count = int(raw_edge.get("pair_count", 1)) or 1
 
-        # Terminal: try polyline first
+        # Terminal: resolve per-pair polylines (parallel list matching pair_indices).
+        # Falls back to first polyline for legacy single-polyline metadata.
         terminal_model = raw_edge.get("models", {}).get("terminal", None)
-        polyline: Optional[List[Tuple[float, float]]] = None
+        polylines_for_pairs: List[Optional[List[Tuple[float, float]]]] = []
         if isinstance(terminal_model, dict):
-            raw_pl = terminal_model.get("polylines", None)
-            polyline = _resolve_terminal_polyline(raw_pl)
+            raw_pls = terminal_model.get("polylines", None)
+            if isinstance(raw_pls, list):
+                for raw_pl in raw_pls:
+                    polylines_for_pairs.append(_resolve_terminal_polyline([raw_pl]))
 
         # Resolve port-pair coordinates
         src_placement = placements.get(src_gid) or placements.get(str(src_gid))
@@ -92,27 +95,25 @@ def _build_flow_layer(
 
         pair_weight = weight / float(pair_count)
         if pairs:
-            for ex_xy, en_xy in pairs:
+            for idx, (ex_xy, en_xy) in enumerate(pairs):
                 active_exits.add(_coord_key(*ex_xy))
                 active_entries.add(_coord_key(*en_xy))
-                seg_polyline = polyline  # one polyline per edge (best pair only)
-                polyline = None  # only attach polyline to first pair
+                seg_polyline = polylines_for_pairs[idx] if idx < len(polylines_for_pairs) else None
                 segments.append(RewardVizSegment(
                     src_xy=ex_xy,
                     dst_xy=en_xy,
                     weight=pair_weight,
                     polyline=seg_polyline,
                 ))
-        elif polyline is not None:
-            # have polyline but no pair coords — use polyline endpoints
-            src_xy = polyline[0]
-            dst_xy = polyline[-1]
-            segments.append(RewardVizSegment(
-                src_xy=src_xy,
-                dst_xy=dst_xy,
-                weight=weight,
-                polyline=polyline,
-            ))
+        elif polylines_for_pairs:
+            first_pl = polylines_for_pairs[0]
+            if first_pl is not None:
+                segments.append(RewardVizSegment(
+                    src_xy=first_pl[0],
+                    dst_xy=first_pl[-1],
+                    weight=weight,
+                    polyline=first_pl,
+                ))
 
     if not segments:
         return None

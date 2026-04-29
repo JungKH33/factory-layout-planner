@@ -526,22 +526,44 @@ class TerminalFlowReward:
             group_specs=self.group_specs,
             device=device,
         )
-        reduced_mt, c_idx, p_idx = FlowReward._masked_pair_reduce(cost, valid, exit_k, entry_k)
+        if return_metadata:
+            reduced_mt, c_idx, p_idx, _detail = FlowReward._masked_pair_reduce(
+                cost, valid, exit_k, entry_k, return_detail=True
+            )
+            _selected_c_mask = _detail.get("selected_c_mask")  # [m, t, c]
+            _selected_p_mask = _detail.get("selected_p_mask")  # [m, t, c, p]
+        else:
+            reduced_mt, c_idx, p_idx = FlowReward._masked_pair_reduce(cost, valid, exit_k, entry_k)
+            _selected_c_mask = None
+            _selected_p_mask = None
+
+        # Bug fix: has_valid=False means all ports OOB/invalid → penalise with
+        # unreachable_cost instead of silently returning 0.
+        _has_valid = valid.any(dim=3).any(dim=2)  # [m, t]
+        reduced_mt = torch.where(
+            _has_valid,
+            reduced_mt,
+            torch.full_like(reduced_mt, float(self.unreachable_cost)),
+        )
         total = (reduced_mt * flow_w).sum()
 
         if not return_metadata:
             return total
 
-        has_valid = valid.any(dim=3).any(dim=2)  # [m, t]
         unreachable_thresh = float(self.unreachable_cost) * 0.9
         edges: Dict[str, object] = {}
         flow_w_cpu = flow_w.cpu()
         reduced_cpu = reduced_mt.cpu()
-        has_valid_cpu = has_valid.cpu()
+        has_valid_cpu = _has_valid.cpu()
         c_idx_cpu = c_idx.cpu() if c_idx is not None else None
         p_idx_cpu = p_idx.cpu() if p_idx is not None else None
         target_uid_cpu = target_uid.cpu()
         exits_clamped_cpu = anchored_exits_clamped.cpu()
+        exits_valid_cpu = exits_valid.cpu()
+        entries_valid_cpu = entries_valid.cpu()
+        sel_c_cpu = _selected_c_mask.cpu() if _selected_c_mask is not None else None
+        sel_p_cpu = _selected_p_mask.cpu() if _selected_p_mask is not None else None
+
         for i in range(m):
             for j in range(t):
                 fij = float(flow_w_cpu[i, j].item())
@@ -552,28 +574,52 @@ class TerminalFlowReward:
                 dist_val = float(reduced_cpu[i, j].item())
                 if dist_val >= unreachable_thresh:
                     continue
-                c_best = int(c_idx_cpu[i, j].item()) if c_idx_cpu is not None else 0
-                p_best = int(p_idx_cpu[i, j].item()) if p_idx_cpu is not None else 0
                 src_gid = str(placed_nodes[i])
                 dst_gid = str(placed_nodes[j])
 
-                terminal_model: Dict[str, object] = {
-                    "pair_indices": [[c_best, p_best]],
-                }
-                if c_idx is not None and p_idx is not None:
-                    uid = int(target_uid_cpu[j, p_best].item())
+                # Collect all selected (exit_c, entry_p) pairs for this edge.
+                # span=1: just the single best pair from c_idx/p_idx.
+                # span>1: all pairs from selected_c/p masks (one polyline each).
+                if sel_c_cpu is not None and sel_p_cpu is not None:
+                    pair_mask = (
+                        sel_p_cpu[i, j]                        # [c, p]
+                        & sel_c_cpu[i, j].unsqueeze(1)         # [c, 1]
+                        & exits_valid_cpu[i].unsqueeze(1)      # [c, 1]
+                        & entries_valid_cpu[j].unsqueeze(0)    # [1, p]
+                    )
+                    sel = torch.nonzero(pair_mask, as_tuple=False)  # [K, 2]
+                    if int(sel.shape[0]) == 0 and c_idx_cpu is not None:
+                        c_b = int(c_idx_cpu[i, j].item())
+                        p_b = int(p_idx_cpu[i, j].item())
+                        sel = torch.tensor([[c_b, p_b]], dtype=torch.long)
+                elif c_idx_cpu is not None and p_idx_cpu is not None:
+                    c_b = int(c_idx_cpu[i, j].item())
+                    p_b = int(p_idx_cpu[i, j].item())
+                    sel = torch.tensor([[c_b, p_b]], dtype=torch.long)
+                else:
+                    sel = torch.zeros((1, 2), dtype=torch.long)
+
+                all_pair_indices: List[List[int]] = []
+                all_polylines: List[List[List[int]]] = []
+                for k_idx in range(int(sel.shape[0])):
+                    c_k = int(sel[k_idx, 0].item())
+                    p_k = int(sel[k_idx, 1].item())
+                    all_pair_indices.append([c_k, p_k])
+                    uid = int(target_uid_cpu[j, p_k].item())
                     if uid >= 0 and uid < int(dist_batch.shape[0]):
-                        ex_x = int(exits_clamped_cpu[i, c_best, 0].item())
-                        ex_y = int(exits_clamped_cpu[i, c_best, 1].item())
-                        polyline = self._backtrack_polyline(
-                            dist_batch[uid], (ex_x, ex_y), h, w
-                        )
-                        terminal_model["polylines"] = [polyline]
+                        ex_x = int(exits_clamped_cpu[i, c_k, 0].item())
+                        ex_y = int(exits_clamped_cpu[i, c_k, 1].item())
+                        pl = self._backtrack_polyline(dist_batch[uid], (ex_x, ex_y), h, w)
+                        all_polylines.append(pl)
+
+                terminal_model: Dict[str, object] = {"pair_indices": all_pair_indices}
+                if all_polylines:
+                    terminal_model["polylines"] = all_polylines
 
                 edges[f"{src_gid}->{dst_gid}"] = {
                     "weight": fij,
                     "distance": dist_val,
-                    "pair_count": 1,
+                    "pair_count": int(len(all_pair_indices)),
                     "models": {"terminal": terminal_model},
                 }
 
